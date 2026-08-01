@@ -284,7 +284,7 @@ fun WhiteBoosterApp() {
         },
         containerColor = Color(0xFF0A0F1A)
     ) { padding ->
-        Column(Modifier = Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize().padding(padding)) {
             // Status bar
             if (DnsVpnService.isVpnActive) {
                 Box(
