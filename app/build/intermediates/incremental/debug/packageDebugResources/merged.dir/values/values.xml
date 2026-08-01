@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <color name="background">#FF0A0F1A</color>
-    <color name="black">#FF000000</color>
-    <color name="primary">#FF00D4FF</color>
-    <color name="white">#FFFFFFFF</color>
-    <string name="app_name">White Booster</string>
-    <style name="Theme.WhiteBooster" parent="android:Theme.Material.Light.NoActionBar"/>
-</resources>
