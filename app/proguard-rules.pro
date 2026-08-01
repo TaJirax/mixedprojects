@@ -1,0 +1,1 @@
+# White Booster ProGuard rules
