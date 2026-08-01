@@ -1,0 +1,16 @@
+Release signing is configured.
+
+Keystore: keystore/whitebooster.jks
+Alias: whitebooster
+Store password: whitebooster
+Key password: whitebooster
+
+Build signed APK:
+  Build > Generate Signed Bundle / APK
+  or
+  ./gradlew assembleRelease
+
+Output:
+  app/build/outputs/apk/release/app-release.apk
+
+Change passwords before public distribution.

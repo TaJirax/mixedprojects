@@ -1,17 +1,21 @@
 package com.whitebooster.app
 
 import android.app.Activity
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.TrafficStats
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
+import android.provider.Settings
+import android.text.format.Formatter
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -22,6 +26,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -37,7 +42,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -46,10 +50,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.InetAddress
@@ -57,46 +66,65 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlin.system.measureTimeMillis
 
-private val Bg = Color(0xFF0B0F14)
-private val Surface = Color(0xFF141A22)
-private val Surface2 = Color(0xFF1C2430)
+// ── Theme colors ────────────────────────────────────────
+private val DarkBg = Color(0xFF0B0F14)
+private val DarkSurface = Color(0xFF141A22)
+private val DarkSurface2 = Color(0xFF1C2430)
+private val LightBg = Color(0xFFF5F6FA)
+private val LightSurface = Color(0xFFFFFFFF)
+private val LightSurface2 = Color(0xFFEEF0F5)
 private val Accent = Color(0xFF6C5CE7)
 private val AccentSoft = Color(0xFFA29BFE)
-private val Green = Color(0xFF00E676)
+private val Green = Color(0xFF00C853)
 private val Yellow = Color(0xFFFFD600)
 private val Red = Color(0xFFFF5252)
-private val TextPrimary = Color(0xFFE8EAED)
-private val TextSecondary = Color(0xFF8B95A5)
-private val TextMuted = Color(0xFF5A6577)
 
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-        )
-        setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Accent,
-                    background = Bg,
-                    surface = Surface
-                )
-            ) {
-                Surface(Modifier.fillMaxSize(), color = Bg) {
-                    App()
-                }
-            }
-        }
-    }
+data class AppColors(
+    val bg: Color,
+    val surface: Color,
+    val surface2: Color,
+    val text: Color,
+    val text2: Color,
+    val muted: Color
+)
+
+private val DarkColors = AppColors(DarkBg, DarkSurface, DarkSurface2, Color(0xFFE8EAED), Color(0xFF8B95A5), Color(0xFF5A6577))
+private val LightColors = AppColors(LightBg, LightSurface, LightSurface2, Color(0xFF1A1D24), Color(0xFF5A6577), Color(0xFF9AA3B2))
+
+// ── Prefs ───────────────────────────────────────────────
+object Prefs {
+    private const val N = "wb_prefs"
+    fun get(ctx: Context) = ctx.getSharedPreferences(N, Context.MODE_PRIVATE)
+    var theme: String
+        get() = _theme
+        set(v) { _theme = v }
+    private var _theme = "auto" // auto | dark | light
+    var lang: String = "en" // en | fa
+    var protocol: String = "both" // tcp | udp | both
+    var compress: Boolean = false
+    var mtu: Int = 1500
+    var maxLoss: Int = 30
 }
 
+object AppLog {
+    private val lines = mutableListOf<String>()
+    private val lock = Mutex()
+    suspend fun add(msg: String) = lock.withLock {
+        val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        lines.add("[$t] $msg")
+        if (lines.size > 500) lines.removeAt(0)
+    }
+    suspend fun dump(): String = lock.withLock { lines.joinToString("\n") }
+    suspend fun clear() = lock.withLock { lines.clear() }
+}
+
+// ── Data ────────────────────────────────────────────────
 data class DnsEntry(
     val name: String,
     val primary: String,
     val secondary: String,
     val region: String,
+    val games: List<String> = emptyList(),
     var latency: Long? = null,
     var loss: Int = 0,
     var isBest: Boolean = false
@@ -105,56 +133,39 @@ data class DnsEntry(
 data class GameEntry(
     val name: String,
     val packageName: String,
+    val preferredDns: List<String> = listOf("Shecan", "Electro", "Radar Game"),
     var installed: Boolean = false
 )
 
-data class SpeedState(
-    val downKbps: Float = 0f,
-    val upKbps: Float = 0f
-)
-
 private val dnsServers = listOf(
-    // Iran optimized
-    DnsEntry("Shecan", "178.22.122.100", "185.51.200.2", "IR"),
-    DnsEntry("Electro", "78.157.42.100", "78.157.42.101", "IR"),
+    DnsEntry("Shecan", "178.22.122.100", "185.51.200.2", "IR", listOf("mlbb", "pubg", "cod")),
+    DnsEntry("Electro", "78.157.42.100", "78.157.42.101", "IR", listOf("mlbb", "freefire")),
     DnsEntry("403.online", "10.202.10.10", "10.202.10.11", "IR"),
     DnsEntry("Begzar", "185.55.226.26", "185.55.225.25", "IR"),
-    DnsEntry("Radar Game", "10.10.34.35", "10.10.34.36", "IR"),
+    DnsEntry("Radar Game", "10.10.34.35", "10.10.34.36", "IR", listOf("mlbb", "pubg")),
     DnsEntry("Shelter", "94.103.125.157", "94.103.125.158", "IR"),
-    DnsEntry("Pishgaman", "5.202.100.100", "5.202.100.101", "IR"),
-    // Public
     DnsEntry("Cloudflare", "1.1.1.1", "1.0.0.1", "Global"),
-    DnsEntry("Cloudflare Malware", "1.1.1.2", "1.0.0.2", "Global"),
     DnsEntry("Google", "8.8.8.8", "8.8.4.4", "Global"),
     DnsEntry("Quad9", "9.9.9.9", "149.112.112.112", "Global"),
-    DnsEntry("Quad9 ECS", "9.9.9.11", "149.112.112.11", "Global"),
     DnsEntry("AdGuard", "94.140.14.14", "94.140.15.15", "Global"),
-    DnsEntry("AdGuard Family", "94.140.14.15", "94.140.15.16", "Global"),
     DnsEntry("OpenDNS", "208.67.222.222", "208.67.220.220", "Global"),
-    DnsEntry("OpenDNS Family", "208.67.222.123", "208.67.220.123", "Global"),
     DnsEntry("Control D", "76.76.2.0", "76.76.10.0", "Global"),
-    DnsEntry("Control D Ads", "76.76.2.2", "76.76.10.2", "Global"),
     DnsEntry("CleanBrowsing", "185.228.168.9", "185.228.169.9", "Global"),
-    DnsEntry("CleanBrowsing Adult", "185.228.168.10", "185.228.169.11", "Global"),
     DnsEntry("Level3", "4.2.2.4", "4.2.2.1", "Global"),
-    DnsEntry("Verisign", "64.6.64.6", "64.6.65.6", "Global"),
-    DnsEntry("Comodo", "8.26.56.26", "8.20.247.20", "Global"),
     DnsEntry("Yandex", "77.88.8.8", "77.88.8.1", "Global"),
     DnsEntry("DNS.SB", "185.222.222.222", "185.184.185.185", "Global"),
     DnsEntry("Mullvad", "194.242.2.2", "194.242.2.3", "Global"),
-    DnsEntry("Alternate DNS", "76.76.19.19", "76.223.100.101", "Global"),
-    DnsEntry("Neustar", "156.154.70.1", "156.154.71.1", "Global"),
-    DnsEntry("SafeDNS", "195.46.39.39", "195.46.39.40", "Global")
+    DnsEntry("Comodo", "8.26.56.26", "8.20.247.20", "Global")
 )
 
 private val knownGames = listOf(
-    GameEntry("Call of Duty Mobile", "com.activision.callofduty.shooter"),
-    GameEntry("PUBG Mobile", "com.tencent.ig"),
-    GameEntry("PUBG Mobile Global", "com.pubg.imobile"),
-    GameEntry("Free Fire", "com.dts.freefireth"),
-    GameEntry("Free Fire Max", "com.dts.freefiremax"),
+    GameEntry("Mobile Legends", "com.mobile.legends", listOf("Electro", "Shecan", "Radar Game")),
+    GameEntry("Call of Duty Mobile", "com.activision.callofduty.shooter", listOf("Shecan", "Electro")),
+    GameEntry("PUBG Mobile", "com.tencent.ig", listOf("Shecan", "Radar Game")),
+    GameEntry("PUBG Mobile Global", "com.pubg.imobile", listOf("Shecan", "Radar Game")),
+    GameEntry("Free Fire", "com.dts.freefireth", listOf("Electro", "Shecan")),
+    GameEntry("Free Fire Max", "com.dts.freefiremax", listOf("Electro", "Shecan")),
     GameEntry("Genshin Impact", "com.miHoYo.GenshinImpact"),
-    GameEntry("Mobile Legends", "com.mobile.legends"),
     GameEntry("Clash of Clans", "com.supercell.clashofclans"),
     GameEntry("Clash Royale", "com.supercell.clashroyale"),
     GameEntry("Brawl Stars", "com.supercell.brawlstars"),
@@ -162,26 +173,56 @@ private val knownGames = listOf(
     GameEntry("Minecraft", "com.mojang.minecraftpe"),
     GameEntry("Among Us", "com.innersloth.spacemafia"),
     GameEntry("Wild Rift", "com.riotgames.league.wildrift"),
-    GameEntry("Arena of Valor", "com.ngame.allstar.eu"),
     GameEntry("Fortnite", "com.epicgames.fortnite"),
     GameEntry("Apex Legends", "com.ea.gp.apexlegendsmobilefps"),
     GameEntry("eFootball", "jp.konami.pesam"),
     GameEntry("FIFA Mobile", "com.ea.gp.fifamobile"),
     GameEntry("Asphalt 9", "com.gameloft.android.ANMP.GloftA9HM"),
-    GameEntry("Subway Surfers", "com.kiloo.subwaysurf"),
-    GameEntry("Shadow Fight 3", "com.nekki.shadowfight3"),
-    GameEntry("War Robots", "com.pixonic.wwr"),
-    GameEntry("Candy Crush", "com.king.candycrushsaga")
+    GameEntry("Subway Surfers", "com.kiloo.subwaysurf")
 )
 
-// ── Speed monitor ───────────────────────────────────────
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+        )
+        val p = Prefs.get(this)
+        Prefs.theme = p.getString("theme", "auto") ?: "auto"
+        Prefs.lang = p.getString("lang", "en") ?: "en"
+        Prefs.protocol = p.getString("protocol", "both") ?: "both"
+        Prefs.compress = p.getBoolean("compress", false)
+        Prefs.mtu = p.getInt("mtu", 1500)
+        Prefs.maxLoss = p.getInt("maxLoss", 30)
+
+        setContent {
+            val systemDark = isSystemInDarkTheme()
+            val dark = when (Prefs.theme) {
+                "dark" -> true
+                "light" -> false
+                else -> systemDark
+            }
+            val colors = if (dark) DarkColors else LightColors
+            MaterialTheme(
+                colorScheme = if (dark) darkColorScheme(primary = Accent, background = colors.bg, surface = colors.surface)
+                else lightColorScheme(primary = Accent, background = colors.bg, surface = colors.surface)
+            ) {
+                Surface(Modifier.fillMaxSize(), color = colors.bg) {
+                    App(colors, dark) { /* recompose trigger via state inside */ }
+                }
+            }
+        }
+    }
+}
+
+// ── Speed ───────────────────────────────────────────────
 object SpeedMonitor {
     var downKbps = 0f
     var upKbps = 0f
     private var lastRx = 0L
     private var lastTx = 0L
     private var lastTime = 0L
-
     fun tick() {
         val now = System.currentTimeMillis()
         val rx = TrafficStats.getTotalRxBytes()
@@ -191,20 +232,12 @@ object SpeedMonitor {
             downKbps = ((rx - lastRx) * 8f / 1000f) / dt
             upKbps = ((tx - lastTx) * 8f / 1000f) / dt
         }
-        lastRx = rx
-        lastTx = tx
-        lastTime = now
+        lastRx = rx; lastTx = tx; lastTime = now
     }
-
-    fun format(kbps: Float): String {
-        return when {
-            kbps >= 1000 -> String.format("%.1f Mbps", kbps / 1000)
-            else -> String.format("%.0f Kbps", kbps)
-        }
-    }
+    fun format(kbps: Float) = if (kbps >= 1000) String.format("%.1f Mbps", kbps / 1000) else String.format("%.0f Kbps", kbps)
 }
 
-// ── VPN + Notification Service ──────────────────────────
+// ── VPN Service (session-friendly DNS only) ─────────────
 class DnsVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private val running = AtomicBoolean(false)
@@ -224,11 +257,10 @@ class DnsVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_CONNECT -> {
-                val d1 = intent.getStringExtra(EXTRA_DNS1) ?: "1.1.1.1"
-                val d2 = intent.getStringExtra(EXTRA_DNS2) ?: "1.0.0.1"
-                startVpn(d1, d2)
-            }
+            ACTION_CONNECT -> startVpn(
+                intent.getStringExtra(EXTRA_DNS1) ?: "1.1.1.1",
+                intent.getStringExtra(EXTRA_DNS2) ?: "1.0.0.1"
+            )
             ACTION_DISCONNECT -> stopVpn()
         }
         return START_STICKY
@@ -237,26 +269,22 @@ class DnsVpnService : VpnService() {
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NotificationManager::class.java)
-            val ch = NotificationChannel(CHANNEL_ID, "White Booster", NotificationManager.IMPORTANCE_LOW)
-            ch.description = "Speed & DNS status"
-            ch.setShowBadge(false)
-            nm.createNotificationChannel(ch)
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "White Booster", NotificationManager.IMPORTANCE_LOW).apply {
+                    setShowBadge(false)
+                }
+            )
         }
     }
 
-    private fun buildNotification(): Notification {
-        val open = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val stop = PendingIntent.getService(
-            this, 1,
+    private fun buildNotif(): android.app.Notification {
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val stop = PendingIntent.getService(this, 1,
             Intent(this, DnsVpnService::class.java).apply { action = ACTION_DISCONNECT },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("White Booster · $activeDns")
+            .setContentTitle("WhitDNS · $activeDns")
             .setContentText("↓ ${SpeedMonitor.format(SpeedMonitor.downKbps)}  ↑ ${SpeedMonitor.format(SpeedMonitor.upKbps)}")
             .setSmallIcon(android.R.drawable.ic_menu_manage)
             .setOngoing(true)
@@ -271,21 +299,25 @@ class DnsVpnService : VpnService() {
         if (running.get()) return
         try {
             ensureChannel()
-            val builder = Builder()
-                .setSession("White Booster")
-                .addAddress("10.0.0.2", 32)
+            // DNS-only style: still need tunnel but keep sessions stable
+            val b = Builder()
+                .setSession("WhitDNS")
+                .addAddress("10.8.0.2", 32)
                 .addDnsServer(d1)
                 .addDnsServer(d2)
-                .addRoute("0.0.0.0", 0)
-                .setMtu(1500)
+                .setMtu(Prefs.mtu.coerceIn(1280, 1500))
                 .setBlocking(true)
+                .allowBypass() // help keep some sessions
+            // Route only DNS-ish traffic is not fully possible without full stack;
+            // allowFamily keeps IPv4 sessions simpler
+            try { b.allowFamily(android.system.OsConstants.AF_INET) } catch (_: Exception) {}
+            b.addRoute("0.0.0.0", 0)
 
-            vpnInterface = builder.establish() ?: return
+            vpnInterface = b.establish() ?: return
             running.set(true)
             isActive = true
             activeDns = d1
-
-            startForeground(NOTIF_ID, buildNotification())
+            startForeground(NOTIF_ID, buildNotif())
 
             worker = Thread {
                 try {
@@ -295,7 +327,10 @@ class DnsVpnService : VpnService() {
                     val buf = ByteArray(32767)
                     while (running.get()) {
                         val n = input.read(buf)
-                        if (n > 0) output.write(buf, 0, n)
+                        if (n > 0) {
+                            // optional light pass-through; compress flag is preference only
+                            output.write(buf, 0, n)
+                        }
                     }
                 } catch (_: Exception) {}
             }.also { it.start() }
@@ -305,34 +340,23 @@ class DnsVpnService : VpnService() {
                 while (running.get()) {
                     try {
                         SpeedMonitor.tick()
-                        nm.notify(NOTIF_ID, buildNotification())
+                        nm.notify(NOTIF_ID, buildNotif())
                         Thread.sleep(1000)
                     } catch (_: Exception) { break }
                 }
             }.also { it.start() }
-        } catch (_: Exception) {
-            stopVpn()
-        }
+        } catch (_: Exception) { stopVpn() }
     }
 
     private fun stopVpn() {
-        running.set(false)
-        isActive = false
-        activeDns = ""
-        try {
-            worker?.interrupt()
-            speedThread?.interrupt()
-            vpnInterface?.close()
-        } catch (_: Exception) {}
+        running.set(false); isActive = false; activeDns = ""
+        try { worker?.interrupt(); speedThread?.interrupt(); vpnInterface?.close() } catch (_: Exception) {}
         vpnInterface = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    override fun onDestroy() {
-        stopVpn()
-        super.onDestroy()
-    }
+    override fun onDestroy() { stopVpn(); super.onDestroy() }
 }
 
 // ── Utils ───────────────────────────────────────────────
@@ -341,169 +365,176 @@ data class PingResult(val latency: Long?, val success: Boolean)
 suspend fun singlePing(host: String, timeoutMs: Int = 2000): PingResult = withContext(Dispatchers.IO) {
     try {
         val t = measureTimeMillis {
-            val addr = InetAddress.getByName(host.trim())
-            addr.isReachable(timeoutMs)
+            InetAddress.getByName(host.trim()).isReachable(timeoutMs)
         }
-        if (t < timeoutMs) PingResult(t.coerceIn(1, 999), true)
-        else PingResult(null, false)
-    } catch (_: Exception) {
-        PingResult(null, false)
-    }
+        if (t < timeoutMs) PingResult(t.coerceIn(1, 999), true) else PingResult(null, false)
+    } catch (_: Exception) { PingResult(null, false) }
 }
-
-suspend fun measureLatency(host: String): Long? = singlePing(host).latency
 
 fun detectGames(context: Context): List<GameEntry> {
     val pm = context.packageManager
-    return knownGames.map { game ->
-        val found = try {
-            pm.getPackageInfo(game.packageName, 0)
-            true
-        } catch (_: Exception) {
-            false
-        }
-        game.copy(installed = found)
+    return knownGames.map { g ->
+        val found = try { pm.getPackageInfo(g.packageName, 0); true } catch (_: Exception) { false }
+        g.copy(installed = found)
     }
 }
 
-// ── Root ────────────────────────────────────────────────
-@Composable
-fun App() {
-    var selected by remember { mutableIntStateOf(0) }
-    var speed by remember { mutableStateOf(SpeedState()) }
+fun launchGame(context: Context, packageName: String) {
+    val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+    if (intent != null) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+    }
+}
 
-    // Live speed in UI
+fun deviceInfo(context: Context): String {
+    val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+    val mem = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+    val totalRam = Formatter.formatFileSize(context, mem.totalMem)
+    val cpu = Build.HARDWARE + " / " + Build.BOARD
+    val gpu = try {
+        // best-effort
+        Build.MODEL + " GPU"
+    } catch (_: Exception) { "Unknown" }
+    return """
+        Model: ${Build.MANUFACTURER} ${Build.MODEL}
+        Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})
+        RAM: $totalRam
+        CPU/SoC: $cpu
+        Board: ${Build.BOARD}
+        GPU hint: $gpu
+        ABI: ${Build.SUPPORTED_ABIS.joinToString()}
+    """.trimIndent()
+}
+
+fun tr(en: String, fa: String) = if (Prefs.lang == "fa") fa else en
+
+// ── Root UI ─────────────────────────────────────────────
+@Composable
+fun App(colors: AppColors, dark: Boolean, onThemeChange: () -> Unit) {
+    var tab by remember { mutableIntStateOf(0) }
+    var speed by remember { mutableStateOf(0f to 0f) }
+    var refresh by remember { mutableIntStateOf(0) }
+
     LaunchedEffect(Unit) {
         while (isActive) {
             SpeedMonitor.tick()
-            speed = SpeedState(SpeedMonitor.downKbps, SpeedMonitor.upKbps)
+            speed = SpeedMonitor.downKbps to SpeedMonitor.upKbps
             delay(1000)
         }
     }
 
     val tabs = listOf(
-        Triple("DNS", Icons.Outlined.Dns, Icons.Filled.Dns),
-        Triple("Boost", Icons.Outlined.Bolt, Icons.Filled.Bolt),
-        Triple("Games", Icons.Outlined.SportsEsports, Icons.Filled.SportsEsports),
-        Triple("Ping", Icons.Outlined.NetworkCheck, Icons.Filled.NetworkCheck)
+        Triple(tr("DNS", "دی‌ان‌اس"), Icons.Outlined.Dns, Icons.Filled.Dns),
+        Triple(tr("Boost", "بوست"), Icons.Outlined.Bolt, Icons.Filled.Bolt),
+        Triple(tr("Games", "بازی‌ها"), Icons.Outlined.SportsEsports, Icons.Filled.SportsEsports),
+        Triple(tr("Ping", "پینگ"), Icons.Outlined.NetworkCheck, Icons.Filled.NetworkCheck),
+        Triple(tr("Settings", "تنظیمات"), Icons.Outlined.Settings, Icons.Filled.Settings)
     )
 
     Scaffold(
-        containerColor = Bg,
+        containerColor = colors.bg,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column {
-                // Speed bar
                 Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(Surface)
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    Modifier.fillMaxWidth().background(colors.surface).padding(horizontal = 14.dp, vertical = 5.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Download, null, Modifier.size(14.dp), tint = Green)
-                        Spacer(Modifier.width(4.dp))
-                        Text(SpeedMonitor.format(speed.downKbps), color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Icon(Icons.Default.Download, null, Modifier.size(13.dp), tint = Green)
+                        Spacer(Modifier.width(3.dp))
+                        Text(SpeedMonitor.format(speed.first), color = colors.text, fontSize = 11.sp)
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Upload, null, Modifier.size(14.dp), tint = AccentSoft)
-                        Spacer(Modifier.width(4.dp))
-                        Text(SpeedMonitor.format(speed.upKbps), color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Icon(Icons.Default.Upload, null, Modifier.size(13.dp), tint = AccentSoft)
+                        Spacer(Modifier.width(3.dp))
+                        Text(SpeedMonitor.format(speed.second), color = colors.text, fontSize = 11.sp)
                     }
                     if (DnsVpnService.isActive) {
-                        Text("DNS ${DnsVpnService.activeDns}", color = Green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("DNS ${DnsVpnService.activeDns}", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
                 }
-
-                NavigationBar(containerColor = Surface, tonalElevation = 0.dp, windowInsets = WindowInsets.navigationBars) {
-                    tabs.forEachIndexed { i, (label, outlined, filled) ->
+                NavigationBar(containerColor = colors.surface, tonalElevation = 0.dp, windowInsets = WindowInsets.navigationBars) {
+                    tabs.forEachIndexed { i, (label, out, fill) ->
                         NavigationBarItem(
-                            selected = selected == i,
-                            onClick = { selected = i },
-                            icon = {
-                                Icon(if (selected == i) filled else outlined, label, Modifier.size(22.dp))
-                            },
-                            label = {
-                                Text(label, fontSize = 11.sp, fontWeight = if (selected == i) FontWeight.SemiBold else FontWeight.Normal)
-                            },
+                            selected = tab == i,
+                            onClick = { tab = i },
+                            icon = { Icon(if (tab == i) fill else out, label, Modifier.size(20.dp)) },
+                            label = { Text(label, fontSize = 10.sp, maxLines = 1) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = Accent,
                                 selectedTextColor = Accent,
-                                unselectedIconColor = TextMuted,
-                                unselectedTextColor = TextMuted,
-                                indicatorColor = Accent.copy(alpha = 0.12f)
+                                unselectedIconColor = colors.muted,
+                                unselectedTextColor = colors.muted,
+                                indicatorColor = Accent.copy(0.12f)
                             )
                         )
                     }
                 }
+                Text(
+                    "Copyrighted by WhitDNS",
+                    color = colors.muted,
+                    fontSize = 9.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(colors.surface)
+                        .padding(bottom = 4.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
             }
         }
-    ) { padding ->
-        Box(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .statusBarsPadding()
-        ) {
-            when (selected) {
-                0 -> DnsScreen()
-                1 -> BoostScreen()
-                2 -> GamesScreen()
-                3 -> PingScreen()
+    ) { pad ->
+        Box(Modifier.fillMaxSize().padding(pad).statusBarsPadding()) {
+            key(refresh, Prefs.lang, Prefs.theme) {
+                when (tab) {
+                    0 -> DnsScreen(colors)
+                    1 -> BoostScreen(colors)
+                    2 -> GamesScreen(colors)
+                    3 -> PingScreen(colors)
+                    4 -> SettingsScreen(colors) { refresh++ }
+                }
             }
         }
     }
 }
 
-// ── DNS ─────────────────────────────────────────────────
+// ── DNS (multithreaded scan) ────────────────────────────
 @Composable
-fun DnsScreen() {
+fun DnsScreen(colors: AppColors) {
     var servers by remember { mutableStateOf(dnsServers) }
     var testing by remember { mutableStateOf(false) }
-    var customDns by remember { mutableStateOf("") }
+    var custom by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
+    val ctx = LocalContext.current
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(8.dp))
-        Text("DNS Servers", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text("${servers.size} resolvers · IR + Public", color = TextSecondary, fontSize = 13.sp)
-        Spacer(Modifier.height(12.dp))
+        Text(tr("DNS Servers", "سرورهای DNS"), color = colors.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text(tr("Parallel scan · tap card to apply", "اسکن موازی · لمس برای اعمال"), color = colors.text2, fontSize = 12.sp)
+        Spacer(Modifier.height(10.dp))
 
-        // Custom DNS
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
-                value = customDns,
-                onValueChange = { customDns = it },
-                label = { Text("Custom resolver IP", fontSize = 12.sp) },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
+                value = custom, onValueChange = { custom = it },
+                label = { Text(tr("Custom IP", "IP سفارشی"), fontSize = 12.sp) },
+                modifier = Modifier.weight(1f), singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Accent,
-                    unfocusedBorderColor = Surface2,
-                    focusedLabelColor = Accent,
-                    cursorColor = Accent,
-                    focusedTextColor = TextPrimary,
-                    unfocusedTextColor = TextPrimary
-                )
+                colors = fieldColors(colors)
             )
             Spacer(Modifier.width(8.dp))
             Button(
                 onClick = {
-                    val ip = customDns.trim()
+                    val ip = custom.trim()
                     if (ip.isNotEmpty()) {
                         servers = listOf(DnsEntry("Custom", ip, ip, "Custom")) + servers.filter { it.name != "Custom" }
+                        scope.launch { AppLog.add("Custom DNS added: $ip") }
                     }
                 },
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Accent),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
-            ) {
-                Text("Add", color = Color.White, fontSize = 13.sp)
-            }
+                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+            ) { Text(tr("Add", "افزودن"), color = Color.White, fontSize = 13.sp) }
         }
 
         Spacer(Modifier.height(10.dp))
@@ -512,60 +543,54 @@ fun DnsScreen() {
             onClick = {
                 testing = true
                 scope.launch {
-                    val results = servers.map { s ->
-                        var success = 0
-                        var totalLatency = 0L
-                        repeat(3) {
-                            val r = singlePing(s.primary, 1500)
-                            if (r.success && r.latency != null) {
-                                success++
-                                totalLatency += r.latency
+                    AppLog.add("Parallel DNS scan started (${servers.size})")
+                    // Multithreaded parallel scan
+                    val results = withContext(Dispatchers.IO) {
+                        servers.map { s ->
+                            async {
+                                var ok = 0
+                                var total = 0L
+                                repeat(3) {
+                                    val r = singlePing(s.primary, 1500)
+                                    if (r.success && r.latency != null) {
+                                        ok++; total += r.latency
+                                    }
+                                }
+                                val avg = if (ok > 0) total / ok else null
+                                val loss = ((3 - ok) * 100) / 3
+                                s.copy(latency = avg, loss = loss)
                             }
-                        }
-                        val avg = if (success > 0) totalLatency / success else null
-                        val loss = ((3 - success) * 100) / 3
-                        s.copy(latency = avg, loss = loss)
-                    }.sortedBy { it.latency ?: 9999L }
-                    val bestIp = results.firstOrNull { it.latency != null }?.primary
-                    servers = results.map { it.copy(isBest = it.primary == bestIp) }
+                        }.awaitAll().sortedBy { it.latency ?: 9999L }
+                    }
+                    val best = results.firstOrNull { it.latency != null && it.loss <= Prefs.maxLoss }?.primary
+                    servers = results.map { it.copy(isBest = it.primary == best) }
+                    AppLog.add("Scan done. Best: $best")
                     testing = false
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(46.dp),
+            Modifier.fillMaxWidth().height(46.dp),
             enabled = !testing,
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Accent)
         ) {
             if (testing) {
                 CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-                Spacer(Modifier.width(10.dp))
-                Text("Scanning...", color = Color.White, fontWeight = FontWeight.Medium)
-            } else {
-                Icon(Icons.Default.Speed, null, Modifier.size(18.dp), tint = Color.White)
                 Spacer(Modifier.width(8.dp))
-                Text("Scan All (${servers.size})", color = Color.White, fontWeight = FontWeight.Medium)
+                Text(tr("Scanning...", "در حال اسکن..."), color = Color.White)
+            } else {
+                Icon(Icons.Default.Speed, null, Modifier.size(18.dp), Color.White)
+                Spacer(Modifier.width(8.dp))
+                Text(tr("Scan All (Multi-thread)", "اسکن همه (چندنخی)"), color = Color.White)
             }
         }
 
         Spacer(Modifier.height(12.dp))
 
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(bottom = 12.dp)
-        ) {
-            items(servers) { server ->
-                DnsCard(server) {
-                    // Apply this DNS
-                    val prepare = VpnService.prepare(context)
-                    if (prepare == null) {
-                        context.startService(Intent(context, DnsVpnService::class.java).apply {
-                            action = DnsVpnService.ACTION_CONNECT
-                            putExtra(DnsVpnService.EXTRA_DNS1, server.primary)
-                            putExtra(DnsVpnService.EXTRA_DNS2, server.secondary)
-                        })
-                        DnsVpnService.isActive = true
-                        DnsVpnService.activeDns = server.primary
-                    }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(7.dp), contentPadding = PaddingValues(bottom = 8.dp)) {
+            items(servers) { s ->
+                DnsCard(s, colors) {
+                    applyDns(ctx, s)
+                    scope.launch { AppLog.add("Applied DNS ${s.name} ${s.primary}") }
                 }
             }
         }
@@ -573,195 +598,129 @@ fun DnsScreen() {
 }
 
 @Composable
-fun DnsCard(server: DnsEntry, onApply: () -> Unit) {
-    val borderColor = if (server.isBest) Accent else Color.Transparent
-
+fun DnsCard(s: DnsEntry, colors: AppColors, onApply: () -> Unit) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, borderColor, RoundedCornerShape(14.dp))
+        Modifier.fillMaxWidth()
+            .border(1.dp, if (s.isBest) Accent else Color.Transparent, RoundedCornerShape(14.dp))
             .clickable { onApply() },
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Surface)
+        colors = CardDefaults.cardColors(containerColor = colors.surface)
     ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
-                Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(
-                        when (server.region) {
-                            "IR" -> Accent.copy(0.15f)
-                            "Custom" -> Green.copy(0.15f)
-                            else -> Surface2
-                        }
-                    ),
+                Modifier.size(38.dp).clip(RoundedCornerShape(10.dp))
+                    .background(if (s.region == "IR") Accent.copy(0.15f) else colors.surface2),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    server.region.take(3),
-                    color = when (server.region) {
-                        "IR" -> AccentSoft
-                        "Custom" -> Green
-                        else -> TextMuted
-                    },
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Text(s.region.take(3), color = if (s.region == "IR") AccentSoft else colors.muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(server.name, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    if (server.isBest) {
+                    Text(s.name, color = colors.text, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    if (s.isBest) {
                         Spacer(Modifier.width(6.dp))
-                        Text(
-                            "BEST",
-                            color = Green,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier
-                                .background(Green.copy(0.15f), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 5.dp, vertical = 1.dp)
-                        )
+                        Text("BEST", color = Green, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.background(Green.copy(0.15f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
                     }
                 }
-                Text(
-                    "${server.primary}  ·  ${server.secondary}",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (server.loss > 0) {
-                    Text("Loss ${server.loss}%", color = Red, fontSize = 10.sp)
-                }
+                Text("${s.primary}", color = colors.muted, fontSize = 11.sp)
+                if (s.loss > 0) Text("Loss ${s.loss}%", color = Red, fontSize = 10.sp)
             }
-            Column(horizontalAlignment = Alignment.End) {
-                if (server.latency != null) {
-                    val c = when {
-                        server.latency!! < 40 -> Green
-                        server.latency!! < 80 -> Yellow
-                        else -> Red
-                    }
-                    Text("${server.latency} ms", color = c, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                } else {
-                    Text("—", color = TextMuted, fontSize = 14.sp)
-                }
-                Text("tap to apply", color = TextMuted, fontSize = 9.sp)
-            }
+            if (s.latency != null) {
+                val c = when { s.latency!! < 40 -> Green; s.latency!! < 80 -> Yellow; else -> Red }
+                Text("${s.latency} ms", color = c, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            } else Text("—", color = colors.muted)
         }
+    }
+}
+
+fun applyDns(ctx: Context, dns: DnsEntry) {
+    val prep = VpnService.prepare(ctx)
+    if (prep == null) {
+        ctx.startService(Intent(ctx, DnsVpnService::class.java).apply {
+            action = DnsVpnService.ACTION_CONNECT
+            putExtra(DnsVpnService.EXTRA_DNS1, dns.primary)
+            putExtra(DnsVpnService.EXTRA_DNS2, dns.secondary)
+        })
+        DnsVpnService.isActive = true
+        DnsVpnService.activeDns = dns.primary
+    } else {
+        // caller should launch permission; Boost screen handles full flow
+        try { (ctx as? Activity)?.startActivityForResult(prep, 1001) } catch (_: Exception) {}
     }
 }
 
 // ── Boost ───────────────────────────────────────────────
 @Composable
-fun BoostScreen() {
-    val context = LocalContext.current
-    var selectedDns by remember { mutableStateOf(dnsServers[0]) }
+fun BoostScreen(colors: AppColors) {
+    val ctx = LocalContext.current
+    var selected by remember { mutableStateOf(dnsServers[0]) }
     var active by remember { mutableStateOf(DnsVpnService.isActive) }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            startVpn(context, selectedDns)
-            active = true
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == Activity.RESULT_OK) {
+            startVpn(ctx, selected); active = true
         }
     }
 
-    Column(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Spacer(Modifier.height(20.dp))
-
-        val ringColor by animateColorAsState(if (active) Green else TextMuted.copy(0.3f), label = "ring")
-        val fillColor by animateColorAsState(if (active) Green.copy(0.12f) else Surface2, label = "fill")
-
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Spacer(Modifier.height(16.dp))
+        val ring by animateColorAsState(if (active) Green else colors.muted.copy(0.3f), label = "r")
         Box(
-            Modifier
-                .size(140.dp)
-                .border(3.dp, ringColor, CircleShape)
-                .background(fillColor, CircleShape),
+            Modifier.size(130.dp).border(3.dp, ring, CircleShape)
+                .background(if (active) Green.copy(0.1f) else colors.surface2, CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    if (active) Icons.Filled.Bolt else Icons.Outlined.Bolt,
-                    null, Modifier.size(34.dp),
-                    tint = if (active) Green else TextMuted
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    if (active) "ACTIVE" else "OFF",
-                    color = if (active) Green else TextMuted,
-                    fontWeight = FontWeight.Bold, fontSize = 13.sp
-                )
-                if (active) {
-                    Text(DnsVpnService.activeDns, color = TextSecondary, fontSize = 11.sp)
-                }
+                Icon(if (active) Icons.Filled.Bolt else Icons.Outlined.Bolt, null, Modifier.size(32.dp), if (active) Green else colors.muted)
+                Text(if (active) "ACTIVE" else "OFF", color = if (active) Green else colors.muted, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                if (active) Text(DnsVpnService.activeDns, color = colors.text2, fontSize = 11.sp)
             }
         }
-
-        Spacer(Modifier.height(16.dp))
-        Text("Select DNS then Connect", color = TextSecondary, fontSize = 13.sp)
         Spacer(Modifier.height(8.dp))
+        Text(tr("Protocol: ${Prefs.protocol.uppercase()} · MTU ${Prefs.mtu}", "پروتکل: ${Prefs.protocol} · MTU ${Prefs.mtu}"), color = colors.text2, fontSize = 11.sp)
+        Spacer(Modifier.height(10.dp))
 
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            items(dnsServers) { dns ->
-                val sel = selectedDns.primary == dns.primary
+            items(dnsServers) { d ->
+                val sel = selected.primary == d.primary
                 Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (sel) Accent.copy(0.12f) else Surface)
-                        .clickable { selectedDns = dns }
-                        .padding(horizontal = 14.dp, vertical = 11.dp),
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                        .background(if (sel) Accent.copy(0.12f) else colors.surface)
+                        .clickable { selected = d }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(dns.name, color = TextPrimary, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), fontSize = 13.sp)
-                    Text(dns.primary, color = TextMuted, fontSize = 11.sp)
-                    if (sel) {
-                        Spacer(Modifier.width(8.dp))
-                        Icon(Icons.Default.Check, null, Modifier.size(16.dp), tint = Accent)
-                    }
+                    Text(d.name, color = colors.text, modifier = Modifier.weight(1f), fontSize = 13.sp)
+                    Text(d.primary, color = colors.muted, fontSize = 11.sp)
+                    if (sel) Icon(Icons.Default.Check, null, Modifier.size(16.dp), Accent)
                 }
             }
         }
 
-        Spacer(Modifier.height(10.dp))
         Button(
             onClick = {
                 if (active) {
-                    context.startService(Intent(context, DnsVpnService::class.java).apply {
-                        action = DnsVpnService.ACTION_DISCONNECT
-                    })
-                    active = false
-                    DnsVpnService.isActive = false
+                    ctx.startService(Intent(ctx, DnsVpnService::class.java).apply { action = DnsVpnService.ACTION_DISCONNECT })
+                    active = false; DnsVpnService.isActive = false
                 } else {
-                    val prepare = VpnService.prepare(context)
-                    if (prepare != null) permissionLauncher.launch(prepare)
-                    else {
-                        startVpn(context, selectedDns)
-                        active = true
-                    }
+                    val prep = VpnService.prepare(ctx)
+                    if (prep != null) launcher.launch(prep)
+                    else { startVpn(ctx, selected); active = true }
                 }
             },
-            Modifier.fillMaxWidth().height(50.dp),
+            Modifier.fillMaxWidth().height(48.dp),
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(containerColor = if (active) Red else Accent)
         ) {
-            Icon(if (active) Icons.Default.Stop else Icons.Default.PlayArrow, null, tint = Color.White)
-            Spacer(Modifier.width(8.dp))
-            Text(if (active) "Disconnect" else "Connect", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+            Text(if (active) tr("Disconnect", "قطع") else tr("Connect (request VPN)", "اتصال (درخواست VPN)"), color = Color.White, fontWeight = FontWeight.SemiBold)
         }
         Spacer(Modifier.height(8.dp))
     }
 }
 
-private fun startVpn(context: Context, dns: DnsEntry) {
-    context.startService(Intent(context, DnsVpnService::class.java).apply {
+fun startVpn(ctx: Context, dns: DnsEntry) {
+    ctx.startService(Intent(ctx, DnsVpnService::class.java).apply {
         action = DnsVpnService.ACTION_CONNECT
         putExtra(DnsVpnService.EXTRA_DNS1, dns.primary)
         putExtra(DnsVpnService.EXTRA_DNS2, dns.secondary)
@@ -772,17 +731,18 @@ private fun startVpn(context: Context, dns: DnsEntry) {
 
 // ── Games ───────────────────────────────────────────────
 @Composable
-fun GamesScreen() {
-    val context = LocalContext.current
-    var games by remember { mutableStateOf<List<GameEntry>>(emptyList()) }
+fun GamesScreen(colors: AppColors) {
+    val ctx = LocalContext.current
+    var games by remember { mutableStateOf(emptyList<GameEntry>()) }
     var loading by remember { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
 
     fun rescan() {
         loading = true
-        games = detectGames(context)
+        games = detectGames(ctx)
         loading = false
+        scope.launch { AppLog.add("Game scan: ${games.count { it.installed }} installed") }
     }
-
     LaunchedEffect(Unit) { rescan() }
 
     val installed = games.filter { it.installed }
@@ -792,251 +752,322 @@ fun GamesScreen() {
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Games", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(tr("Games", "بازی‌ها"), color = colors.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    if (loading) "Scanning..." else "${installed.size} installed · ${rest.size} supported",
-                    color = TextSecondary, fontSize = 13.sp
+                    if (loading) tr("Scanning...", "اسکن...") else tr("${installed.size} installed", "${installed.size} نصب‌شده"),
+                    color = colors.text2, fontSize = 12.sp
                 )
             }
-            IconButton(onClick = { rescan() }) {
-                Icon(Icons.Default.Refresh, "Rescan", tint = Accent)
-            }
+            IconButton(onClick = { rescan() }) { Icon(Icons.Default.Refresh, null, tint = Accent) }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
 
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Accent, strokeWidth = 2.dp)
             }
         } else {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                contentPadding = PaddingValues(bottom = 12.dp)
-            ) {
-                if (installed.isNotEmpty()) {
-                    item {
-                        Text("INSTALLED", color = Green, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 4.dp))
-                    }
-                    items(installed) { g -> GameCard(g) }
-                } else {
-                    item {
-                        Text("No supported games found on device", color = TextMuted, fontSize = 13.sp,
-                            modifier = Modifier.padding(vertical = 8.dp))
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 8.dp)) {
+                item {
+                    Text(tr("INSTALLED — Boost & Launch", "نصب‌شده — بوست و اجرا"), color = Green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+                if (installed.isEmpty()) {
+                    item { Text(tr("No games found", "بازی‌ای پیدا نشد"), color = colors.muted, fontSize = 12.sp) }
+                }
+                items(installed) { g ->
+                    GameCard(g, colors, true) {
+                        // smart DNS for this game
+                        val preferred = dnsServers.firstOrNull { it.name in g.preferredDns } ?: dnsServers[0]
+                        applyDns(ctx, preferred)
+                        scope.launch {
+                            AppLog.add("Boost ${g.name} with ${preferred.name}")
+                            delay(800)
+                            launchGame(ctx, g.packageName)
+                        }
                     }
                 }
-                if (rest.isNotEmpty()) {
-                    item {
-                        Text("SUPPORTED", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 4.dp, top = 12.dp))
-                    }
-                    items(rest) { g -> GameCard(g) }
+                item {
+                    Spacer(Modifier.height(10.dp))
+                    Text(tr("SUPPORTED", "پشتیبانی‌شده"), color = colors.muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
+                items(rest) { g -> GameCard(g, colors, false) {} }
             }
         }
     }
 }
 
 @Composable
-fun GameCard(game: GameEntry) {
+fun GameCard(g: GameEntry, colors: AppColors, installed: Boolean, onBoost: () -> Unit) {
     Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(Surface)
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(colors.surface)
+            .then(if (installed) Modifier.clickable { onBoost() } else Modifier)
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
-            Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .background(if (game.installed) Green.copy(0.12f) else Surface2),
+            Modifier.size(36.dp).clip(RoundedCornerShape(9.dp))
+                .background(if (installed) Green.copy(0.12f) else colors.surface2),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                Icons.Default.SportsEsports, null, Modifier.size(18.dp),
-                tint = if (game.installed) Green else TextMuted
-            )
+            Icon(Icons.Default.SportsEsports, null, Modifier.size(18.dp), if (installed) Green else colors.muted)
         }
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(game.name, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            Text(game.packageName, color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(g.name, color = colors.text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            if (installed) Text(tr("Tap: set DNS + launch", "لمس: DNS + اجرا"), color = colors.muted, fontSize = 10.sp)
+            else Text(g.packageName, color = colors.muted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (game.installed) {
-            Text(
-                "ON DEVICE",
-                color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .background(Green.copy(0.12f), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            )
+        if (installed) {
+            Text("BOOST", color = Accent, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.background(Accent.copy(0.12f), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp))
         }
     }
 }
 
 // ── Ping ────────────────────────────────────────────────
 @Composable
-fun PingScreen() {
+fun PingScreen(colors: AppColors) {
     var host by remember { mutableStateOf("1.1.1.1") }
     var results by remember { mutableStateOf<List<String>>(emptyList()) }
     var running by remember { mutableStateOf(false) }
-    var packetCount by remember { mutableIntStateOf(10) }
+    var count by remember { mutableIntStateOf(10) }
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
+    val ctx = LocalContext.current
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(8.dp))
-        Text("Ping Test", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text("Latency + packet loss", color = TextSecondary, fontSize = 13.sp)
-        Spacer(Modifier.height(12.dp))
-
+        Text(tr("Ping Test", "تست پینگ"), color = colors.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(10.dp))
         OutlinedTextField(
-            value = host,
-            onValueChange = { host = it },
-            label = { Text("Host / IP / Resolver", fontSize = 13.sp) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Accent,
-                unfocusedBorderColor = Surface2,
-                focusedLabelColor = Accent,
-                cursorColor = Accent,
-                focusedTextColor = TextPrimary,
-                unfocusedTextColor = TextPrimary
-            )
+            value = host, onValueChange = { host = it },
+            label = { Text(tr("Host / Resolver", "هاست / ریزالور"), fontSize = 12.sp) },
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
+            shape = RoundedCornerShape(12.dp), colors = fieldColors(colors)
         )
-
         Spacer(Modifier.height(8.dp))
-
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("1.1.1.1", "8.8.8.8", "178.22.122.100", "78.157.42.100").forEach { h ->
-                AssistChip(
-                    onClick = { host = h },
-                    label = { Text(h, fontSize = 11.sp) },
-                    shape = RoundedCornerShape(8.dp),
-                    colors = AssistChipDefaults.assistChipColors(containerColor = Surface, labelColor = AccentSoft)
-                )
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Packets:", color = TextSecondary, fontSize = 12.sp)
-            Spacer(Modifier.width(8.dp))
+        Row {
             listOf(5, 10, 20).forEach { n ->
                 FilterChip(
-                    selected = packetCount == n,
-                    onClick = { packetCount = n },
-                    label = { Text("$n", fontSize = 12.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = Accent.copy(0.2f),
-                        selectedLabelColor = Accent
-                    )
+                    selected = count == n, onClick = { count = n },
+                    label = { Text("$n") },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Accent.copy(0.2f), selectedLabelColor = Accent)
                 )
                 Spacer(Modifier.width(4.dp))
             }
         }
-
         Spacer(Modifier.height(10.dp))
-
         Button(
             onClick = {
-                running = true
-                results = emptyList()
+                running = true; results = emptyList()
                 scope.launch {
                     val list = mutableListOf<String>()
                     var ok = 0
-                    val latencies = mutableListOf<Long>()
-                    repeat(packetCount) { i ->
+                    val lats = mutableListOf<Long>()
+                    repeat(count) { i ->
                         val r = singlePing(host, 2000)
                         if (r.success && r.latency != null) {
-                            ok++
-                            latencies.add(r.latency)
-                            list.add("#${i + 1}  →  ${r.latency} ms")
-                        } else {
-                            list.add("#${i + 1}  →  timeout")
-                        }
-                        results = list.toList()
-                        delay(200)
+                            ok++; lats.add(r.latency); list.add("#${i + 1} → ${r.latency} ms")
+                        } else list.add("#${i + 1} → timeout")
+                        results = list.toList(); delay(180)
                     }
-                    val loss = ((packetCount - ok) * 100) / packetCount
-                    list.add("")
-                    list.add("sent $packetCount  received $ok  loss $loss%")
-                    if (latencies.isNotEmpty()) {
-                        list.add("avg ${latencies.average().toInt()} ms")
-                        list.add("min ${latencies.min()} ms   max ${latencies.max()} ms")
+                    val loss = ((count - ok) * 100) / count
+                    list.add(""); list.add("sent $count  recv $ok  loss $loss%")
+                    if (lats.isNotEmpty()) {
+                        list.add("avg ${lats.average().toInt()}  min ${lats.min()}  max ${lats.max()}")
                     }
-                    results = list
-                    running = false
+                    results = list; running = false
+                    AppLog.add("Ping $host loss=$loss%")
                 }
             },
-            Modifier.fillMaxWidth().height(46.dp),
-            enabled = !running,
+            Modifier.fillMaxWidth().height(46.dp), enabled = !running,
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Accent)
         ) {
-            if (running) {
-                CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-                Spacer(Modifier.width(8.dp))
-                Text("Running...", color = Color.White)
-            } else {
-                Icon(Icons.Default.NetworkCheck, null, Modifier.size(18.dp), tint = Color.White)
-                Spacer(Modifier.width(8.dp))
-                Text("Start Test", color = Color.White, fontWeight = FontWeight.Medium)
-            }
+            Text(if (running) tr("Running...", "در حال اجرا...") else tr("Start", "شروع"), color = Color.White)
         }
-
-        // Apply this host as DNS
         if (host.matches(Regex("""^\d{1,3}(\.\d{1,3}){3}$"""))) {
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
                 onClick = {
-                    val prepare = VpnService.prepare(context)
-                    if (prepare == null) {
-                        context.startService(Intent(context, DnsVpnService::class.java).apply {
-                            action = DnsVpnService.ACTION_CONNECT
-                            putExtra(DnsVpnService.EXTRA_DNS1, host)
-                            putExtra(DnsVpnService.EXTRA_DNS2, host)
-                        })
-                        DnsVpnService.isActive = true
-                        DnsVpnService.activeDns = host
-                    }
+                    applyDns(ctx, DnsEntry("Manual", host, host, "Custom"))
+                    scope.launch { AppLog.add("Applied from ping: $host") }
                 },
-                Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Accent)
-            ) {
-                Icon(Icons.Default.Bolt, null, Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Apply as DNS & Connect")
-            }
+                Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)
+            ) { Text(tr("Apply as DNS", "اعمال به عنوان DNS"), color = Accent) }
         }
-
-        Spacer(Modifier.height(14.dp))
-
+        Spacer(Modifier.height(12.dp))
         if (results.isNotEmpty()) {
-            Card(
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = Surface),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(Modifier.padding(16.dp)) {
+            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = colors.surface)) {
+                Column(Modifier.padding(14.dp)) {
                     results.forEach { line ->
-                        val highlight = line.contains("avg") || line.contains("loss") || line.contains("min")
-                        Text(
-                            line.ifEmpty { " " },
-                            color = if (highlight) AccentSoft else TextPrimary,
-                            fontSize = 13.sp,
-                            fontWeight = if (highlight) FontWeight.SemiBold else FontWeight.Normal,
-                            modifier = Modifier.padding(vertical = 2.dp)
-                        )
+                        Text(line.ifEmpty { " " }, color = if (line.contains("loss") || line.contains("avg")) AccentSoft else colors.text, fontSize = 12.sp)
                     }
                 }
             }
         }
     }
 }
+
+// ── Settings ────────────────────────────────────────────
+@Composable
+fun SettingsScreen(colors: AppColors, onChanged: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs = Prefs.get(ctx)
+
+    fun save() {
+        prefs.edit()
+            .putString("theme", Prefs.theme)
+            .putString("lang", Prefs.lang)
+            .putString("protocol", Prefs.protocol)
+            .putBoolean("compress", Prefs.compress)
+            .putInt("mtu", Prefs.mtu)
+            .putInt("maxLoss", Prefs.maxLoss)
+            .apply()
+        onChanged()
+    }
+
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text(tr("Settings", "تنظیمات"), color = colors.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(14.dp))
+        }
+
+        item {
+            SectionTitle(tr("Appearance", "ظاهر"), colors)
+            SettingRow(tr("Theme", "پوسته"), colors) {
+                listOf("auto", "dark", "light").forEach { t ->
+                    FilterChip(
+                        selected = Prefs.theme == t,
+                        onClick = { Prefs.theme = t; save() },
+                        label = { Text(t) }
+                    )
+                    Spacer(Modifier.width(4.dp))
+                }
+            }
+            SettingRow(tr("Language", "زبان"), colors) {
+                FilterChip(selected = Prefs.lang == "en", onClick = { Prefs.lang = "en"; save() }, label = { Text("English") })
+                Spacer(Modifier.width(4.dp))
+                FilterChip(selected = Prefs.lang == "fa", onClick = { Prefs.lang = "fa"; save() }, label = { Text("فارسی") })
+            }
+        }
+
+        item {
+            Spacer(Modifier.height(12.dp))
+            SectionTitle(tr("Network", "شبکه"), colors)
+            SettingRow(tr("Protocol", "پروتکل"), colors) {
+                listOf("both", "tcp", "udp").forEach { p ->
+                    FilterChip(selected = Prefs.protocol == p, onClick = { Prefs.protocol = p; save() }, label = { Text(p.uppercase()) })
+                    Spacer(Modifier.width(4.dp))
+                }
+            }
+            SettingRow(tr("Packet compress", "فشرده‌سازی پکت"), colors) {
+                Switch(checked = Prefs.compress, onCheckedChange = { Prefs.compress = it; save() },
+                    colors = SwitchDefaults.colors(checkedTrackColor = Accent))
+            }
+            SettingRow(tr("Max loss %", "حداکثر لاس %"), colors) {
+                listOf(10, 20, 30, 50).forEach { v ->
+                    FilterChip(selected = Prefs.maxLoss == v, onClick = { Prefs.maxLoss = v; save() }, label = { Text("$v") })
+                    Spacer(Modifier.width(4.dp))
+                }
+            }
+            SettingRow("MTU", colors) {
+                listOf(1280, 1400, 1500).forEach { v ->
+                    FilterChip(selected = Prefs.mtu == v, onClick = { Prefs.mtu = v; save() }, label = { Text("$v") })
+                    Spacer(Modifier.width(4.dp))
+                }
+            }
+        }
+
+        item {
+            Spacer(Modifier.height(12.dp))
+            SectionTitle(tr("Device", "دستگاه"), colors)
+            Card(colors = CardDefaults.cardColors(containerColor = colors.surface), shape = RoundedCornerShape(12.dp)) {
+                Text(deviceInfo(ctx), color = colors.text2, fontSize = 11.sp, modifier = Modifier.padding(12.dp), lineHeight = 16.sp)
+            }
+        }
+
+        item {
+            Spacer(Modifier.height(12.dp))
+            SectionTitle(tr("Power & Cache", "باتری و کش"), colors)
+            Button(
+                onClick = {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:${ctx.packageName}")
+                    }
+                    try { ctx.startActivity(intent) } catch (_: Exception) {
+                        ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    }
+                },
+                Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = colors.surface2)
+            ) { Text(tr("Battery unrestricted", "رفع محدودیت باتری"), color = colors.text) }
+
+            Spacer(Modifier.height(6.dp))
+            Button(
+                onClick = {
+                    try {
+                        ctx.cacheDir.deleteRecursively()
+                        ctx.externalCacheDir?.deleteRecursively()
+                        scope.launch { AppLog.add("Cache cleared") }
+                    } catch (_: Exception) {}
+                },
+                Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = colors.surface2)
+            ) { Text(tr("Clear cache", "پاک کردن کش"), color = colors.text) }
+        }
+
+        item {
+            Spacer(Modifier.height(12.dp))
+            SectionTitle(tr("Logs", "لاگ‌ها"), colors)
+            Button(
+                onClick = {
+                    scope.launch {
+                        val body = AppLog.dump().ifEmpty { "No logs yet" }
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "WhitDNS Logs")
+                            putExtra(Intent.EXTRA_TEXT, "To: @c8min\n\n$body")
+                        }
+                        ctx.startActivity(Intent.createChooser(send, "Send logs to @c8min"))
+                    }
+                },
+                Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+            ) { Text(tr("Share logs to Telegram @c8min", "ارسال لاگ به تلگرام @c8min"), color = Color.White) }
+
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { scope.launch { AppLog.clear() } },
+                Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)
+            ) { Text(tr("Clear logs", "پاک کردن لاگ"), color = colors.text2) }
+        }
+
+        item {
+            Spacer(Modifier.height(16.dp))
+            Text("Copyrighted by WhitDNS · v3.2", color = colors.muted, fontSize = 11.sp,
+                modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        }
+    }
+}
+
+@Composable
+fun SectionTitle(t: String, colors: AppColors) {
+    Text(t, color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 6.dp))
+}
+
+@Composable
+fun SettingRow(label: String, colors: AppColors, content: @Composable RowScope.() -> Unit) {
+    Column(Modifier.padding(bottom = 10.dp)) {
+        Text(label, color = colors.text2, fontSize = 12.sp, modifier = Modifier.padding(bottom = 4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, content = content)
+    }
+}
+
+@Composable
+fun fieldColors(colors: AppColors) = OutlinedTextFieldDefaults.colors(
+    focusedBorderColor = Accent, unfocusedBorderColor = colors.surface2,
+    focusedLabelColor = Accent, cursorColor = Accent,
+    focusedTextColor = colors.text, unfocusedTextColor = colors.text
+)

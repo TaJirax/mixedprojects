@@ -11,15 +11,28 @@ android {
         applicationId = "com.whitebooster.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "3.1.0"
+        versionCode = 6
+        versionName = "3.2.0"
         vectorDrawables { useSupportLibrary = true }
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("../keystore/whitebooster.jks")
+            storePassword = "whitebooster"
+            keyAlias = "whitebooster"
+            keyPassword = "whitebooster"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
