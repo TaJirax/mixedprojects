@@ -3,8 +3,6 @@ package com.whitebooster.app
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
@@ -12,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,15 +21,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -39,498 +41,462 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.measureTimeMillis
+
+// ── Colors ──────────────────────────────────────────────
+private val Bg          = Color(0xFF0B0F14)
+private val Surface     = Color(0xFF141A22)
+private val Surface2    = Color(0xFF1C2430)
+private val Accent      = Color(0xFF6C5CE7)
+private val AccentSoft  = Color(0xFFA29BFE)
+private val Green       = Color(0xFF00E676)
+private val Yellow      = Color(0xFFFFD600)
+private val Red         = Color(0xFFFF5252)
+private val TextPrimary = Color(0xFFE8EAED)
+private val TextSecondary = Color(0xFF8B95A5)
+private val TextMuted   = Color(0xFF5A6577)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            WhiteBoosterTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0F1A)) {
-                    WhiteBoosterApp()
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    primary = Accent,
+                    background = Bg,
+                    surface = Surface
+                )
+            ) {
+                Surface(Modifier.fillMaxSize(), color = Bg) {
+                    App()
                 }
             }
         }
     }
 }
 
-// ==================== DATA ====================
-
-data class DnsServer(
+// ── Data ────────────────────────────────────────────────
+data class DnsEntry(
     val name: String,
     val primary: String,
     val secondary: String,
-    val category: String,
-    val description: String,
-    var pingMs: Long? = null,
+    val region: String,
+    var latency: Long? = null,
     var isBest: Boolean = false
 )
 
-data class GameInfo(
+data class GameEntry(
     val name: String,
     val packageName: String,
-    val isInstalled: Boolean = false
+    var installed: Boolean = false
 )
 
-val dnsList = listOf(
-    DnsServer("Shecan", "178.22.122.100", "185.51.200.2", "ایرانی", "بهترین انتخاب برای گیمینگ در ایران"),
-    DnsServer("Electro", "78.157.42.100", "78.157.42.101", "ایرانی", "تأخیر بسیار پایین برای بازی"),
-    DnsServer("403 Online", "10.202.10.10", "10.202.10.11", "ایرانی", "سرعت و پایداری عالی"),
-    DnsServer("Begzar", "185.55.226.26", "185.55.225.25", "ایرانی", "مخصوص کاربران ایرانی"),
-    DnsServer("Radar Game", "10.10.34.35", "10.10.34.36", "ایرانی", "بهینه‌شده مخصوص گیم"),
-    DnsServer("Shelter", "94.103.125.157", "94.103.125.158", "ایرانی", "پایدار و سریع"),
-    DnsServer("Pishgaman", "5.202.100.100", "5.202.100.101", "ایرانی", "سازگار با اکثر اپراتورها"),
-    DnsServer("Cloudflare", "1.1.1.1", "1.0.0.1", "عمومی", "سریع‌ترین DNS جهانی"),
-    DnsServer("Google", "8.8.8.8", "8.8.4.4", "عمومی", "پایدار و همیشه در دسترس"),
-    DnsServer("Quad9", "9.9.9.9", "149.112.112.112", "عمومی", "امن + سریع"),
-    DnsServer("AdGuard", "94.140.14.14", "94.140.15.15", "عمومی", "حذف تبلیغ + سرعت"),
-    DnsServer("OpenDNS", "208.67.222.222", "208.67.220.220", "عمومی", "امنیت بالا"),
-    DnsServer("Level3", "4.2.2.4", "4.2.2.1", "گیمینگ", "کلاسیک گیمینگ"),
-    DnsServer("Verisign", "64.6.64.6", "64.6.65.6", "گیمینگ", "تأخیر پایین"),
-    DnsServer("CleanBrowsing", "185.228.168.9", "185.228.169.9", "گیمینگ", "مناسب خانواده")
+private val dnsServers = listOf(
+    DnsEntry("Shecan", "178.22.122.100", "185.51.200.2", "IR"),
+    DnsEntry("Electro", "78.157.42.100", "78.157.42.101", "IR"),
+    DnsEntry("403.online", "10.202.10.10", "10.202.10.11", "IR"),
+    DnsEntry("Begzar", "185.55.226.26", "185.55.225.25", "IR"),
+    DnsEntry("Radar Game", "10.10.34.35", "10.10.34.36", "IR"),
+    DnsEntry("Shelter", "94.103.125.157", "94.103.125.158", "IR"),
+    DnsEntry("Cloudflare", "1.1.1.1", "1.0.0.1", "Global"),
+    DnsEntry("Google", "8.8.8.8", "8.8.4.4", "Global"),
+    DnsEntry("Quad9", "9.9.9.9", "149.112.112.112", "Global"),
+    DnsEntry("AdGuard", "94.140.14.14", "94.140.15.15", "Global"),
+    DnsEntry("OpenDNS", "208.67.222.222", "208.67.220.220", "Global"),
+    DnsEntry("Level3", "4.2.2.4", "4.2.2.1", "Global")
 )
 
-val knownGames = listOf(
-    GameInfo("Call of Duty Mobile", "com.activision.callofduty.shooter"),
-    GameInfo("PUBG Mobile", "com.tencent.ig"),
-    GameInfo("PUBG Mobile (Global)", "com.pubg.imobile"),
-    GameInfo("Free Fire", "com.dts.freefireth"),
-    GameInfo("Free Fire Max", "com.dts.freefiremax"),
-    GameInfo("Genshin Impact", "com.miHoYo.GenshinImpact"),
-    GameInfo("Mobile Legends", "com.mobile.legends"),
-    GameInfo("Clash of Clans", "com.supercell.clashofclans"),
-    GameInfo("Clash Royale", "com.supercell.clashroyale"),
-    GameInfo("Brawl Stars", "com.supercell.brawlstars"),
-    GameInfo("Roblox", "com.roblox.client"),
-    GameInfo("Minecraft", "com.mojang.minecraftpe"),
-    GameInfo("Among Us", "com.innersloth.spacemafia"),
-    GameInfo("Wild Rift", "com.riotgames.league.wildrift"),
-    GameInfo("Arena of Valor", "com.ngame.allstar.eu"),
-    GameInfo("Fortnite", "com.epicgames.fortnite"),
-    GameInfo("Apex Legends", "com.ea.gp.apexlegendsmobilefps"),
-    GameInfo("Candy Crush", "com.king.candycrushsaga"),
-    GameInfo("eFootball", "jp.konami.pesam"),
-    GameInfo("FIFA Mobile", "com.ea.gp.fifamobile"),
-    GameInfo("Asphalt 9", "com.gameloft.android.ANMP.GloftA9HM"),
-    GameInfo("Subway Surfers", "com.kiloo.subwaysurf"),
-    GameInfo("PES 2021", "jp.konami.pesclubmanager"),
-    GameInfo("Shadow Fight 3", "com.nekki.shadowfight3"),
-    GameInfo("War Robots", "com.pixonic.wwr")
+private val knownGames = listOf(
+    GameEntry("Call of Duty Mobile", "com.activision.callofduty.shooter"),
+    GameEntry("PUBG Mobile", "com.tencent.ig"),
+    GameEntry("PUBG Mobile Global", "com.pubg.imobile"),
+    GameEntry("Free Fire", "com.dts.freefireth"),
+    GameEntry("Free Fire Max", "com.dts.freefiremax"),
+    GameEntry("Genshin Impact", "com.miHoYo.GenshinImpact"),
+    GameEntry("Mobile Legends", "com.mobile.legends"),
+    GameEntry("Clash of Clans", "com.supercell.clashofclans"),
+    GameEntry("Clash Royale", "com.supercell.clashroyale"),
+    GameEntry("Brawl Stars", "com.supercell.brawlstars"),
+    GameEntry("Roblox", "com.roblox.client"),
+    GameEntry("Minecraft", "com.mojang.minecraftpe"),
+    GameEntry("Among Us", "com.innersloth.spacemafia"),
+    GameEntry("Wild Rift", "com.riotgames.league.wildrift"),
+    GameEntry("Arena of Valor", "com.ngame.allstar.eu"),
+    GameEntry("Fortnite", "com.epicgames.fortnite"),
+    GameEntry("Apex Legends", "com.ea.gp.apexlegendsmobilefps"),
+    GameEntry("eFootball", "jp.konami.pesam"),
+    GameEntry("FIFA Mobile", "com.ea.gp.fifamobile"),
+    GameEntry("Asphalt 9", "com.gameloft.android.ANMP.GloftA9HM"),
+    GameEntry("Subway Surfers", "com.kiloo.subwaysurf"),
+    GameEntry("Shadow Fight 3", "com.nekki.shadowfight3"),
+    GameEntry("War Robots", "com.pixonic.wwr"),
+    GameEntry("Candy Crush", "com.king.candycrushsaga")
 )
 
-// ==================== VPN SERVICE ====================
-
+// ── VPN Service ─────────────────────────────────────────
 class DnsVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
-    private val isRunning = AtomicBoolean(false)
-    private var vpnThread: Thread? = null
+    private val running = AtomicBoolean(false)
+    private var thread: Thread? = null
 
     companion object {
-        const val ACTION_CONNECT = "com.whitebooster.app.CONNECT"
-        const val ACTION_DISCONNECT = "com.whitebooster.app.DISCONNECT"
+        const val ACTION_CONNECT = "CONNECT"
+        const val ACTION_DISCONNECT = "DISCONNECT"
         const val EXTRA_DNS1 = "dns1"
         const val EXTRA_DNS2 = "dns2"
-        var isVpnActive = false
-        var currentDns: String = ""
+        var isActive = false
+        var activeDns = ""
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_CONNECT -> {
-                val dns1 = intent.getStringExtra(EXTRA_DNS1) ?: "1.1.1.1"
-                val dns2 = intent.getStringExtra(EXTRA_DNS2) ?: "1.0.0.1"
-                startVpn(dns1, dns2)
+                val d1 = intent.getStringExtra(EXTRA_DNS1) ?: "1.1.1.1"
+                val d2 = intent.getStringExtra(EXTRA_DNS2) ?: "1.0.0.1"
+                start(d1, d2)
             }
-            ACTION_DISCONNECT -> stopVpn()
+            ACTION_DISCONNECT -> stop()
         }
         return START_STICKY
     }
 
-    private fun startVpn(dns1: String, dns2: String) {
-        if (isRunning.get()) return
+    private fun start(d1: String, d2: String) {
+        if (running.get()) return
         try {
             val builder = Builder()
-            builder.setSession("White Booster")
-            builder.addAddress("10.0.0.2", 32)
-            builder.addDnsServer(dns1)
-            builder.addDnsServer(dns2)
-            builder.addRoute("0.0.0.0", 0)
-            builder.setMtu(1500)
-            builder.setBlocking(true)
+                .setSession("White Booster")
+                .addAddress("10.0.0.2", 32)
+                .addDnsServer(d1)
+                .addDnsServer(d2)
+                .addRoute("0.0.0.0", 0)
+                .setMtu(1500)
+                .setBlocking(true)
 
-            vpnInterface = builder.establish()
-            if (vpnInterface == null) return
+            vpnInterface = builder.establish() ?: return
+            running.set(true)
+            isActive = true
+            activeDns = "$d1"
 
-            isRunning.set(true)
-            isVpnActive = true
-            currentDns = "$dns1 / $dns2"
-
-            vpnThread = Thread {
+            thread = Thread {
                 try {
                     val fd = vpnInterface!!.fileDescriptor
                     val input = FileInputStream(fd)
                     val output = FileOutputStream(fd)
-                    val buffer = ByteArray(32767)
-
-                    while (isRunning.get()) {
-                        val length = input.read(buffer)
-                        if (length > 0) {
-                            // Simple pass-through (DNS is handled by system via addDnsServer)
-                            output.write(buffer, 0, length)
-                        }
+                    val buf = ByteArray(32767)
+                    while (running.get()) {
+                        val n = input.read(buf)
+                        if (n > 0) output.write(buf, 0, n)
                     }
-                } catch (_: Exception) {
-                }
-            }
-            vpnThread?.start()
+                } catch (_: Exception) {}
+            }.also { it.start() }
         } catch (_: Exception) {
-            stopVpn()
+            stop()
         }
     }
 
-    private fun stopVpn() {
-        isRunning.set(false)
-        isVpnActive = false
-        currentDns = ""
+    private fun stop() {
+        running.set(false)
+        isActive = false
+        activeDns = ""
         try {
-            vpnThread?.interrupt()
+            thread?.interrupt()
             vpnInterface?.close()
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
         vpnInterface = null
         stopSelf()
     }
 
     override fun onDestroy() {
-        stopVpn()
+        stop()
         super.onDestroy()
     }
 }
 
-// ==================== UTILS ====================
-
-suspend fun measurePing(host: String, timeoutMs: Int = 2000): Long? = withContext(Dispatchers.IO) {
+// ── Utils ───────────────────────────────────────────────
+suspend fun measureLatency(host: String): Long? = withContext(Dispatchers.IO) {
     try {
-        val cleanHost = host.trim()
-        // Method 1: DNS resolve time
-        val resolveTime = measureTimeMillis {
-            InetAddress.getByName(cleanHost)
-        }
-        // Method 2: UDP-like reachability approximation
-        val reachable = try {
-            val addr = InetAddress.getByName(cleanHost)
-            addr.isReachable(timeoutMs)
-        } catch (_: Exception) {
-            false
-        }
-        if (reachable || resolveTime < timeoutMs) {
-            resolveTime.coerceIn(1, 999)
-        } else null
-    } catch (_: Exception) {
-        null
-    }
+        val t = measureTimeMillis { InetAddress.getByName(host.trim()) }
+        if (t < 2500) t.coerceIn(1, 999) else null
+    } catch (_: Exception) { null }
 }
 
-fun getInstalledGames(context: Context): List<GameInfo> {
+fun detectGames(context: Context): List<GameEntry> {
     val pm = context.packageManager
     return knownGames.map { game ->
-        val installed = try {
+        val found = try {
             pm.getPackageInfo(game.packageName, 0)
             true
-        } catch (_: Exception) {
-            false
-        }
-        game.copy(isInstalled = installed)
+        } catch (_: Exception) { false }
+        game.copy(installed = found)
     }
 }
 
-// ==================== UI ====================
-
-@OptIn(ExperimentalMaterial3Api::class)
+// ── Root UI ─────────────────────────────────────────────
 @Composable
-fun WhiteBoosterApp() {
-    var selectedTab by remember { mutableStateOf(0) }
-    val tabs = listOf("DNS", "VPN", "بازی‌ها", "تست", "راهنما")
-    val context = LocalContext.current
+fun App() {
+    var selected by remember { mutableIntStateOf(0) }
+
+    val tabs = listOf(
+        Triple("DNS", Icons.Outlined.Dns, Icons.Filled.Dns),
+        Triple("Boost", Icons.Outlined.Bolt, Icons.Filled.Bolt),
+        Triple("Games", Icons.Outlined.SportsEsports, Icons.Filled.SportsEsports),
+        Triple("Ping", Icons.Outlined.NetworkCheck, Icons.Filled.NetworkCheck)
+    )
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("⚡ ", fontSize = 20.sp)
-                        Text("White Booster", fontWeight = FontWeight.Bold, color = Color.White)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF0D1520)),
-                actions = {
-                    if (DnsVpnService.isVpnActive) {
-                        Text(
-                            "فعال",
-                            color = Color(0xFF00E676),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(end = 12.dp)
-                        )
-                    }
-                }
-            )
-        },
-        containerColor = Color(0xFF0A0F1A)
-    ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            // Status bar
-            if (DnsVpnService.isVpnActive) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF004D40))
-                        .padding(8.dp)
-                ) {
-                    Text(
-                        "🟢 VPN فعال | DNS: ${DnsVpnService.currentDns}",
-                        color = Color.White,
-                        fontSize = 12.sp,
-                        modifier = Modifier.align(Alignment.Center)
-                    )
-                }
-            }
-
-            TabRow(
-                selectedTabIndex = selectedTab,
-                containerColor = Color(0xFF0D1520),
-                contentColor = Color(0xFF00D4FF)
+        containerColor = Bg,
+        bottomBar = {
+            NavigationBar(
+                containerColor = Surface,
+                tonalElevation = 0.dp
             ) {
-                tabs.forEachIndexed { index, title ->
-                    Tab(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        text = {
-                            Text(
-                                title,
-                                fontSize = 12.sp,
-                                color = if (selectedTab == index) Color(0xFF00D4FF) else Color(0xFF607D8B)
+                tabs.forEachIndexed { i, (label, outlined, filled) ->
+                    NavigationBarItem(
+                        selected = selected == i,
+                        onClick = { selected = i },
+                        icon = {
+                            Icon(
+                                if (selected == i) filled else outlined,
+                                contentDescription = label,
+                                modifier = Modifier.size(22.dp)
                             )
-                        }
+                        },
+                        label = {
+                            Text(label, fontSize = 11.sp, fontWeight = if (selected == i) FontWeight.SemiBold else FontWeight.Normal)
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Accent,
+                            selectedTextColor = Accent,
+                            unselectedIconColor = TextMuted,
+                            unselectedTextColor = TextMuted,
+                            indicatorColor = Accent.copy(alpha = 0.12f)
+                        )
                     )
                 }
             }
-
-            when (selectedTab) {
+        }
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            when (selected) {
                 0 -> DnsScreen()
-                1 -> VpnScreen()
+                1 -> BoostScreen()
                 2 -> GamesScreen()
-                3 -> PingTestScreen()
-                4 -> GuideScreen()
+                3 -> PingScreen()
             }
         }
     }
 }
 
+// ── DNS Screen ──────────────────────────────────────────
 @Composable
 fun DnsScreen() {
-    var servers by remember { mutableStateOf(dnsList) }
-    var selected by remember { mutableStateOf<DnsServer?>(null) }
-    var isTesting by remember { mutableStateOf(false) }
+    var servers by remember { mutableStateOf(dnsServers) }
+    var testing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
 
-    Column(Modifier.fillMaxSize().padding(12.dp)) {
-        // Smart recommend
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF132033)),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoAwesome, null, tint = Color(0xFF00D4FF))
-                Spacer(Modifier.width(10.dp))
-                Column {
-                    Text("پیشنهاد هوشمند ایران", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Text("Shecan و Electro معمولاً بهترین نتیجه را می‌دهند", color = Color(0xFF90A4AE), fontSize = 11.sp)
-                }
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(16.dp))
+        Text("DNS Servers", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text("Tap test to find the fastest", color = TextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(14.dp))
 
         Button(
             onClick = {
-                isTesting = true
+                testing = true
                 scope.launch {
-                    val tested = servers.map { dns ->
-                        val p = measurePing(dns.primary)
-                        dns.copy(pingMs = p)
-                    }.sortedBy { it.pingMs ?: 9999 }
-                    val bestPrimary = tested.firstOrNull()?.primary
-                    servers = tested.map { it.copy(isBest = it.primary == bestPrimary) }
-                    isTesting = false
+                    val results = servers.map { s ->
+                        s.copy(latency = measureLatency(s.primary))
+                    }.sortedBy { it.latency ?: 9999L }
+                    val bestIp = results.firstOrNull()?.primary
+                    servers = results.map { it.copy(isBest = it.primary == bestIp) }
+                    testing = false
                 }
             },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00D4FF)),
-            enabled = !isTesting,
-            shape = RoundedCornerShape(10.dp)
+            modifier = Modifier.fillMaxWidth().height(46.dp),
+            enabled = !testing,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Accent)
         ) {
-            if (isTesting) {
-                CircularProgressIndicator(Modifier.size(18.dp), color = Color.Black, strokeWidth = 2.dp)
-                Spacer(Modifier.width(8.dp))
-                Text("در حال تست همه DNSها...", color = Color.Black, fontSize = 13.sp)
+            if (testing) {
+                CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text("Testing...", color = Color.White, fontWeight = FontWeight.Medium)
             } else {
-                Icon(Icons.Default.Speed, null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Speed, null, Modifier.size(18.dp), tint = Color.White)
                 Spacer(Modifier.width(8.dp))
-                Text("تست همه و پیدا کردن بهترین", color = Color.Black, fontSize = 13.sp)
+                Text("Test All Servers", color = Color.White, fontWeight = FontWeight.Medium)
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(14.dp))
 
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            items(servers) { dns ->
-                DnsItem(dns, selected?.primary == dns.primary) {
-                    selected = dns
-                }
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(bottom = 16.dp)
+        ) {
+            items(servers) { server ->
+                DnsCard(server)
             }
         }
     }
 }
 
 @Composable
-fun DnsItem(dns: DnsServer, selected: Boolean, onClick: () -> Unit) {
+fun DnsCard(server: DnsEntry) {
+    val borderColor = if (server.isBest) Accent else Color.Transparent
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
-            .then(
-                if (dns.isBest) Modifier.border(1.dp, Color(0xFF00D4FF), RoundedCornerShape(10.dp))
-                else Modifier
-            ),
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) Color(0xFF1A3A5C) else Color(0xFF132033)
-        ),
-        shape = RoundedCornerShape(10.dp)
+            .border(1.dp, borderColor, RoundedCornerShape(14.dp)),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Surface)
     ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (server.region == "IR") Accent.copy(0.15f) else Surface2),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    server.region,
+                    color = if (server.region == "IR") AccentSoft else TextMuted,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(Modifier.width(12.dp))
+
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(dns.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    if (dns.isBest) {
+                    Text(server.name, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    if (server.isBest) {
                         Spacer(Modifier.width(6.dp))
-                        Text("★ بهترین", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            "BEST",
+                            color = Green,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .background(Green.copy(0.15f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                        )
                     }
-                    Spacer(Modifier.width(6.dp))
-                    Text(dns.category, color = Color(0xFF546E7A), fontSize = 10.sp)
                 }
-                Text("${dns.primary}  •  ${dns.secondary}", color = Color(0xFF78909C), fontSize = 11.sp)
-                Text(dns.description, color = Color(0xFF607D8B), fontSize = 11.sp)
+                Text(
+                    "${server.primary}  ·  ${server.secondary}",
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
-            Column(horizontalAlignment = Alignment.End) {
-                if (dns.pingMs != null) {
-                    val color = when {
-                        dns.pingMs!! < 35 -> Color(0xFF00E676)
-                        dns.pingMs!! < 70 -> Color(0xFFFFEB3B)
-                        else -> Color(0xFFFF5252)
-                    }
-                    Text("${dns.pingMs} ms", color = color, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                } else {
-                    Text("—", color = Color.Gray, fontSize = 14.sp)
+
+            if (server.latency != null) {
+                val c = when {
+                    server.latency!! < 40 -> Green
+                    server.latency!! < 80 -> Yellow
+                    else -> Red
                 }
-                if (selected) {
-                    Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF00D4FF), modifier = Modifier.size(18.dp))
-                }
+                Text("${server.latency} ms", color = c, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            } else {
+                Text("—", color = TextMuted, fontSize = 14.sp)
             }
         }
     }
 }
 
+// ── Boost (VPN) Screen ──────────────────────────────────
 @Composable
-fun VpnScreen() {
+fun BoostScreen() {
     val context = LocalContext.current
-    var selectedDns by remember { mutableStateOf(dnsList[0]) }
-    var vpnActive by remember { mutableStateOf(DnsVpnService.isVpnActive) }
-    var statusText by remember { mutableStateOf(if (vpnActive) "فعال" else "غیرفعال") }
+    var selectedDns by remember { mutableStateOf(dnsServers[0]) }
+    var active by remember { mutableStateOf(DnsVpnService.isActive) }
 
-    val vpnPermissionLauncher = rememberLauncherForActivityResult(
+    val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            val intent = Intent(context, DnsVpnService::class.java).apply {
-                action = DnsVpnService.ACTION_CONNECT
-                putExtra(DnsVpnService.EXTRA_DNS1, selectedDns.primary)
-                putExtra(DnsVpnService.EXTRA_DNS2, selectedDns.secondary)
-            }
-            context.startService(intent)
-            vpnActive = true
-            statusText = "فعال"
-            DnsVpnService.isVpnActive = true
-            DnsVpnService.currentDns = "${selectedDns.primary} / ${selectedDns.secondary}"
+            startVpn(context, selectedDns)
+            active = true
         }
     }
 
     Column(
-        Modifier.fillMaxSize().padding(16.dp),
+        Modifier.fillMaxSize().padding(horizontal = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        Spacer(Modifier.height(24.dp))
+
         // Status circle
+        val circleColor by animateColorAsState(
+            if (active) Green.copy(0.15f) else Surface2,
+            label = "circle"
+        )
+        val ringColor by animateColorAsState(
+            if (active) Green else TextMuted.copy(0.3f),
+            label = "ring"
+        )
+
         Box(
-            modifier = Modifier
-                .size(140.dp)
-                .background(
-                    if (vpnActive) Color(0xFF004D40) else Color(0xFF1A1A2E),
-                    CircleShape
-                )
-                .border(
-                    3.dp,
-                    if (vpnActive) Color(0xFF00E676) else Color(0xFF37474F),
-                    CircleShape
-                ),
+            Modifier
+                .size(150.dp)
+                .border(3.dp, ringColor, CircleShape)
+                .background(circleColor, CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
-                    if (vpnActive) Icons.Default.Shield else Icons.Default.ShieldMoon,
+                    if (active) Icons.Filled.Bolt else Icons.Outlined.Bolt,
                     null,
-                    tint = if (vpnActive) Color(0xFF00E676) else Color(0xFF607D8B),
-                    modifier = Modifier.size(40.dp)
+                    Modifier.size(36.dp),
+                    tint = if (active) Green else TextMuted
                 )
                 Spacer(Modifier.height(4.dp))
-                Text(statusText, color = Color.White, fontWeight = FontWeight.Bold)
+                Text(
+                    if (active) "ACTIVE" else "OFF",
+                    color = if (active) Green else TextMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
+                if (active) {
+                    Text(DnsVpnService.activeDns, color = TextSecondary, fontSize = 11.sp)
+                }
             }
         }
 
         Spacer(Modifier.height(20.dp))
-
-        Text("انتخاب DNS برای اعمال", color = Color(0xFF90A4AE), fontSize = 13.sp)
+        Text("Select DNS", color = TextSecondary, fontSize = 13.sp)
         Spacer(Modifier.height(8.dp))
 
-        // DNS selector
         LazyColumn(
-            modifier = Modifier.weight(1f),
+            Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            items(dnsList.take(8)) { dns ->
-                Card(
-                    modifier = Modifier
+            items(dnsServers) { dns ->
+                val selected = selectedDns.primary == dns.primary
+                Row(
+                    Modifier
                         .fillMaxWidth()
-                        .clickable { selectedDns = dns },
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (selectedDns.primary == dns.primary)
-                            Color(0xFF1A3A5C) else Color(0xFF132033)
-                    ),
-                    shape = RoundedCornerShape(8.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) Accent.copy(0.12f) else Surface)
+                        .clickable { selectedDns = dns }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(dns.name, color = Color.White, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                        Text(dns.primary, color = Color(0xFF78909C), fontSize = 12.sp)
-                        if (selectedDns.primary == dns.primary) {
-                            Spacer(Modifier.width(8.dp))
-                            Icon(Icons.Default.Check, null, tint = Color(0xFF00D4FF), modifier = Modifier.size(18.dp))
-                        }
+                    Text(dns.name, color = TextPrimary, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), fontSize = 13.sp)
+                    Text(dns.primary, color = TextMuted, fontSize = 11.sp)
+                    if (selected) {
+                        Spacer(Modifier.width(8.dp))
+                        Icon(Icons.Default.Check, null, Modifier.size(16.dp), tint = Accent)
                     }
                 }
             }
@@ -540,183 +506,195 @@ fun VpnScreen() {
 
         Button(
             onClick = {
-                if (vpnActive) {
-                    val intent = Intent(context, DnsVpnService::class.java).apply {
+                if (active) {
+                    context.startService(Intent(context, DnsVpnService::class.java).apply {
                         action = DnsVpnService.ACTION_DISCONNECT
-                    }
-                    context.startService(intent)
-                    vpnActive = false
-                    statusText = "غیرفعال"
-                    DnsVpnService.isVpnActive = false
+                    })
+                    active = false
+                    DnsVpnService.isActive = false
                 } else {
                     val prepare = VpnService.prepare(context)
                     if (prepare != null) {
-                        vpnPermissionLauncher.launch(prepare)
+                        permissionLauncher.launch(prepare)
                     } else {
-                        val intent = Intent(context, DnsVpnService::class.java).apply {
-                            action = DnsVpnService.ACTION_CONNECT
-                            putExtra(DnsVpnService.EXTRA_DNS1, selectedDns.primary)
-                            putExtra(DnsVpnService.EXTRA_DNS2, selectedDns.secondary)
-                        }
-                        context.startService(intent)
-                        vpnActive = true
-                        statusText = "فعال"
-                        DnsVpnService.isVpnActive = true
-                        DnsVpnService.currentDns = "${selectedDns.primary} / ${selectedDns.secondary}"
+                        startVpn(context, selectedDns)
+                        active = true
                     }
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(52.dp),
+            Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (vpnActive) Color(0xFFFF5252) else Color(0xFF00D4FF)
-            ),
-            shape = RoundedCornerShape(12.dp)
+                containerColor = if (active) Red else Accent
+            )
         ) {
             Icon(
-                if (vpnActive) Icons.Default.Stop else Icons.Default.PlayArrow,
+                if (active) Icons.Default.Stop else Icons.Default.PlayArrow,
                 null,
-                tint = if (vpnActive) Color.White else Color.Black
+                tint = Color.White
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                if (vpnActive) "قطع اتصال VPN" else "اعمال DNS و اتصال",
-                color = if (vpnActive) Color.White else Color.Black,
-                fontWeight = FontWeight.Bold
+                if (active) "Disconnect" else "Connect",
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 15.sp
             )
         }
-
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "با اتصال، DNS انتخاب‌شده روی کل ترافیک دستگاه اعمال می‌شود",
-            color = Color(0xFF546E7A),
-            fontSize = 11.sp,
-            textAlign = TextAlign.Center
-        )
+        Spacer(Modifier.height(12.dp))
     }
 }
 
+private fun startVpn(context: Context, dns: DnsEntry) {
+    context.startService(Intent(context, DnsVpnService::class.java).apply {
+        action = DnsVpnService.ACTION_CONNECT
+        putExtra(DnsVpnService.EXTRA_DNS1, dns.primary)
+        putExtra(DnsVpnService.EXTRA_DNS2, dns.secondary)
+    })
+    DnsVpnService.isActive = true
+    DnsVpnService.activeDns = dns.primary
+}
+
+// ── Games Screen ────────────────────────────────────────
 @Composable
 fun GamesScreen() {
     val context = LocalContext.current
-    var games by remember { mutableStateOf(knownGames) }
-    var scanned by remember { mutableStateOf(false) }
+    var games by remember { mutableStateOf<List<GameEntry>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        games = getInstalledGames(context)
-        scanned = true
+        games = detectGames(context)
+        loading = false
     }
 
-    val installed = games.filter { it.isInstalled }
-    val notInstalled = games.filter { !it.isInstalled }
+    val installed = games.filter { it.installed }
+    val rest = games.filter { !it.installed }
 
-    Column(Modifier.fillMaxSize().padding(12.dp)) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF132033)),
-            shape = RoundedCornerShape(10.dp)
-        ) {
-            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.SportsEsports, null, tint = Color(0xFF00D4FF))
-                Spacer(Modifier.width(10.dp))
-                Column {
-                    Text(
-                        if (scanned) "${installed.size} بازی نصب‌شده پیدا شد" else "در حال اسکن...",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text("بازی‌های شناسایی‌شده از گوگل پلی", color = Color(0xFF90A4AE), fontSize = 11.sp)
-                }
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(16.dp))
+        Text("Games", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+
+        if (loading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = Accent, strokeWidth = 2.dp)
             }
-        }
+        } else {
+            Text(
+                "${installed.size} installed · ${rest.size} supported",
+                color = TextSecondary,
+                fontSize = 13.sp
+            )
+            Spacer(Modifier.height(14.dp))
 
-        Spacer(Modifier.height(12.dp))
-
-        if (installed.isNotEmpty()) {
-            Text("نصب‌شده روی دستگاه", color = Color(0xFF00E676), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-            Spacer(Modifier.height(6.dp))
             LazyColumn(
-                modifier = Modifier.weight(1f, fill = false),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(bottom = 16.dp)
             ) {
-                items(installed) { game ->
-                    GameCard(game, true)
+                if (installed.isNotEmpty()) {
+                    item {
+                        Text("INSTALLED", color = Green, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 4.dp, top = 2.dp))
+                    }
+                    items(installed) { g -> GameCard(g) }
                 }
-            }
-        }
 
-        Spacer(Modifier.height(12.dp))
-        Text("سایر بازی‌های پشتیبانی‌شده", color = Color(0xFF607D8B), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Spacer(Modifier.height(6.dp))
-
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(notInstalled) { game ->
-                GameCard(game, false)
+                if (rest.isNotEmpty()) {
+                    item {
+                        Text("SUPPORTED", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 4.dp, top = 12.dp))
+                    }
+                    items(rest) { g -> GameCard(g) }
+                }
             }
         }
     }
 }
 
 @Composable
-fun GameCard(game: GameInfo, installed: Boolean) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF132033)),
-        shape = RoundedCornerShape(8.dp)
+fun GameCard(game: GameEntry) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Surface)
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(if (game.installed) Green.copy(0.12f) else Surface2),
+            contentAlignment = Alignment.Center
+        ) {
             Icon(
                 Icons.Default.SportsEsports,
                 null,
-                tint = if (installed) Color(0xFF00E676) else Color(0xFF546E7A),
-                modifier = Modifier.size(22.dp)
+                Modifier.size(18.dp),
+                tint = if (game.installed) Green else TextMuted
             )
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(game.name, color = Color.White, fontSize = 13.sp)
-                Text(game.packageName, color = Color(0xFF546E7A), fontSize = 10.sp)
-            }
-            if (installed) {
-                Text("نصب‌شده", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(game.name, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text(game.packageName, color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (game.installed) {
+            Text(
+                "ON DEVICE",
+                color = Green,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .background(Green.copy(0.12f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            )
         }
     }
 }
 
+// ── Ping Screen ─────────────────────────────────────────
 @Composable
-fun PingTestScreen() {
+fun PingScreen() {
     var host by remember { mutableStateOf("1.1.1.1") }
     var results by remember { mutableStateOf<List<String>>(emptyList()) }
-    var isRunning by remember { mutableStateOf(false) }
+    var running by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("تست پینگ پیشرفته", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-        Spacer(Modifier.height(12.dp))
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(16.dp))
+        Text("Ping Test", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text("Run a 5-packet latency check", color = TextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(14.dp))
 
         OutlinedTextField(
             value = host,
             onValueChange = { host = it },
-            label = { Text("IP یا دامنه") },
+            label = { Text("Host or IP", fontSize = 13.sp) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+            shape = RoundedCornerShape(12.dp),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Color(0xFF00D4FF),
-                unfocusedBorderColor = Color(0xFF37474F),
-                focusedLabelColor = Color(0xFF00D4FF),
-                cursorColor = Color(0xFF00D4FF),
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White
+                focusedBorderColor = Accent,
+                unfocusedBorderColor = Surface2,
+                focusedLabelColor = Accent,
+                cursorColor = Accent,
+                focusedTextColor = TextPrimary,
+                unfocusedTextColor = TextPrimary
             )
         )
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("1.1.1.1", "8.8.8.8", "178.22.122.100", "78.157.42.100").forEach { h ->
                 AssistChip(
                     onClick = { host = h },
-                    label = { Text(h, fontSize = 10.sp) },
+                    label = { Text(h, fontSize = 11.sp) },
+                    shape = RoundedCornerShape(8.dp),
                     colors = AssistChipDefaults.assistChipColors(
-                        containerColor = Color(0xFF132033),
-                        labelColor = Color(0xFF00D4FF)
+                        containerColor = Surface,
+                        labelColor = AccentSoft
                     )
                 )
             }
@@ -726,41 +704,41 @@ fun PingTestScreen() {
 
         Button(
             onClick = {
-                isRunning = true
+                running = true
                 results = emptyList()
                 scope.launch {
                     val list = mutableListOf<String>()
                     repeat(5) { i ->
-                        val p = measurePing(host)
-                        list.add(if (p != null) "پینگ ${i + 1}: $p ms" else "پینگ ${i + 1}: Timeout")
+                        val ms = measureLatency(host)
+                        list.add(if (ms != null) "#${i + 1}  →  $ms ms" else "#${i + 1}  →  timeout")
                         results = list.toList()
-                        delay(300)
+                        delay(250)
                     }
-                    val valid = list.mapNotNull {
-                        it.substringAfter(": ").substringBefore(" ms").toLongOrNull()
+                    val nums = list.mapNotNull {
+                        Regex("""(\d+) ms""").find(it)?.groupValues?.get(1)?.toLongOrNull()
                     }
-                    if (valid.isNotEmpty()) {
-                        list.add("────────────────")
-                        list.add("میانگین: ${valid.average().toInt()} ms")
-                        list.add("کمینه: ${valid.min()} ms  |  بیشینه: ${valid.max()} ms")
+                    if (nums.isNotEmpty()) {
+                        list.add("")
+                        list.add("avg  ${nums.average().toInt()} ms")
+                        list.add("min  ${nums.min()} ms   max  ${nums.max()} ms")
                     }
                     results = list
-                    isRunning = false
+                    running = false
                 }
             },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00D4FF)),
-            enabled = !isRunning,
-            shape = RoundedCornerShape(10.dp)
+            Modifier.fillMaxWidth().height(46.dp),
+            enabled = !running,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Accent)
         ) {
-            if (isRunning) {
-                CircularProgressIndicator(Modifier.size(18.dp), color = Color.Black, strokeWidth = 2.dp)
+            if (running) {
+                CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
-                Text("در حال تست...", color = Color.Black)
+                Text("Running...", color = Color.White)
             } else {
-                Icon(Icons.Default.NetworkCheck, null, tint = Color.Black)
+                Icon(Icons.Default.NetworkCheck, null, Modifier.size(18.dp), tint = Color.White)
                 Spacer(Modifier.width(8.dp))
-                Text("شروع تست ۵ مرحله‌ای", color = Color.Black)
+                Text("Start Test", color = Color.White, fontWeight = FontWeight.Medium)
             }
         }
 
@@ -768,81 +746,22 @@ fun PingTestScreen() {
 
         if (results.isNotEmpty()) {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF132033)),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Surface),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(Modifier.padding(16.dp)) {
                     results.forEach { line ->
-                        Text(line, color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp))
+                        Text(
+                            line.ifEmpty { " " },
+                            color = if (line.startsWith("avg") || line.startsWith("min")) AccentSoft else TextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = if (line.startsWith("avg") || line.startsWith("min")) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
                     }
                 }
             }
         }
     }
-}
-
-@Composable
-fun GuideScreen() {
-    LazyColumn(
-        Modifier.fillMaxSize().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        item {
-            GuideCard(
-                "چطور از White Booster استفاده کنیم؟",
-                "۱. تب DNS → تست همه DNSها\n۲. بهترین را پیدا کنید\n۳. تب VPN → همان DNS را انتخاب و وصل کنید\n۴. بازی را باز کنید و از پینگ کمتر لذت ببرید"
-            )
-        }
-        item {
-            GuideCard(
-                "بهترین DNS برای ایران",
-                "• Shecan → معمولاً رتبه ۱\n• Electro → عالی برای گیم\n• Radar Game → مخصوص بازی\n• 403 Online → سرعت بالا\n• Cloudflare → جایگزین خوب"
-            )
-        }
-        item {
-            GuideCard(
-                "تشخیص بازی‌ها",
-                "اپ به صورت خودکار بازی‌های محبوب نصب‌شده روی گوشی را شناسایی می‌کند (بر اساس پکیج‌نیم گوگل پلی)."
-            )
-        }
-        item {
-            GuideCard(
-                "نکات مهم",
-                "• VPN فقط DNS را تغییر می‌دهد و ترافیک را رمزنگاری نمی‌کند\n• بعد از قطع VPN، DNS به حالت پیش‌فرض برمی‌گردد\n• در برخی شبکه‌ها ممکن است نیاز به یک‌بار روشن/خاموش کردن اینترنت باشد\n• پینگ DNS با پینگ سرور بازی متفاوت است"
-            )
-        }
-        item {
-            GuideCard(
-                "اپراتورهای ایران",
-                "ایرانسل، همراه اول، رایتل و مخابرات معمولاً با DNSهای ایرانی (Shecan / Electro) نتیجه بهتری می‌گیرند."
-            )
-        }
-    }
-}
-
-@Composable
-fun GuideCard(title: String, content: String) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF132033)),
-        shape = RoundedCornerShape(10.dp)
-    ) {
-        Column(Modifier.padding(14.dp)) {
-            Text(title, color = Color(0xFF00D4FF), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Spacer(Modifier.height(6.dp))
-            Text(content, color = Color(0xFFB0BEC5), fontSize = 12.sp, lineHeight = 18.sp)
-        }
-    }
-}
-
-@Composable
-fun WhiteBoosterTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Color(0xFF00D4FF),
-            background = Color(0xFF0A0F1A),
-            surface = Color(0xFF132033)
-        ),
-        content = content
-    )
 }

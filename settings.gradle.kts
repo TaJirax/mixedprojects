@@ -12,6 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-
 rootProject.name = "White Booster"
 include(":app")
