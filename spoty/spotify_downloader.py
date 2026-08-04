@@ -29,8 +29,9 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from blueknight_paths import (
-    COOKIE_FAILURE, candidate_label, cookie_candidates, cookie_dir, download_dir,
-    download_root, locked_by_browser, ytdlp_cookie_args)
+    COOKIE_FAILURE, SITE_SESSION_COOKIES, candidate_label, cookie_candidates, cookie_dir,
+    download_dir, download_root, locked_by_browser, read_registry, record_jar,
+    registry_entry, ytdlp_cookie_args)
 
 import webview
 
@@ -1363,6 +1364,20 @@ class SpotifyDownloader:
             self._flush_logs()
             return {**attempt, "clients": YT_FALLBACK_CLIENTS}
 
+        # The stored login outlives its cookies, because the site rotates them.
+        # If this app has ever signed in here, re-read the session before
+        # deciding there is none — it costs seconds and needs no one's attention.
+        if "refresh" not in spent and read_registry().get(kind):
+            spent.add("refresh")
+            self._batch_log(f"Refreshing the stored {kind.title()} session…", "warning")
+            self._flush_logs()
+            if self.refresh_session(kind, announce=False):
+                session = self.usable_cookies(COOKIE_DOMAINS.get(kind), require_session=True)
+                if session:
+                    self._batch_log("Retrying with the refreshed session.", "success")
+                    self._flush_logs()
+                    return {**attempt, "cookies": session[0]}
+
         if "cookies" not in spent:
             spent.add("cookies")
             # Only a jar that actually holds this site's session can help here.
@@ -1371,7 +1386,7 @@ class SpotifyDownloader:
                 self._batch_log(f"Retrying with the {candidate_label(session[0])} session.", "warning")
                 self._flush_logs()
                 return {**attempt, "cookies": session[0]}
-            self._batch_log("No browser holds a session for this site — skipping cookies.",
+            self._batch_log("No signed-in session for this site — skipping cookies.",
                             "warning")
 
         return None
@@ -1414,32 +1429,57 @@ class SpotifyDownloader:
             self.ui("signin", None)
             self.log("Sign-in window closed before the cookies were saved.", "warning")
 
+    def _harvest_session(self, window, kind, patience=12, first_page_only=False):
+        """Read the session out of a window and write it as this site's jar.
+
+        Waits for a session cookie rather than a fixed pause: a login redirect
+        can still be in flight when the page looks finished, and a jar without
+        the session cookie is indistinguishable from being signed out. The wait
+        is short when this runs behind a download, long when a person is at the
+        keyboard finishing a login.
+        """
+        _, harvest_urls, site = SIGNIN_PAGES[kind]
+        if first_page_only:
+            harvest_urls = harvest_urls[:1]
+        wanted = SITE_SESSION_COOKIES.get(kind, ())
+        harvested, seen, found_session = [], set(), False
+
+        for url in harvest_urls:
+            try:
+                window.load_url(url)
+            except Exception as exc:
+                self.log(f"Sign-in: could not open {url} ({str(exc)[:90]})", "warning")
+                continue
+            for _ in range(patience):                 # one second per turn
+                time.sleep(1.0)
+                try:
+                    cookies = window.get_cookies() or []
+                except Exception:
+                    continue
+                for cookie in cookies:
+                    for name, morsel in cookie.items():
+                        key = (morsel["domain"], name)
+                        if key not in seen:
+                            seen.add(key)
+                            harvested.append(cookie)
+                        if name in wanted:
+                            found_session = True
+                if found_session:
+                    break
+
+        jar = cookie_dir(kind) / f"{site}_cookies.txt"
+        count = write_netscape_jar(harvested, jar)
+        return jar, count, found_session
+
     def finish_sign_in(self):
         """Harvest the session from the login window and write it as a jar."""
         window, kind = self._login_window, self._login_kind
         if not window or not kind:
             self.notify("No sign-in window is open.", "err")
             return
-        _, harvest_urls, site = SIGNIN_PAGES[kind]
 
         try:
-            # Visit each page the session lives on and merge what comes back;
-            # one page only ever holds its own domain's cookies.
-            harvested, seen = [], set()
-            for url in harvest_urls:
-                try:
-                    window.load_url(url)
-                    time.sleep(4.0)
-                    for cookie in window.get_cookies() or []:
-                        for name, morsel in cookie.items():
-                            key = (morsel["domain"], name)
-                            if key not in seen:
-                                seen.add(key)
-                                harvested.append(cookie)
-                except Exception as exc:
-                    self.log(f"Sign-in: {url} gave nothing ({str(exc)[:90]})", "warning")
-            jar = cookie_dir() / f"{site}_cookies.txt"
-            count = write_netscape_jar(harvested, jar)
+            jar, count, signed_in = self._harvest_session(window, kind)
         except Exception as exc:
             self.log(f"Could not read the sign-in cookies: {str(exc)[:200]}", "error")
             self.notify(f"Could not read the cookies.\n\n{str(exc)[:200]}", "err")
@@ -1452,18 +1492,76 @@ class SpotifyDownloader:
                 window.destroy()
 
         if not count:
-            self.log(f"No cookies came back from {kind.title()}. Was the sign-in "
-                     f"completed?", "warning")
+            self.log(f"No cookies came back from {kind.title()}. Was the sign-in finished?",
+                     "warning")
             self.notify("No cookies were found. Finish signing in, then try again.", "err")
             return
+        if not signed_in:
+            self.log(f"{jar.name}: {count} cookies, but no {kind.title()} session cookie.",
+                     "warning")
+            self.notify(f"Saved {count} cookies, but you are not signed in yet. "
+                        f"Complete the login, then press Finish sign-in again.", "err")
+            return
 
-        self.log(f"Saved {count} {kind.title()} cookies to {jar.name}.", "success")
-        ok, detail = self._probe_cookie_file(jar, COOKIE_DOMAINS.get(kind))
-        if ok:
-            self.notify(f"Signed in to {kind.title()}. {detail}.", "ok")
-        else:
-            self.log(f"{jar.name}: {detail}", "warning")
-            self.notify(f"Cookies saved, but {detail}. Sign in fully, then repeat.", "err")
+        entry = record_jar(kind, jar, "sign-in")
+        self.log(f"Signed in to {kind.title()}: {count} cookies saved to "
+                 f"{jar.parent.name}/{jar.name}.", "success")
+        self.ui("cookie_status", self.cookie_status())
+        self.notify(f"Signed in to {kind.title()}. {entry['cookies']} cookies kept.", "ok")
+
+    def refresh_session(self, kind, announce=True):
+        """Take a fresh jar from the browser profile, without asking anyone.
+
+        The window the app owns stays signed in between runs, and YouTube rotates
+        cookies on any open tab — so the jar goes stale while the login does not.
+        Re-reading it silently is what keeps downloads working over time.
+        """
+        if kind not in SIGNIN_PAGES or self._login_window is not None:
+            return False
+        window = None
+        try:
+            window = webview.create_window(
+                f"{kind.title()} session", url=SIGNIN_PAGES[kind][1][0],
+                width=900, height=700, hidden=True)
+            # A download is waiting on this, so give it seconds, not a minute.
+            jar, count, signed_in = self._harvest_session(
+                window, kind, patience=5, first_page_only=True)
+        except Exception as exc:
+            self.log(f"Could not refresh the {kind.title()} session: {str(exc)[:150]}",
+                     "warning")
+            return False
+        finally:
+            if window is not None:
+                with contextlib.suppress(Exception):
+                    window.destroy()
+
+        if not signed_in:
+            if announce:
+                self.log(f"No stored {kind.title()} session — use Sign in on the "
+                         f"{kind.title()} page.", "warning")
+            return False
+        record_jar(kind, jar, "refresh")
+        self.ui("cookie_status", self.cookie_status())
+        if announce:
+            self.log(f"Refreshed the {kind.title()} session: {count} cookies.", "success")
+        return True
+
+    def cookie_status(self):
+        """What the page shows next to each Sign in button."""
+        status = {}
+        for kind in SIGNIN_PAGES:
+            entry = registry_entry(kind)
+            if entry and entry.get("signed_in"):
+                age = max(0, int(time.time()) - entry.get("saved_at", 0))
+                hours = age // 3600
+                status[kind] = {
+                    "signed_in": True,
+                    "detail": f"{entry['cookies']} cookies · "
+                              + ("just now" if hours < 1 else f"{hours}h old"),
+                }
+            else:
+                status[kind] = {"signed_in": False, "detail": ""}
+        return status
 
     def cookie_export_recipe(self, kind):
         """The export that actually survives, spelled out.
@@ -1805,6 +1903,9 @@ class Api:
 
     def finish_sign_in(self):
         threading.Thread(target=self._app.finish_sign_in, daemon=True).start()
+
+    def cookie_status(self):
+        return self._app.cookie_status()
 
     def update_tools(self):
         self._app.update_tools()

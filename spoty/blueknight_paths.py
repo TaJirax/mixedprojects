@@ -1,9 +1,12 @@
 """Where downloads land, and where cookies come from. Shared by the GUI and
 the standalone scripts."""
 
+import contextlib
+import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 ROOT_NAME = "BlueKnightdownloader"
@@ -93,18 +96,100 @@ COOKIE_FAILURE = re.compile(
 # use cookies.txt or cookies-<site>.txt. Match the shape, not a fixed list.
 COOKIE_FILE_GLOBS = ("cookies.txt", "*cookies*.txt")
 
-# Each site keeps its own jar. One shared file meant an Instagram export could be
-# offered to YouTube, where it can only fail.
+# Each site keeps its own folder. One shared file meant an Instagram export could
+# be offered to YouTube, where it can only fail; separate folders mean a site's
+# cookies cannot reach another site even by accident.
 COOKIE_DIR_NAME = "cookies"
 SITE_DOMAINS = {"youtube": "youtube.com", "instagram": "instagram.com",
                 "tiktok": "tiktok.com", "spotify": "spotify.com"}
+# The cookie that means "signed in". Anything less is just a visitor.
+SITE_SESSION_COOKIES = {
+    "youtube": ("SID", "__Secure-3PSID", "SAPISID", "__Secure-1PSID"),
+    "instagram": ("sessionid",),
+    "tiktok": ("sessionid", "sessionid_ss"),
+    "spotify": ("sp_dc", "sp_key"),
+}
+REGISTRY_NAME = "registry.json"
 
 
-def cookie_dir():
-    """Where the app keeps the jars it writes itself."""
+def cookie_dir(site=None):
+    """Where the app keeps the jars it writes. One folder per site."""
     folder = app_dir() / COOKIE_DIR_NAME
+    if site:
+        folder = folder / site
     folder.mkdir(parents=True, exist_ok=True)
     return folder
+
+
+def site_for_domain(domain):
+    """Which site a domain belongs to, or None."""
+    for site, site_domain in SITE_DOMAINS.items():
+        if domain and site_domain in domain:
+            return site
+    return None
+
+
+def jar_summary(path, site=None):
+    """What is in a jar: (cookie count, has a session cookie, earliest expiry)."""
+    names, count, expiry = set(), 0, None
+    try:
+        for line in Path(path).read_text("utf-8", "replace").splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            count += 1
+            names.add(parts[5])
+            with contextlib.suppress(ValueError):
+                stamp = int(parts[4])
+                if stamp > 0 and (expiry is None or stamp < expiry):
+                    expiry = stamp
+    except OSError:
+        return 0, False, None
+    wanted = SITE_SESSION_COOKIES.get(site or "", ())
+    return count, any(name in names for name in wanted), expiry
+
+
+def registry_path():
+    return cookie_dir() / REGISTRY_NAME
+
+
+def read_registry():
+    """What the app knows about the jars it has written."""
+    try:
+        return json.loads(registry_path().read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def record_jar(site, path, source):
+    """Remember a jar, so its state can be shown and its age judged later."""
+    count, has_session, expiry = jar_summary(path, site)
+    registry = read_registry()
+    registry[site] = {
+        "jar": str(path),
+        "source": source,
+        "cookies": count,
+        "signed_in": has_session,
+        "saved_at": int(time.time()),
+        "expires_at": expiry,
+    }
+    with contextlib.suppress(OSError):
+        registry_path().write_text(json.dumps(registry, indent=2), encoding="utf-8")
+    return registry[site]
+
+
+def registry_entry(site):
+    """The recorded jar for a site, dropped if the file is gone or expired."""
+    entry = read_registry().get(site)
+    if not entry:
+        return None
+    if not Path(entry["jar"]).is_file():
+        return None
+    if entry.get("expires_at") and entry["expires_at"] < time.time():
+        return None
+    return entry
 
 
 def cookie_files(domain=None):
@@ -115,8 +200,14 @@ def cookie_files(domain=None):
     an exact filename. With a domain given, only jars that actually carry that
     site are returned — a YouTube jar is no use to Instagram and vice versa.
     """
+    site = site_for_domain(domain) if domain else None
+    # The site's own folder first, then the shared places people drop exports.
+    # Another site's folder is never searched, so its jars cannot leak across.
+    folders = [cookie_dir(site)] if site else [cookie_dir()]
+    folders += [app_dir(), download_root(), Path.home() / "Downloads"]
+
     seen, found = set(), []
-    for folder in (cookie_dir(), app_dir(), download_root(), Path.home() / "Downloads"):
+    for folder in folders:
         for pattern in COOKIE_FILE_GLOBS:
             for path in sorted(folder.glob(pattern)):
                 key = str(path).lower()
