@@ -93,26 +93,55 @@ COOKIE_FAILURE = re.compile(
 # use cookies.txt or cookies-<site>.txt. Match the shape, not a fixed list.
 COOKIE_FILE_GLOBS = ("cookies.txt", "*cookies*.txt")
 
+# Each site keeps its own jar. One shared file meant an Instagram export could be
+# offered to YouTube, where it can only fail.
+COOKIE_DIR_NAME = "cookies"
+SITE_DOMAINS = {"youtube": "youtube.com", "instagram": "instagram.com",
+                "tiktok": "tiktok.com", "spotify": "spotify.com"}
 
-def cookie_files():
+
+def cookie_dir():
+    """Where the app keeps the jars it writes itself."""
+    folder = app_dir() / COOKIE_DIR_NAME
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def cookie_files(domain=None):
     """Hand-exported cookie jars, newest first.
 
     Extensions drop these in Downloads under whatever name they like, and people
-    leave them there. Looking in the obvious places beats making someone rename
-    a file and put it somewhere exact.
+    leave them there, so the obvious places are searched rather than demanding
+    an exact filename. With a domain given, only jars that actually carry that
+    site are returned — a YouTube jar is no use to Instagram and vice versa.
     """
     seen, found = set(), []
-    for folder in (app_dir(), download_root(), Path.home() / "Downloads"):
+    for folder in (cookie_dir(), app_dir(), download_root(), Path.home() / "Downloads"):
         for pattern in COOKIE_FILE_GLOBS:
             for path in sorted(folder.glob(pattern)):
                 key = str(path).lower()
-                if key not in seen and path.is_file():
-                    seen.add(key)
-                    found.append(path)
+                if key in seen or not path.is_file():
+                    continue
+                seen.add(key)
+                if domain and not jar_has_domain(path, domain):
+                    continue
+                found.append(path)
     return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
-def cookie_candidates():
+def jar_has_domain(path, domain):
+    """Does this Netscape jar hold cookies for the given site?"""
+    try:
+        for line in path.read_text("utf-8", "replace").splitlines():
+            if line.strip() and not line.lstrip().startswith("#"):
+                if domain in line.split("\t", 1)[0]:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def cookie_candidates(domain=None):
     """Every place cookies could come from, best first, as ('file'|'browser', value).
 
     A browser's `Cookies` file is a SQLite database, NOT the Netscape cookies.txt
@@ -126,7 +155,7 @@ def cookie_candidates():
     at all (yt-dlp #10927). Exported files come first for exactly that reason —
     they are the only source nothing else can take away.
     """
-    found = [("file", str(path)) for path in cookie_files()]
+    found = [("file", str(path)) for path in cookie_files(domain)]
     for name, profile in _BROWSER_DIRS.get(sys.platform, _BROWSER_DIRS["linux"]):
         path = os.path.expanduser(profile)
         if os.path.isdir(path):

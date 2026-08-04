@@ -29,8 +29,8 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from blueknight_paths import (
-    COOKIE_FAILURE, app_dir, candidate_label, cookie_candidates, download_dir, download_root,
-    locked_by_browser, ytdlp_cookie_args)
+    COOKIE_FAILURE, candidate_label, cookie_candidates, cookie_dir, download_dir,
+    download_root, locked_by_browser, ytdlp_cookie_args)
 
 import webview
 
@@ -89,9 +89,12 @@ COOKIE_SOURCES = {"instagram"}
 # Sources that usually work logged out, but sometimes demand a session. They get
 # cookies only after asking for them, so the normal path stays cookie-free.
 COOKIE_ON_DEMAND = {"youtube", "tiktok"}
-# yt-dlp tries these in order. android_vr and tv_simply carry no bot check of
-# their own, so they get through when the default web client is challenged.
-YT_FALLBACK_CLIENTS = "android_vr,tv_simply,web_safari,mweb,default"
+# YouTube is rolling out "PO tokens", and a client that needs one cannot serve a
+# download without it. Per yt-dlp's PO Token Guide the exceptions are android_vr,
+# web_embedded and tv — so those are the ones worth retrying as. tv_simply,
+# web_safari and mweb all need a token, which is why they answered the earlier
+# attempts with "Requested format is not available" rather than a video.
+YT_FALLBACK_CLIENTS = "android_vr,web_embedded,tv,default"
 SIGNIN_DEMANDED = re.compile(
     r"not a bot|sign ?in to confirm|login required|account.*cookies|"
     r"this video is only available|use --cookies", re.I)
@@ -841,7 +844,7 @@ class SpotifyDownloader:
         """
         good, readable = [], []
         self._session_cookies = set()
-        for candidate in cookie_candidates():
+        for candidate in cookie_candidates(domain):
             ok, detail = self.probe_cookie(candidate, domain)
             if not ok and locked_by_browser(candidate):
                 # yt-dlp calls every Chromium browser "Chrome" here, which reads
@@ -911,7 +914,7 @@ class SpotifyDownloader:
             elif working:
                 self.log(f"{candidate_label(working[0])} cookies are readable but hold no Instagram session — "
                          "log into Instagram there, or export a cookies.txt.", "warning")
-            elif cookie_candidates():
+            elif cookie_candidates(COOKIE_DOMAINS['instagram']):
                 self.log("No cookie jar could be read. Close Edge and Chrome, use Firefox, or "
                          "drop a cookies.txt beside the app.", "warning")
             else:
@@ -1267,8 +1270,12 @@ class SpotifyDownloader:
             # matches nothing on a photo, and merging into mp4 makes no sense.
             cmd += ["--format", "best"]
         else:
-            cmd += ["--format", MEDIA_FORMATS.get(quality, MEDIA_FORMATS["best"]),
-                    "--merge-output-format", "mp4"]
+            selector = MEDIA_FORMATS.get(quality, MEDIA_FORMATS["best"])
+            if clients:
+                # The token-free clients carry a thinner format list, so a strict
+                # height cap can match nothing. Take the cap, or whatever exists.
+                selector += "/best"
+            cmd += ["--format", selector, "--merge-output-format", "mp4"]
         if limit:
             cmd += ["--playlist-end", str(limit)]
         if candidate:
@@ -1431,7 +1438,7 @@ class SpotifyDownloader:
                                 harvested.append(cookie)
                 except Exception as exc:
                     self.log(f"Sign-in: {url} gave nothing ({str(exc)[:90]})", "warning")
-            jar = app_dir() / f"{site}_cookies.txt"
+            jar = cookie_dir() / f"{site}_cookies.txt"
             count = write_netscape_jar(harvested, jar)
         except Exception as exc:
             self.log(f"Could not read the sign-in cookies: {str(exc)[:200]}", "error")
@@ -1471,7 +1478,7 @@ class SpotifyDownloader:
                 "\n2. Open a private/incognito window and sign in"
                 f"\n3. In that same tab, go to https://{site}/robots.txt"
                 "\n4. Export as Netscape format"
-                f"\n5. Save it next to this app, or in your Downloads"
+                f"\n5. Save it in the app's cookies folder, or your Downloads"
                 "\n\nThe app picks up any *cookies*.txt in those folders and uses the one"
                 " holding this site's session. Do not open that private window again —"
                 " closing it is what keeps the session alive.")
@@ -1482,7 +1489,8 @@ class SpotifyDownloader:
 
         # A browser that is merely running is the most common — and most easily
         # fixed — reason we have no session, so name it instead of listing options.
-        locked = [candidate_label(c) for c in cookie_candidates() if locked_by_browser(c)]
+        locked = [candidate_label(c) for c in cookie_candidates(COOKIE_DOMAINS.get(kind))
+                  if locked_by_browser(c)]
         opening = ""
         if locked:
             names = " and ".join(dict.fromkeys(locked))
@@ -1855,7 +1863,12 @@ def main():
         text_select=False,
     )
     api._window = window
-    webview.start()
+    # private_mode is pywebview's default, and it throws the browser profile away
+    # on exit — which is why a sign-in never survived a restart. Give the webview
+    # a folder of its own and the account stays signed in, like any browser.
+    webview.start(private_mode=False,
+                  storage_path=str(Path(os.environ.get("LOCALAPPDATA", Path.home()))
+                                   / "SpotifyDownloader" / "browser"))
     app.on_close()
     return 0
 
