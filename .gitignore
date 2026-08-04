@@ -7,3 +7,22 @@
 *.apk
 *.aab
 build/
+local.properties
+
+# --- Blue Knight Downloader (spoty) ---
+# Build output and the one-file exe: 150 MB+, rebuilt by build_portable.ps1.
+spoty/release/
+spoty/build/
+spoty/package/
+spoty/__pycache__/
+# Tools fetched at build time, not sources.
+spoty/vendor/
+# Whatever the app has downloaded, and the sessions it was given.
+BlueKnightdownloader/
+*cookies*.txt
+
+# --- GWD ---
+# Xray core AAR: 56 MB, fetched by fetch-core.sh.
+GWD/app/libs/*.aar
+# Source drops, not the source of truth.
+GWD*.zip

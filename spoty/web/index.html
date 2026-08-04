@@ -1,0 +1,1306 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blue Knight Downloader</title>
+<style>
+/* ============================================================ tokens ===== */
+:root {
+  --knight:   #2e7de9;   /* Blue Knight logo blue */
+  --knight-2: #5aa0ff;
+  --spotify:  #1ed760;
+  --spotify-2:#28ef6d;
+  --red:      #f2555a;
+  --amber:    #ffb454;
+
+  --signal: linear-gradient(90deg, #0e3c82, var(--knight) 46%, var(--spotify));
+  /* Same two brand colours, tightened so it stays legible at text size. */
+  --signal-text: linear-gradient(90deg, var(--knight-2), var(--spotify));
+  /* A dark surface with the source colour bled into it: the panel carries the
+     colour, quietly, so the label on top can stay plain and bright. */
+  --signal-surface: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--spotify) 22%, var(--pane-solid)) 0%,
+    var(--pane-solid) 58%,
+    color-mix(in srgb, var(--spotify) 12%, var(--pane-solid)) 100%);
+  --signal-surface-hot: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--spotify) 34%, var(--pane-solid)) 0%,
+    var(--pane-solid) 52%,
+    color-mix(in srgb, var(--spotify) 20%, var(--pane-solid)) 100%);
+
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-text:    "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono:    "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+
+  --r-lg: 18px;
+  --r-md: 12px;
+  --r-sm: 8px;
+  --gap: 14px;
+  --titlebar: 38px;
+}
+
+html[data-theme="dark"] {
+  --void:    #05080d;
+  --wash-a:  rgba(46, 125, 233, 0.20);
+  --wash-b:  rgba(30, 215, 96, 0.14);
+  --wash-c:  rgba(14, 60, 130, 0.22);
+  --glass:   rgba(255, 255, 255, 0.055);
+  --glass-2: rgba(255, 255, 255, 0.075);
+  --glass-3: rgba(255, 255, 255, 0.11);
+  /* With the blur down this low, the edge is what says "pane" — so it carries
+     more of the glass than it used to. */
+  --edge:    rgba(255, 255, 255, 0.14);
+  --edge-2:  rgba(255, 255, 255, 0.07);
+  --ink:     #eef2f6;
+  --ink-2:   #9aa7b4;
+  --ink-3:   #6c7885;
+  --on-accent: #04140a;
+  --pane-solid: #0d131a;
+  /* Light enough that the knight reads through the panes — the glass is a
+     veil, not a wall. Push it back up if text starts fighting the art. */
+  --blur: saturate(150%);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  --lift: 0 8px 20px rgba(0, 0, 0, 0.45);
+  --sheen: rgba(255, 255, 255, 0.16);
+  --art: 0.20;
+  --art-sat: 0.45;
+}
+
+html[data-theme="light"] {
+  --void:    #e6eaf0;
+  /* Lighter washes here than the theme started with: at full strength they sat
+     on the art as pastel haze, which is what made the room look cheap. */
+  --wash-a:  rgba(46, 125, 233, 0.17);
+  --wash-b:  rgba(30, 215, 96, 0.12);
+  --wash-c:  rgba(14, 60, 130, 0.10);
+  --glass:   rgba(255, 255, 255, 0.40);
+  --glass-2: rgba(255, 255, 255, 0.75);
+  --glass-3: rgba(255, 255, 255, 0.92);
+  --edge:    rgba(20, 28, 38, 0.10);
+  --edge-2:  rgba(20, 28, 38, 0.06);
+  --ink:     #131a22;
+  --ink-2:   #4f5a67;
+  --ink-3:   #78838f;
+  --knight:  #1b5fbe;
+  --knight-2:#144a99;
+  --spotify: #0f9d47;
+  --spotify-2:#0b7f39;
+  --on-accent: #ffffff;
+  --pane-solid: #f4f6fa;
+  /* No blur at all in light: clear glass reads expensive, frost reads cheap. */
+  --blur: saturate(115%);
+  --shadow: 0 18px 44px rgba(30, 45, 70, 0.20);
+  --lift: 0 8px 18px rgba(30, 45, 70, 0.18);
+  --sheen: rgba(255, 255, 255, 0.75);
+  /* The art is a night scene, so on a pale room it needs less opacity to carry
+     the same weight — but the knights still have to be readable, not a smudge. */
+  --art: 0.21;
+  --art-sat: 0.60;
+}
+
+/* Each source owns the room. Switching pages retints the accent, the backdrop
+   wash, the signal gradient, and the equaliser, so the active source is never
+   in doubt. Declared after the themes so the mode wins in both. */
+html[data-mode="youtube"] {
+  --spotify:   #ff3b30;
+  --spotify-2: #ff6257;
+  --red:       #ff7ab0;   /* errors must stay legible against a red accent */
+  --on-accent: #ffffff;
+  --wash-a: rgba(255, 59, 48, 0.20);
+  --wash-b: rgba(255, 180, 84, 0.14);
+  --wash-c: rgba(122, 13, 13, 0.26);
+  --signal:      linear-gradient(90deg, #7a0d0d, var(--spotify) 48%, #ffb454);
+  --signal-text: linear-gradient(90deg, #ff6257, #ffb454);
+}
+html[data-theme="light"][data-mode="youtube"] {
+  --spotify: #d32219; --spotify-2: #ab1a13; --red: #b4356f;
+  --wash-a: rgba(255, 59, 48, 0.26); --wash-b: rgba(255, 180, 84, 0.22);
+}
+
+html[data-mode="tiktok"] {
+  --spotify:   #25f4ee;
+  --spotify-2: #6afff9;
+  --on-accent: #04191c;
+  --wash-a: rgba(254, 44, 85, 0.22);
+  --wash-b: rgba(37, 244, 238, 0.16);
+  --wash-c: rgba(120, 10, 40, 0.20);
+  --signal:      linear-gradient(90deg, #fe2c55, #9b2f8f 46%, var(--spotify));
+  --signal-text: linear-gradient(90deg, #fe2c55, var(--spotify));
+}
+html[data-theme="light"][data-mode="tiktok"] {
+  --spotify: #0b8f8a; --spotify-2: #07716d;
+  --wash-a: rgba(254, 44, 85, 0.28); --wash-b: rgba(37, 244, 238, 0.24);
+}
+
+/* Instagram's mark is a gradient, not a colour. The signal carries the full
+   purple-to-amber sweep; the accent takes the magenta out of its middle, which
+   is the only part of that ramp that stays legible as a button. */
+html[data-mode="instagram"] {
+  --spotify:   #e1306c;
+  --spotify-2: #f4629a;
+  --on-accent: #ffffff;
+  --wash-a: rgba(131, 58, 180, 0.22);
+  --wash-b: rgba(252, 176, 69, 0.15);
+  --wash-c: rgba(225, 48, 108, 0.22);
+  --signal:      linear-gradient(90deg, #833ab4, var(--spotify) 52%, #fcb045);
+  --signal-text: linear-gradient(90deg, #b14fd8, #fcb045);
+}
+html[data-theme="light"][data-mode="instagram"] {
+  --spotify: #c0246b; --spotify-2: #9d1c57;
+  --signal-text: linear-gradient(90deg, #8e3fbe, #d97706);
+  --wash-a: rgba(131, 58, 180, 0.20); --wash-b: rgba(252, 176, 69, 0.14);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  height: 100vh;
+  overflow: hidden;
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--font-text);
+  font-size: 13.5px;
+  line-height: 1.5;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* The knight artwork, deepest layer of all. It sits under the accent washes so
+   every mode retints it — blue for Spotify, red for YouTube, cyan for TikTok —
+   instead of dragging its own colour into the room. Desaturated first for the
+   same reason, and vignetted so the corners stay dark under the panes. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: url("backdrop.png") center / cover no-repeat;
+  opacity: var(--art);
+  filter: saturate(var(--art-sat)) contrast(1.04);
+  -webkit-mask-image: radial-gradient(140% 120% at 50% 42%, #000 58%, transparent 100%);
+  mask-image: radial-gradient(140% 120% at 50% 42%, #000 58%, transparent 100%);
+  pointer-events: none;
+}
+
+/* The blur has to have something to blur: two slow washes behind the glass. */
+.backdrop {
+  position: fixed;
+  inset: -20%;
+  z-index: 0;
+  background:
+    radial-gradient(48% 46% at 16% 12%, var(--wash-a), transparent 68%),
+    radial-gradient(52% 50% at 86% 78%, var(--wash-b), transparent 70%),
+    radial-gradient(44% 44% at 62% 22%, var(--wash-c), transparent 72%);
+  animation: drift 46s ease-in-out infinite alternate;
+}
+@keyframes drift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1.02); }
+  to   { transform: translate3d(2%, 2%, 0) scale(1.10); }
+}
+
+/* ========================================================== structure ===== */
+.shell {
+  position: relative;
+  z-index: 1;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: var(--titlebar) 1fr;
+  grid-template-columns: 244px 1fr;
+  grid-template-areas: "bar bar" "side main";
+  gap: var(--gap);
+  padding: 0 var(--gap) var(--gap);
+}
+
+.titlebar {
+  grid-area: bar;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  -webkit-app-region: drag;
+}
+.titlebar .grab { flex: 1; height: 100%; }
+.wbtn {
+  width: 42px; height: 26px;
+  display: grid; place-items: center;
+  border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--ink-2);
+  font-family: var(--font-mono); font-size: 11px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background .15s, color .15s;
+}
+.wbtn:hover { background: var(--glass-2); color: var(--ink); }
+.wbtn.close:hover { background: var(--red); color: #fff; }
+
+.pane {
+  background: var(--glass);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+}
+
+.side {
+  grid-area: side;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 14px 14px;
+  overflow: hidden;
+}
+
+/* Brand: the mark sits top-left, the wordmark beside it. */
+.brand { display: flex; align-items: center; gap: 12px; padding: 0 8px; }
+.brand img { width: 46px; height: 46px; }
+.brand-name {
+  font-family: var(--font-display);
+  font-size: 15px; font-weight: 600; letter-spacing: .10em;
+  text-transform: uppercase; line-height: 1.2;
+}
+.brand-sub {
+  font-family: var(--font-mono);
+  font-size: 9px; letter-spacing: .2em; text-transform: uppercase;
+  color: var(--ink-3); margin-top: 3px;
+}
+/* The one place the two brand colours meet: blue of the mark into Spotify green. */
+.brand-rule { height: 2px; border-radius: 1px; background: var(--signal); margin: 14px 8px 0; }
+
+/* Six entries now: let the list scroll rather than crush the footer on a
+   short window. */
+.nav { margin-top: 22px; display: flex; flex-direction: column; gap: 2px;
+       min-height: 0; overflow-y: auto; }
+.nav button {
+  display: flex; align-items: center; gap: 11px;
+  width: 100%; padding: 10px 12px;
+  border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--ink-2);
+  font-family: var(--font-text); font-size: 13px; font-weight: 500;
+  text-align: left; cursor: pointer;
+  transition: background .16s, color .16s;
+}
+.nav button:hover { background: var(--glass-2); color: var(--ink); }
+.nav button.on { background: var(--glass-3); color: var(--ink); }
+.nav .dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--ink-3);
+  transition: background .16s, box-shadow .16s;
+}
+.nav button.on .dot { background: var(--spotify); box-shadow: 0 0 8px var(--spotify); }
+
+.side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+
+/* Signature: the equaliser from the mark. Flat while idle, dancing on download. */
+.eq-wrap { display: flex; align-items: center; gap: 11px; padding: 0 12px; }
+.eq { display: flex; align-items: flex-end; gap: 2px; height: 20px; }
+.eq i {
+  display: block; width: 2px; height: 2px; border-radius: 1px;
+  background: var(--edge);
+  transition: background .3s, height .3s;
+}
+body.busy .eq i { background: var(--spotify); animation: bounce 1s ease-in-out infinite; }
+.eq i:nth-child(1) { animation-delay: 0s; }
+.eq i:nth-child(2) { animation-delay: .12s; }
+.eq i:nth-child(3) { animation-delay: .24s; }
+.eq i:nth-child(4) { animation-delay: .36s; }
+.eq i:nth-child(5) { animation-delay: .48s; }
+.eq i:nth-child(6) { animation-delay: .6s; }
+@keyframes bounce {
+  0%, 100% { height: 3px; }
+  50% { height: 18px; }
+}
+.eq-label {
+  font-family: var(--font-mono);
+  font-size: 9px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+body.busy .eq-label { color: var(--spotify); }
+
+.ghost {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--ink-2);
+  font-family: var(--font-text); font-size: 12.5px;
+  cursor: pointer; transition: background .16s, color .16s;
+}
+.ghost:hover { background: var(--glass-2); color: var(--ink); }
+
+/* A lit glass lens, not a tinted rectangle. The gradient lives in the rim
+   (padding-box glass over a border-box gradient) so the glass behind the label
+   stays clear, and the elevation comes from three stacked shadows: a neutral
+   drop for depth, a mode-tinted glow so the button owns the active source's
+   colour, and an inset top edge that reads as the lit lip of the glass. */
+.ghost.update {
+  border: 1px solid color-mix(in srgb, var(--spotify) 26%, var(--edge));
+  border-radius: var(--r-md);
+  background: var(--signal-surface);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow:
+    var(--lift),
+    0 3px 10px color-mix(in srgb, var(--spotify) 14%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, .07);
+  transition: transform .16s cubic-bezier(.3, .8, .4, 1), box-shadow .2s ease, background .2s ease;
+}
+/* Hover lifts it off the sidebar and lets a little more colour into the panel. */
+.ghost.update:hover {
+  transform: translateY(-1px);
+  background: var(--signal-surface-hot);
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--spotify) 45%, var(--edge));
+  box-shadow:
+    var(--lift),
+    0 8px 20px color-mix(in srgb, var(--spotify) 26%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, .10);
+}
+/* Press pushes it into the surface: the lift collapses into an inner shadow. */
+.ghost.update:active {
+  transform: translateY(1px);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, .30),
+    inset 0 2px 5px rgba(0, 0, 0, .22);
+}
+.ghost.update:focus-visible { outline: 2px solid var(--spotify); outline-offset: 3px; }
+.ghost.update[disabled] {
+  transform: none;
+  opacity: .7;
+  cursor: progress;
+  box-shadow: var(--lift), inset 0 1px 0 var(--sheen);
+}
+
+/* Plain, solid, full-brightness text. The colour lives in the panel behind it,
+   so the label never has to compete with a gradient to stay readable. */
+#update-label { color: var(--ink); }
+
+.ghost.update .spin {
+  width: 11px; height: 11px; flex: none; border-radius: 50%;
+  border: 2px solid var(--spotify); border-top-color: transparent;
+  display: none;
+}
+.ghost.update[disabled] .spin { display: block; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* The channel link carries the brand gradient, blue of the mark into Spotify green. */
+.ghost.telegram {
+  background-image: var(--signal-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 600;
+}
+.ghost.telegram:hover { background-image: none; color: var(--ink); background-color: var(--glass-2); }
+.ghost.telegram:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
+
+/* =============================================================== main ===== */
+.main { grid-area: main; overflow: hidden; display: flex; flex-direction: column; }
+.page { display: none; flex-direction: column; padding: 26px 28px 18px; overflow: hidden; }
+.page.on { display: flex; flex: 1; min-height: 0; }
+/* The run bar is shared by every source, so progress has one home, not three.
+   When it is showing, the page above it shrinks to its own content. */
+.runbar { display: none; flex-direction: column; flex: 1; min-height: 0; padding: 0 28px 24px; }
+.main[data-runbar="on"] .runbar { display: flex; }
+.main[data-runbar="on"] .page.on { flex: none; }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 9.5px; letter-spacing: .24em; text-transform: uppercase;
+  color: var(--spotify);
+}
+h1 {
+  font-family: var(--font-display);
+  font-size: 27px; font-weight: 600; letter-spacing: -.015em;
+  margin-top: 6px;
+}
+.lede { color: var(--ink-2); font-size: 13px; margin-top: 5px; max-width: 62ch; }
+.page-head { flex: none; padding-bottom: 20px; }
+
+/* ============================================================ controls ==== */
+.btn {
+  padding: 9px 16px;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-md);
+  background: var(--glass-2);
+  color: var(--ink);
+  font-family: var(--font-text); font-size: 12.5px; font-weight: 600;
+  cursor: pointer;
+  transition: background .16s, border-color .16s, transform .1s;
+}
+.btn:hover { background: var(--glass-3); }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
+.btn.primary { background: var(--spotify); border-color: transparent; color: var(--on-accent); }
+.btn.primary:hover { background: var(--spotify-2); }
+.btn.danger { color: var(--red); }
+.btn.danger:hover { background: var(--red); color: #fff; }
+.btn[disabled] { opacity: .4; cursor: not-allowed; }
+
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.spacer { flex: 1; }
+
+input[type="text"], select {
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-sm);
+  background: var(--glass-2);
+  color: var(--ink);
+  font-family: var(--font-mono); font-size: 12px;
+  -webkit-user-select: text; user-select: text;
+  transition: border-color .16s, background .16s;
+}
+input[type="text"]:focus, select:focus {
+  outline: none; border-color: var(--spotify); background: var(--glass-3);
+}
+
+.switch {
+  flex: none;
+  width: 38px; height: 21px;
+  border: 0; border-radius: 11px;
+  background: var(--glass-3);
+  position: relative; cursor: pointer;
+  transition: background .2s;
+}
+.switch::after {
+  content: "";
+  position: absolute; top: 3px; left: 3px;
+  width: 15px; height: 15px; border-radius: 50%;
+  background: var(--ink-3);
+  transition: transform .2s cubic-bezier(.3,.8,.4,1), background .2s;
+}
+.switch[aria-checked="true"] { background: var(--spotify); }
+.switch[aria-checked="true"]::after { transform: translateX(17px); background: var(--on-accent); }
+.switch:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
+
+.chip-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--edge-2); border-radius: 6px;
+  background: transparent; color: var(--ink-3);
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: .08em; text-transform: uppercase; cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.chip-btn:hover { color: var(--ink); border-color: var(--edge); background: var(--glass-2); }
+.chip-btn:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
+.chip-btn[aria-pressed="true"] { color: var(--spotify); border-color: var(--spotify); }
+
+/* =========================================================== download ===== */
+.paste-row { display: flex; gap: 10px; align-items: center; flex: none; }
+.paste-row input { font-size: 13.5px; padding: 13px 14px; border-radius: var(--r-md); }
+
+.status-block { display: flex; align-items: flex-end; gap: 20px; flex: none; padding: 22px 0 18px; }
+.status-word {
+  font-family: var(--font-display);
+  font-size: 44px; font-weight: 600; letter-spacing: -.03em; line-height: 1;
+}
+body.busy .status-word { color: var(--spotify); }
+.status-meta {
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-3);
+  padding-bottom: 6px; letter-spacing: .04em;
+  max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.bar { height: 6px; border-radius: 3px; overflow: hidden; background: var(--glass-3); flex: none; }
+.bar-fill { height: 100%; width: 0%; background: var(--signal); transition: width .3s ease-out; }
+.bar-fill.done { background: var(--spotify); }
+.bar-fill.failed { background: var(--red); }
+.run-stats {
+  display: flex; align-items: center; gap: 18px; margin-top: 10px; flex: none;
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.run-stats b { color: var(--ink); font-weight: 600; }
+
+.console-head { display: flex; align-items: center; gap: 10px; flex: none; padding: 18px 0 8px; }
+.console {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px;
+  border-radius: var(--r-md);
+  background: var(--glass-2);
+  border: 1px solid var(--edge-2);
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.72;
+  color: var(--ink-2);
+  -webkit-user-select: text; user-select: text;
+}
+.console div { white-space: pre-wrap; word-break: break-word; }
+.console .success { color: var(--spotify); }
+.console .error { color: var(--red); }
+.console .warning { color: var(--amber); }
+.console .download { color: var(--knight-2); }
+
+/* ============================================================ settings ==== */
+.scroll { flex: 1; min-height: 0; overflow-y: auto; padding-right: 14px; }
+.scroll::-webkit-scrollbar { width: 8px; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+.scroll::-webkit-scrollbar-thumb { background: var(--glass-3); border-radius: 4px; }
+.scroll::-webkit-scrollbar-thumb:hover { background: var(--spotify); }
+
+.group-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 18px 2px 10px;
+  font-family: var(--font-mono);
+  font-size: 9.5px; letter-spacing: .2em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.group-head:first-child { padding-top: 0; }
+.group-head .line { flex: 1; height: 1px; background: var(--edge-2); }
+
+.field { display: grid; grid-template-columns: 168px 1fr auto; align-items: center; gap: 12px; padding: 7px 2px; }
+.field > label { font-size: 12.5px; color: var(--ink-2); }
+.field .help { grid-column: 2 / -1; }
+.hint { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); }
+.hint.warn { color: var(--amber); }
+
+.segment { display: flex; gap: 6px; flex-wrap: wrap; }
+.segment button {
+  padding: 6px 14px;
+  border: 1px solid var(--edge-2); border-radius: 999px;
+  background: transparent; color: var(--ink-2);
+  font-family: var(--font-text); font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: color .15s, border-color .15s, background .15s;
+}
+.segment button:hover { color: var(--ink); background: var(--glass-2); }
+.segment button[aria-pressed="true"] {
+  color: var(--spotify); border-color: var(--spotify);
+  background: color-mix(in srgb, var(--spotify) 12%, transparent);
+}
+.segment button:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
+
+/* ============================================================ overlays ==== */
+.toast-stack { position: fixed; right: 22px; bottom: 20px; z-index: 40; display: flex; flex-direction: column; gap: 8px; }
+.toast {
+  min-width: 260px; max-width: 420px;
+  padding: 11px 15px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--edge);
+  background: var(--glass-3);
+  backdrop-filter: var(--blur);
+  box-shadow: var(--shadow);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  animation: rise .22s ease-out;
+}
+.toast.err { border-left: 2px solid var(--red); }
+.toast.ok { border-left: 2px solid var(--spotify); }
+.toast.info { border-left: 2px solid var(--knight); }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+
+.gate {
+  position: fixed; inset: 0; z-index: 60;
+  display: grid; place-items: center;
+  background: var(--void);
+}
+.gate[hidden] { display: none; }
+.gate-card {
+  width: 470px; padding: 34px;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-lg);
+  background: var(--glass);
+  backdrop-filter: var(--blur);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.gate-card img { width: 96px; height: 96px; }
+
+/* A row that does not apply yet reads as unavailable, not broken. */
+.field.muted > label, .field.muted .hint { opacity: .45; }
+.field.muted .segment button, .field.muted input { opacity: .45; pointer-events: none; }
+.console:empty::before {
+  content: "Activity from setup and downloads appears here.";
+  color: var(--ink-3);
+}
+.gate-card h2 { font-family: var(--font-display); font-size: 21px; font-weight: 600; margin-top: 16px; }
+.gate-card p { color: var(--ink-2); font-size: 13px; margin: 10px 0 20px; }
+.gate-bar { height: 3px; border-radius: 2px; overflow: hidden; background: var(--glass-3); }
+.gate-bar::after {
+  content: ""; display: block; height: 100%; width: 34%;
+  background: var(--signal);
+  animation: sweep 1.5s ease-in-out infinite;
+}
+@keyframes sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+.gate-detail { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); margin-top: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+  body.busy .eq i { height: 12px; }
+}
+</style>
+</head>
+<body>
+<div class="backdrop"></div>
+
+<div class="shell">
+  <div class="titlebar">
+    <div class="grab pywebview-drag-region"></div>
+    <button class="wbtn" id="w-min" title="Minimize">&#8211;</button>
+    <button class="wbtn" id="w-max" title="Maximize">&#9633;</button>
+    <button class="wbtn close" id="w-close" title="Close">&#10005;</button>
+  </div>
+
+  <aside class="pane side">
+    <div class="brand">
+      <img src="logo.png" alt="Blue Knight">
+      <div>
+        <div class="brand-name">Blue Knight<br>Downloader</div>
+        <!-- Four sources will not fit the sidebar on one line, so the break is
+             placed rather than left to chance. -->
+        <div class="brand-sub">Spotify · YouTube<br>TikTok · Instagram</div>
+      </div>
+    </div>
+    <div class="brand-rule"></div>
+
+    <nav class="nav" id="nav"></nav>
+
+    <div class="side-foot">
+      <div class="eq-wrap">
+        <div class="eq"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="eq-label" id="eq-label">Idle</div>
+      </div>
+      <button class="ghost update" id="update-btn"><span class="spin"></span><span id="update-label">Check for updates</span></button>
+      <button class="ghost telegram" id="telegram-btn">Telegram · @BlueKnight_Net</button>
+      <button class="ghost" id="theme-btn"></button>
+    </div>
+  </aside>
+
+  <main class="pane main" id="main" data-runbar="on">
+    <!-- ------------------------------------------------------- download -->
+    <section class="page on" data-page="download">
+      <div class="page-head">
+        <div class="eyebrow">Track · album · playlist</div>
+        <h1>Spotify</h1>
+        <p class="lede">Paste a Spotify link. The track is matched, fetched, and tagged into your save folder.</p>
+      </div>
+
+      <div class="paste-row">
+        <input type="text" id="url" placeholder="https://open.spotify.com/track/…" spellcheck="false">
+        <button class="btn" data-paste="url">Paste</button>
+        <button class="btn primary" id="download">Download</button>
+        <button class="btn danger" id="stop" disabled>Stop</button>
+      </div>
+    </section>
+
+    <!-- -------------------------------------------------------- youtube -->
+    <section class="page" data-page="youtube">
+      <div class="page-head">
+        <div class="eyebrow">Video · Short · playlist</div>
+        <h1>YouTube</h1>
+        <p class="lede">Paste a video, Short, or playlist link. Audio only pulls the sound as an MP3 at the bitrate set in Download settings.</p>
+      </div>
+
+      <div class="paste-row">
+        <input type="text" id="yt-url" placeholder="https://www.youtube.com/watch?v=…" spellcheck="false">
+        <button class="btn" data-paste="yt-url">Paste</button>
+        <button class="btn primary" id="yt-go">Download</button>
+        <button class="btn danger" id="yt-stop" disabled>Stop</button>
+      </div>
+
+      <div class="field" style="padding-top:16px">
+        <label>Get</label>
+        <div class="segment" id="yt-kind">
+          <button data-value="video" aria-pressed="true">Video</button>
+          <button data-value="audio" aria-pressed="false">Audio only</button>
+        </div>
+        <span></span>
+      </div>
+      <div class="field" id="yt-quality-field">
+        <label>Video quality</label>
+        <div class="segment" id="yt-quality">
+          <button data-value="best" aria-pressed="true">Best</button>
+          <button data-value="1080" aria-pressed="false">1080p</button>
+          <button data-value="720" aria-pressed="false">720p</button>
+          <button data-value="480" aria-pressed="false">480p</button>
+        </div>
+        <span></span>
+      </div>
+      <div class="field">
+        <label for="yt-limit">Playlist limit</label>
+        <input type="text" id="yt-limit" placeholder="all" spellcheck="false">
+        <span class="hint">items</span>
+      </div>
+      <div class="row" style="padding-top:4px">
+        <button class="btn" data-signin="youtube">Sign in to YouTube</button>
+      </div>
+      <p class="hint">Only needed when YouTube asks for a bot check. Signing in here opens a real YouTube window and keeps the session for downloads.</p>
+    </section>
+
+    <!-- --------------------------------------------------------- tiktok -->
+    <section class="page" data-page="tiktok">
+      <div class="page-head">
+        <div class="eyebrow">Video · profile · hashtag</div>
+        <h1>TikTok</h1>
+        <p class="lede">Paste a video link, or type <b>@username</b> to pull that profile. Hashtag pages work too — paste the /tag/ link.</p>
+      </div>
+
+      <div class="paste-row">
+        <input type="text" id="tt-url" placeholder="https://www.tiktok.com/@user/video/… or @username" spellcheck="false">
+        <button class="btn" data-paste="tt-url">Paste</button>
+        <button class="btn primary" id="tt-go">Download</button>
+        <button class="btn danger" id="tt-stop" disabled>Stop</button>
+      </div>
+
+      <div class="field" style="padding-top:16px">
+        <label>Video quality</label>
+        <div class="segment" id="tt-quality">
+          <button data-value="best" aria-pressed="true">Best</button>
+          <button data-value="1080" aria-pressed="false">1080p</button>
+          <button data-value="720" aria-pressed="false">720p</button>
+          <button data-value="480" aria-pressed="false">480p</button>
+        </div>
+        <span></span>
+      </div>
+      <div class="field">
+        <label for="tt-limit">Profile limit</label>
+        <input type="text" id="tt-limit" placeholder="all" spellcheck="false">
+        <span class="hint">videos</span>
+      </div>
+      <p class="hint warn">TikTok rate-limits bulk grabs. Set a limit, or enable a proxy in Connection settings.</p>
+    </section>
+
+    <!-- ------------------------------------------------------ instagram -->
+    <section class="page" data-page="instagram">
+      <div class="page-head">
+        <div class="eyebrow">Reel · post · profile</div>
+        <h1>Instagram</h1>
+        <p class="lede">Paste a Reel, post, or story-highlight link, or type <b>@username</b> for a whole profile. Photos and video both come down at source quality.</p>
+      </div>
+
+      <div class="paste-row">
+        <input type="text" id="ig-url" placeholder="https://www.instagram.com/reel/… or @username" spellcheck="false">
+        <button class="btn" data-paste="ig-url">Paste</button>
+        <button class="btn primary" id="ig-go">Download</button>
+        <button class="btn danger" id="ig-stop" disabled>Stop</button>
+      </div>
+
+      <div class="field" style="padding-top:16px">
+        <label for="ig-limit">Profile limit</label>
+        <input type="text" id="ig-limit" placeholder="all" spellcheck="false">
+        <span class="hint">posts</span>
+      </div>
+      <div class="row" style="padding-top:4px">
+        <button class="btn" data-signin="instagram">Sign in to Instagram</button>
+      </div>
+      <p class="hint warn">Instagram serves almost nothing logged out. Sign in above — the app opens a real Instagram window and keeps the session itself. A browser you are already logged into works too, as long as it is closed.</p>
+    </section>
+
+    <!-- ---------------------------------------------- connection settings -->
+    <section class="page" data-page="connection">
+      <div class="page-head">
+        <div class="eyebrow">V2RayN · Clash · any local proxy</div>
+        <h1>Connection settings</h1>
+        <p class="lede">Route spotDL through a local proxy. SOCKS5 runs behind a temporary HTTP bridge, so spotDL sees a plain HTTP proxy.</p>
+      </div>
+
+      <div class="scroll">
+        <div class="group-head"><span>Quick setup</span><span class="line"></span></div>
+        <div class="row">
+          <button class="btn" data-preset="http|http://127.0.0.1:10809">V2RayN HTTP</button>
+          <button class="btn" data-preset="socks5|socks5://127.0.0.1:10808">V2RayN SOCKS5</button>
+          <button class="btn" data-preset="http|http://127.0.0.1:7890">Clash</button>
+        </div>
+
+        <div class="group-head"><span>Proxy</span><span class="line"></span></div>
+        <div class="field">
+          <label for="proxy-toggle">Use a proxy</label>
+          <div><button class="switch" id="proxy-toggle" role="switch" aria-checked="false"></button></div>
+          <span></span>
+        </div>
+        <div class="field" id="proxy-type-field">
+          <label>Type</label>
+          <div class="segment" id="proxy-type">
+            <button data-value="http" aria-pressed="true">HTTP</button>
+            <button data-value="socks5" aria-pressed="false">SOCKS5</button>
+          </div>
+          <span></span>
+        </div>
+        <div class="field" id="proxy-url-field">
+          <label for="proxy-url">Address</label>
+          <input type="text" id="proxy-url" spellcheck="false">
+          <button class="btn" id="test-proxy">Test proxy</button>
+        </div>
+        <p class="hint">V2RayN: HTTP 10809 · SOCKS5 10808 &nbsp;|&nbsp; Clash mixed port 7890</p>
+        <p class="hint warn">SOCKS5 opens a local HTTP bridge for the length of the download.</p>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------ download settings -->
+    <section class="page" data-page="settings">
+      <div class="page-head">
+        <div class="eyebrow">Output</div>
+        <h1>Download settings</h1>
+        <p class="lede">Applies to the next download. FLAC re-encodes from the source, so it costs space, not quality.</p>
+      </div>
+
+      <div class="scroll">
+        <div class="group-head"><span>Format</span><span class="line"></span></div>
+        <div class="field">
+          <label>File format</label>
+          <div class="segment" id="format">
+            <button data-value="mp3" aria-pressed="true">MP3</button>
+            <button data-value="flac" aria-pressed="false">FLAC</button>
+            <button data-value="best" aria-pressed="false">Best available</button>
+          </div>
+          <span></span>
+        </div>
+        <div class="field" id="quality-field">
+          <label>MP3 bitrate</label>
+          <div class="segment" id="quality">
+            <button data-value="128" aria-pressed="false">128</button>
+            <button data-value="192" aria-pressed="false">192</button>
+            <button data-value="256" aria-pressed="false">256</button>
+            <button data-value="320" aria-pressed="true">320</button>
+          </div>
+          <span class="hint">kbps</span>
+        </div>
+        <p class="hint" id="format-note">320 kbps is the highest MP3 quality Spotify sources support.</p>
+
+        <div class="group-head"><span>Save location</span><span class="line"></span></div>
+        <div class="field">
+          <label for="folder">Folder</label>
+          <input type="text" id="folder" spellcheck="false">
+          <button class="btn" id="browse">Browse</button>
+        </div>
+        <p class="hint">Files are named <b>Artist - Title</b>. The folder is created if it does not exist.</p>
+        <div class="row" style="padding:8px 2px">
+          <button class="btn" id="open-folder">Open folder</button>
+          <button class="btn" id="convert">Convert MP3 → FLAC</button>
+        </div>
+
+        <div class="group-head"><span>Components</span><span class="line"></span></div>
+        <div class="row" style="padding:2px">
+          <button class="btn" id="check-setup">Check setup</button>
+          <button class="btn" id="update-components">Check for updates</button>
+          <button class="btn" id="about">About</button>
+        </div>
+        <p class="hint" id="components">—</p>
+      </div>
+    </section>
+
+    <!-- ---------------------------------- shared run bar for every source -->
+    <div class="runbar" id="runbar">
+      <div class="status-block">
+        <div class="status-word" id="status-word">Ready</div>
+        <div class="status-meta" id="status-meta">nothing downloading</div>
+      </div>
+
+      <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+      <div class="run-stats">
+        <span>Progress <b id="stat-pct">0%</b></span>
+        <span>Items <b id="stat-count">—</b></span>
+        <span>Source <b id="stat-source">Spotify</b></span>
+        <span>Format <b id="stat-format">MP3 320</b></span>
+        <span>Proxy <b id="stat-proxy">off</b></span>
+      </div>
+
+      <div class="console-head">
+        <span class="eyebrow">Activity</span>
+        <div class="spacer"></div>
+        <button class="chip-btn" id="console-copy">Copy</button>
+        <button class="chip-btn" id="console-clear">Clear</button>
+      </div>
+      <div class="console" id="console" tabindex="0"></div>
+    </div>
+  </main>
+</div>
+
+<div class="toast-stack" id="toasts"></div>
+
+<div class="gate" id="gate">
+  <div class="gate-card">
+    <img src="logo.png" alt="Blue Knight">
+    <h2 id="gate-title">Setting up</h2>
+    <p id="gate-detail">First launch takes a moment.</p>
+    <div class="gate-bar"></div>
+    <div class="gate-detail">Fetching FFmpeg and spotDL</div>
+    <button class="btn" id="gate-skip" hidden style="margin-top:18px">Continue anyway</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const api = () => window.pywebview.api;
+
+const state = {
+  format: "mp3", quality: "320",
+  proxy_enabled: false, proxy_type: "http", proxy_url: "",
+  folder: "", busy: false, ready: false, signin: null,
+  source: "spotify",
+  yt: { kind: "video", quality: "best" },
+  tt: { quality: "best" },
+};
+
+/* ------------------------------------------------------------- chrome --- */
+const PAGES = [
+  ["download", "Spotify"],
+  ["youtube", "YouTube"],
+  ["tiktok", "TikTok"],
+  ["instagram", "Instagram"],
+  ["connection", "Connection"],
+  ["settings", "Download settings"],
+];
+/* Only the source pages retint. Settings pages keep whichever source is active,
+   so opening settings never looks like you left the source you were using. */
+const MODES = { download: "spotify", youtube: "youtube", tiktok: "tiktok", instagram: "instagram" };
+const LABELS = { spotify: "Spotify", youtube: "YouTube", tiktok: "TikTok", instagram: "Instagram" };
+
+function buildNav() {
+  const nav = $("nav");
+  PAGES.forEach(([id, label], i) => {
+    const b = document.createElement("button");
+    b.className = i === 0 ? "on" : "";
+    b.dataset.target = id;
+    b.innerHTML = '<span class="dot"></span>' + label;
+    b.onclick = () => show(id);
+    nav.appendChild(b);
+  });
+}
+
+function show(id) {
+  document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.dataset.page === id));
+  document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.target === id));
+  $("main").dataset.runbar = MODES[id] ? "on" : "off";
+  if (MODES[id] && !state.busy) {
+    state.source = MODES[id];
+    document.documentElement.dataset.mode = state.source;
+    refreshStats();
+  }
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  $("theme-btn").textContent = theme === "dark" ? "Light theme" : "Dark theme";
+  localStorage.setItem("theme", theme);
+}
+
+/* -------------------------------------------------------------- toasts -- */
+function toast(message, kind = "info", ms = 5200) {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = message;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+/* ------------------------------------------------------------- console -- */
+function logLine(message, level) {
+  const c = $("console");
+  const near = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
+  const line = document.createElement("div");
+  line.className = level || "info";
+  line.textContent = new Date().toTimeString().slice(0, 8) + "  " + message;
+  c.appendChild(line);
+  while (c.childElementCount > 800) c.removeChild(c.firstChild);
+  if (near) c.scrollTop = c.scrollHeight;
+}
+
+/* ------------------------------------------------------------ segments -- */
+function segment(id, onPick) {
+  $(id).querySelectorAll("button").forEach(b => {
+    b.onclick = () => {
+      $(id).querySelectorAll("button").forEach(o => o.setAttribute("aria-pressed", String(o === b)));
+      onPick(b.dataset.value);
+    };
+  });
+}
+function setSegment(id, value) {
+  $(id).querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.value === value)));
+}
+
+const GO_BUTTONS = ["download", "yt-go", "tt-go", "ig-go"];
+const STOP_BUTTONS = ["stop", "yt-stop", "tt-stop", "ig-stop"];
+
+function setBusy(busy) {
+  state.busy = busy;
+  document.body.classList.toggle("busy", busy);
+  $("eq-label").textContent = busy ? "Downloading" : "Idle";
+  GO_BUTTONS.forEach(id => { $(id).disabled = busy || !state.ready; });
+  STOP_BUTTONS.forEach(id => { $(id).disabled = !busy; });
+}
+
+function setProgress(pct, kind) {
+  const fill = $("bar-fill");
+  fill.style.width = Math.max(0, Math.min(100, pct)) + "%";
+  fill.className = "bar-fill" + (kind ? " " + kind : "");
+  $("stat-pct").textContent = Math.round(pct) + "%";
+}
+
+function refreshStats() {
+  const mp3 = state.format === "mp3";
+  $("stat-source").textContent = LABELS[state.source];
+  $("stat-format").textContent =
+    state.source === "spotify"
+      ? (mp3 ? "MP3 " + state.quality : state.format.toUpperCase())
+      : state.source === "youtube" && state.yt.kind === "audio"
+        ? "MP3 " + state.quality
+        // Instagram has no quality ladder: you get what was posted.
+        : { youtube: state.yt.quality, tiktok: state.tt.quality, instagram: "source" }[state.source].toUpperCase();
+  $("yt-quality-field").classList.toggle("muted", state.yt.kind === "audio");
+  $("stat-proxy").textContent = state.proxy_enabled ? state.proxy_type.toUpperCase() : "off";
+
+  // Only offer what currently applies.
+  $("quality-field").classList.toggle("muted", !mp3);
+  $("format-note").textContent = mp3
+    ? "320 kbps is the highest MP3 quality Spotify sources support."
+    : state.format === "flac"
+      ? "FLAC is lossless from the source file. Bitrate does not apply."
+      : "Best available keeps the source format, whatever it is.";
+  $("proxy-type-field").classList.toggle("muted", !state.proxy_enabled);
+  $("proxy-url-field").classList.toggle("muted", !state.proxy_enabled);
+}
+
+function setReady(ready) {
+  state.ready = ready;
+  GO_BUTTONS.forEach(id => {
+    $(id).disabled = !ready || state.busy;
+    $(id).textContent = ready ? "Download" : "Setting up…";
+  });
+}
+
+/* ---------------------------------------------------------- event pump -- */
+function handle(ev) {
+  const [action, args] = ev;
+  switch (action) {
+    case "log":
+      args.forEach(([msg, level]) => logLine(msg, level));
+      break;
+    case "status":
+      $("status-word").textContent = args[0];
+      break;
+    case "track": {
+      const [count, total, name] = args;
+      $("status-meta").textContent = name || "downloading…";
+      $("stat-count").textContent = total ? count + " / " + total : String(count);
+      if (total) setProgress((count / total) * 100);
+      break;
+    }
+    case "total":
+      state.itemTotal = args[0];
+      $("stat-count").textContent = "0 / " + args[0];
+      break;
+    case "bytes":
+      // yt-dlp reports bytes per file, so a single item drives the bar directly.
+      $("status-meta").textContent = args[1] || "downloading…";
+      if (!state.itemTotal || state.itemTotal === 1) setProgress(args[0]);
+      break;
+    case "success":
+      setProgress(100, "done");
+      $("status-word").textContent = "Done";
+      $("status-meta").textContent = "finished in " + args[0].toFixed(1) + "s";
+      toast("Download complete.", "ok");
+      break;
+    case "failure":
+      setProgress(100, "failed");
+      $("status-word").textContent = "Failed";
+      toast(args[0], "err", 12000);
+      break;
+    case "finished":
+      setBusy(false);
+      if ($("status-word").textContent === "Downloading") $("status-word").textContent = "Ready";
+      $("status-meta").textContent = "nothing downloading";
+      break;
+    case "setup":
+      $("gate-title").textContent = args[0];
+      $("gate-detail").textContent = args[1];
+      break;
+    case "setup_done":
+      $("gate").hidden = true;
+      $("status-word").textContent = "Ready";
+      setReady(true);
+      break;
+    case "setup_error":
+      $("gate").hidden = true;
+      $("status-word").textContent = "Setup failed";
+      setReady(true);
+      toast(args[0] + "\n\n" + args[1] + "\n\nSet a proxy in Connection settings, then run Check setup.", "err", 20000);
+      break;
+    case "updating": {
+      const busy = args[0];
+      $("update-btn").disabled = busy;
+      $("update-components").disabled = busy;
+      $("update-label").textContent = busy ? "Updating…" : "Check for updates";
+      break;
+    }
+    case "components":
+      $("components").textContent = args[0];
+      break;
+    case "folder":
+      $("folder").value = args[0];
+      state.folder = args[0];
+      break;
+    case "signin": {
+      state.signin = args[0];
+      document.querySelectorAll("[data-signin]").forEach(b => {
+        const active = state.signin === b.dataset.signin;
+        const site = b.dataset.signin[0].toUpperCase() + b.dataset.signin.slice(1);
+        b.textContent = active ? "Finish sign-in" : "Sign in to " + site;
+        b.classList.toggle("primary", active);
+        // While one window is open, the others would only collide with it.
+        b.disabled = Boolean(state.signin) && !active;
+      });
+      break;
+    }
+    case "proxy":
+      state.proxy_type = args[0];
+      state.proxy_url = args[1];
+      state.proxy_enabled = args[2];
+      setSegment("proxy-type", args[0]);
+      $("proxy-url").value = args[1];
+      $("proxy-toggle").setAttribute("aria-checked", String(args[2]));
+      refreshStats();
+      break;
+    case "toast":
+      toast(args[0], args[1] || "info", args[1] === "err" ? 12000 : 5200);
+      break;
+  }
+}
+
+async function pump() {
+  try {
+    const events = await api().poll();
+    events.forEach(handle);
+  } catch (e) { /* bridge not up yet */ }
+  setTimeout(pump, state.busy ? 150 : 350);
+}
+
+/* --------------------------------------------------------------- wiring -- */
+function wire() {
+  $("w-min").onclick = () => api().minimize();
+  $("w-max").onclick = () => api().toggle_maximize();
+  $("w-close").onclick = () => api().close();
+  $("theme-btn").onclick = () =>
+    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  $("telegram-btn").onclick = () => api().open_telegram();
+
+  $("download").onclick = () => {
+    const url = $("url").value.trim();
+    if (!url) { toast("Paste a Spotify link first.", "err"); return; }
+    setBusy(true);
+    setProgress(0);
+    state.itemTotal = 0;
+    $("status-word").textContent = "Downloading";
+    $("status-meta").textContent = "starting…";
+    api().start_download(url, state.format, state.quality);
+  };
+  $("url").addEventListener("keydown", e => { if (e.key === "Enter") $("download").click(); });
+  STOP_BUTTONS.forEach(id => { $(id).onclick = () => api().stop_download(); });
+
+  // One paste handler for every source: the button names its target field.
+  document.querySelectorAll("[data-paste]").forEach(b => {
+    b.onclick = async () => {
+      const text = await api().clipboard();
+      if (text) { $(b.dataset.paste).value = text; } else { toast("Clipboard has no link.", "err"); }
+    };
+  });
+
+  const startMedia = (kind, urlId, limitId, quality, audio) => {
+    const url = $(urlId).value.trim();
+    if (!url) { toast("Paste a link first.", "err"); return; }
+    setBusy(true);
+    setProgress(0);
+    state.itemTotal = 0;
+    $("status-word").textContent = "Downloading";
+    $("status-meta").textContent = "reading the link…";
+    const limit = parseInt($(limitId).value.trim(), 10);
+    api().start_media(kind, url, quality, audio, Number.isFinite(limit) ? limit : 0);
+  };
+
+  $("yt-go").onclick = () =>
+    startMedia("youtube", "yt-url", "yt-limit", state.yt.quality, state.yt.kind === "audio");
+  $("tt-go").onclick = () => startMedia("tiktok", "tt-url", "tt-limit", state.tt.quality, false);
+  $("ig-go").onclick = () => startMedia("instagram", "ig-url", "ig-limit", "best", false);
+  $("yt-url").addEventListener("keydown", e => { if (e.key === "Enter") $("yt-go").click(); });
+  $("tt-url").addEventListener("keydown", e => { if (e.key === "Enter") $("tt-go").click(); });
+  $("ig-url").addEventListener("keydown", e => { if (e.key === "Enter") $("ig-go").click(); });
+
+  // One button per source: it opens the login window, then finishes the job.
+  document.querySelectorAll("[data-signin]").forEach(b => {
+    b.onclick = () => {
+      if (state.signin === b.dataset.signin) { api().finish_sign_in(); }
+      else { api().sign_in(b.dataset.signin); }
+    };
+  });
+
+  segment("yt-kind", v => { state.yt.kind = v; refreshStats(); });
+  segment("yt-quality", v => { state.yt.quality = v; refreshStats(); });
+  segment("tt-quality", v => { state.tt.quality = v; refreshStats(); });
+
+  $("console-clear").onclick = () => { $("console").innerHTML = ""; };
+  $("console-copy").onclick = () => {
+    navigator.clipboard.writeText($("console").innerText).then(
+      () => toast("Activity copied.", "ok"),
+      () => toast("Could not copy.", "err"));
+  };
+
+  segment("format", v => { state.format = v; api().set_option("format", v); refreshStats(); });
+  segment("quality", v => { state.quality = v; api().set_option("quality", v); refreshStats(); });
+  segment("proxy-type", v => { state.proxy_type = v; api().set_option("proxy_type", v); refreshStats(); });
+
+  $("proxy-toggle").onclick = () => {
+    state.proxy_enabled = !state.proxy_enabled;
+    $("proxy-toggle").setAttribute("aria-checked", String(state.proxy_enabled));
+    api().set_option("proxy_enabled", state.proxy_enabled);
+    refreshStats();
+  };
+  $("proxy-url").onchange = () => api().set_option("proxy_url", $("proxy-url").value.trim());
+  $("test-proxy").onclick = () => api().test_proxy();
+  document.querySelectorAll("[data-preset]").forEach(b => {
+    b.onclick = () => {
+      const [type, url] = b.dataset.preset.split("|");
+      api().set_preset(type, url);
+    };
+  });
+
+  $("folder").onchange = () => api().set_option("folder", $("folder").value.trim());
+  $("browse").onclick = () => api().browse();
+  $("open-folder").onclick = () => api().open_folder();
+  $("convert").onclick = () => api().convert();
+  $("check-setup").onclick = () => api().check_setup();
+  [$("update-btn"), $("update-components")].forEach(b => { b.onclick = () => api().update_tools(); });
+  $("about").onclick = () => api().about();
+}
+
+function boot() {
+  if (boot.done) return;
+  boot.done = true;
+  buildNav();
+  wire();
+  applyTheme(localStorage.getItem("theme") || "dark");
+  document.documentElement.dataset.mode = state.source;
+  refreshStats();
+  setReady(false);
+  api().hello().then(s => {
+    state.format = s.format; state.quality = s.quality;
+    state.folder = s.folder;
+    state.proxy_enabled = s.proxy_enabled;
+    state.proxy_type = s.proxy_type;
+    setSegment("format", s.format);
+    setSegment("quality", s.quality);
+    setSegment("proxy-type", s.proxy_type);
+    $("folder").value = s.folder;
+    $("proxy-url").value = s.proxy_url;
+    $("proxy-toggle").setAttribute("aria-checked", String(s.proxy_enabled));
+    refreshStats();
+  });
+  pump();
+  // Setup can stall on a blocked network. Never trap the window behind the gate.
+  setTimeout(() => { $("gate-skip").hidden = false; }, 12000);
+}
+
+$("gate-skip").onclick = () => { $("gate").hidden = true; };
+
+window.addEventListener("pywebviewready", boot);
+// pywebviewready can fire before this script parses, so check directly too.
+if (window.pywebview && window.pywebview.api) boot();
+else setTimeout(function retry() {
+  if (window.pywebview && window.pywebview.api) boot(); else setTimeout(retry, 120);
+}, 120);
+</script>
+</body>
+</html>

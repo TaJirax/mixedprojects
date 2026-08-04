@@ -1,0 +1,40 @@
+Spotify Downloader Portable - Third-party notices
+==================================================
+
+spotDL 4.5.2
+-------------
+Copyright (c) 2021 spotDL Developers
+Licensed under the MIT License.
+Project and corresponding source: https://github.com/spotDL/spotify-downloader/tree/v4.5.2
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+FFmpeg
+------
+This package includes an FFmpeg GPL build from BtbN/FFmpeg-Builds.
+Build source and scripts: https://github.com/BtbN/FFmpeg-Builds
+FFmpeg source: https://ffmpeg.org/download.html
+Licensed under GNU GPL version 3 or later for this build. The complete GPLv3
+license text is included as GPL-3.0.txt.
+
+PyInstaller bootloader
+----------------------
+The GUI executable contains the PyInstaller bootloader.
+Project and license: https://github.com/pyinstaller/pyinstaller
+
