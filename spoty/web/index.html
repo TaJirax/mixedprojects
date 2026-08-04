@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
@@ -49,7 +49,7 @@ html[data-theme="dark"] {
   --glass:   rgba(255, 255, 255, 0.055);
   --glass-2: rgba(255, 255, 255, 0.075);
   --glass-3: rgba(255, 255, 255, 0.11);
-  /* With the blur down this low, the edge is what says "pane" â€” so it carries
+  /* With the blur down this low, the edge is what says "pane" — so it carries
      more of the glass than it used to. */
   --edge:    rgba(255, 255, 255, 0.14);
   --edge-2:  rgba(255, 255, 255, 0.07);
@@ -58,7 +58,7 @@ html[data-theme="dark"] {
   --ink-3:   #6c7885;
   --on-accent: #04140a;
   --pane-solid: #0d131a;
-  /* Light enough that the knight reads through the panes â€” the glass is a
+  /* Light enough that the knight reads through the panes — the glass is a
      veil, not a wall. Push it back up if text starts fighting the art. */
   --blur: saturate(150%);
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
@@ -95,7 +95,7 @@ html[data-theme="light"] {
   --lift: 0 8px 18px rgba(30, 45, 70, 0.18);
   --sheen: rgba(255, 255, 255, 0.75);
   /* The art is a night scene, so on a pale room it needs less opacity to carry
-     the same weight â€” but the knights still have to be readable, not a smudge. */
+     the same weight — but the knights still have to be readable, not a smudge. */
   --art: 0.21;
   --art-sat: 0.60;
 }
@@ -169,7 +169,7 @@ body {
 }
 
 /* The knight artwork, deepest layer of all. It sits under the accent washes so
-   every mode retints it â€” blue for Spotify, red for YouTube, cyan for TikTok â€”
+   every mode retints it — blue for Spotify, red for YouTube, cyan for TikTok —
    instead of dragging its own colour into the room. Desaturated first for the
    same reason, and vignetted so the corners stay dark under the panes. */
 body::before {
@@ -651,7 +651,7 @@ body.busy .status-word { color: var(--spotify); }
         <div class="brand-name">Blue Knight<br>Downloader</div>
         <!-- Four sources will not fit the sidebar on one line, so the break is
              placed rather than left to chance. -->
-        <div class="brand-sub">Spotify Â· YouTube<br>TikTok Â· Instagram</div>
+        <div class="brand-sub">Spotify · YouTube<br>TikTok · Instagram</div>
       </div>
     </div>
     <div class="brand-rule"></div>
@@ -664,7 +664,7 @@ body.busy .status-word { color: var(--spotify); }
         <div class="eq-label" id="eq-label">Idle</div>
       </div>
       <button class="ghost update" id="update-btn"><span class="spin"></span><span id="update-label">Check for updates</span></button>
-      <button class="ghost telegram" id="telegram-btn">Telegram Â· @BlueKnight_Net</button>
+      <button class="ghost telegram" id="telegram-btn">Telegram · @BlueKnight_Net</button>
       <button class="ghost" id="theme-btn"></button>
     </div>
   </aside>
@@ -673,13 +673,13 @@ body.busy .status-word { color: var(--spotify); }
     <!-- ------------------------------------------------------- download -->
     <section class="page on" data-page="download">
       <div class="page-head">
-        <div class="eyebrow">Track Â· album Â· playlist</div>
+        <div class="eyebrow">Track · album · playlist</div>
         <h1>Spotify</h1>
         <p class="lede">Paste a Spotify link. The track is matched, fetched, and tagged into your save folder.</p>
       </div>
 
       <div class="paste-row">
-        <input type="text" id="url" placeholder="https://open.spotify.com/track/â€¦" spellcheck="false">
+        <input type="text" id="url" placeholder="https://open.spotify.com/track/…" spellcheck="false">
         <button class="btn" data-paste="url">Paste</button>
         <button class="btn primary" id="download">Download</button>
         <button class="btn danger" id="stop" disabled>Stop</button>
@@ -689,13 +689,13 @@ body.busy .status-word { color: var(--spotify); }
     <!-- -------------------------------------------------------- youtube -->
     <section class="page" data-page="youtube">
       <div class="page-head">
-        <div class="eyebrow">Video Â· Short Â· playlist</div>
+        <div class="eyebrow">Video · Short · playlist</div>
         <h1>YouTube</h1>
         <p class="lede">Paste a video, Short, or playlist link. Audio only pulls the sound as an MP3 at the bitrate set in Download settings.</p>
       </div>
 
       <div class="paste-row">
-        <input type="text" id="yt-url" placeholder="https://www.youtube.com/watch?v=â€¦" spellcheck="false">
+        <input type="text" id="yt-url" placeholder="https://www.youtube.com/watch?v=…" spellcheck="false">
         <button class="btn" data-paste="yt-url">Paste</button>
         <button class="btn primary" id="yt-go">Download</button>
         <button class="btn danger" id="yt-stop" disabled>Stop</button>
@@ -733,13 +733,13 @@ body.busy .status-word { color: var(--spotify); }
     <!-- --------------------------------------------------------- tiktok -->
     <section class="page" data-page="tiktok">
       <div class="page-head">
-        <div class="eyebrow">Video Â· profile Â· hashtag</div>
+        <div class="eyebrow">Video · profile · hashtag</div>
         <h1>TikTok</h1>
-        <p class="lede">Paste a video link, or type <b>@username</b> to pull that profile. Hashtag pages work too â€” paste the /tag/ link.</p>
+        <p class="lede">Paste a video link, or type <b>@username</b> to pull that profile. Hashtag pages work too — paste the /tag/ link.</p>
       </div>
 
       <div class="paste-row">
-        <input type="text" id="tt-url" placeholder="https://www.tiktok.com/@user/video/â€¦ or @username" spellcheck="false">
+        <input type="text" id="tt-url" placeholder="https://www.tiktok.com/@user/video/… or @username" spellcheck="false">
         <button class="btn" data-paste="tt-url">Paste</button>
         <button class="btn primary" id="tt-go">Download</button>
         <button class="btn danger" id="tt-stop" disabled>Stop</button>
@@ -766,13 +766,13 @@ body.busy .status-word { color: var(--spotify); }
     <!-- ------------------------------------------------------ instagram -->
     <section class="page" data-page="instagram">
       <div class="page-head">
-        <div class="eyebrow">Reel Â· post Â· profile</div>
+        <div class="eyebrow">Reel · post · profile</div>
         <h1>Instagram</h1>
         <p class="lede">Paste a Reel, post, or story-highlight link, or type <b>@username</b> for a whole profile. Photos and video both come down at source quality.</p>
       </div>
 
       <div class="paste-row">
-        <input type="text" id="ig-url" placeholder="https://www.instagram.com/reel/â€¦ or @username" spellcheck="false">
+        <input type="text" id="ig-url" placeholder="https://www.instagram.com/reel/… or @username" spellcheck="false">
         <button class="btn" data-paste="ig-url">Paste</button>
         <button class="btn primary" id="ig-go">Download</button>
         <button class="btn danger" id="ig-stop" disabled>Stop</button>
@@ -786,13 +786,13 @@ body.busy .status-word { color: var(--spotify); }
       <div class="row" style="padding-top:4px">
         <button class="btn" data-signin="instagram">Sign in to Instagram</button><span class="hint signin-note"></span>
       </div>
-      <p class="hint warn">Instagram serves almost nothing logged out. Sign in above â€” the app opens a real Instagram window and keeps the session itself. A browser you are already logged into works too, as long as it is closed.</p>
+      <p class="hint warn">Instagram serves almost nothing logged out. Sign in above — the app opens a real Instagram window and keeps the session itself. A browser you are already logged into works too, as long as it is closed.</p>
     </section>
 
     <!-- ---------------------------------------------- connection settings -->
     <section class="page" data-page="connection">
       <div class="page-head">
-        <div class="eyebrow">V2RayN Â· Clash Â· any local proxy</div>
+        <div class="eyebrow">V2RayN · Clash · any local proxy</div>
         <h1>Connection settings</h1>
         <p class="lede">Route spotDL through a local proxy. SOCKS5 runs behind a temporary HTTP bridge, so spotDL sees a plain HTTP proxy.</p>
       </div>
@@ -824,7 +824,7 @@ body.busy .status-word { color: var(--spotify); }
           <input type="text" id="proxy-url" spellcheck="false">
           <button class="btn" id="test-proxy">Test proxy</button>
         </div>
-        <p class="hint">V2RayN: HTTP 10809 Â· SOCKS5 10808 &nbsp;|&nbsp; Clash mixed port 7890</p>
+        <p class="hint">V2RayN: HTTP 10809 · SOCKS5 10808 &nbsp;|&nbsp; Clash mixed port 7890</p>
         <p class="hint warn">SOCKS5 opens a local HTTP bridge for the length of the download.</p>
       </div>
     </section>
@@ -878,7 +878,7 @@ body.busy .status-word { color: var(--spotify); }
           <button class="btn" id="update-components">Check for updates</button>
           <button class="btn" id="about">About</button>
         </div>
-        <p class="hint" id="components">â€”</p>
+        <p class="hint" id="components">—</p>
       </div>
     </section>
 
@@ -892,7 +892,7 @@ body.busy .status-word { color: var(--spotify); }
       <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
       <div class="run-stats">
         <span>Progress <b id="stat-pct">0%</b></span>
-        <span>Items <b id="stat-count">â€”</b></span>
+        <span>Items <b id="stat-count">—</b></span>
         <span>Source <b id="stat-source">Spotify</b></span>
         <span>Format <b id="stat-format">MP3 320</b></span>
         <span>Proxy <b id="stat-proxy">off</b></span>
@@ -966,6 +966,8 @@ function show(id) {
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.dataset.page === id));
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.target === id));
   $("main").dataset.runbar = MODES[id] ? "on" : "off";
+  // A finished job belongs to the page it ran on, not the one being opened.
+  if (!state.busy) resetRun();
   if (MODES[id] && !state.busy) {
     state.source = MODES[id];
     document.documentElement.dataset.mode = state.source;
@@ -982,7 +984,7 @@ function paintSignin() {
     const active = state.signin === kind;
     const saved = (state.cookies || {})[kind];
     b.textContent = active ? "Finish sign-in"
-                  : saved && saved.signed_in ? "Signed in Â· sign in again"
+                  : saved && saved.signed_in ? "Signed in · sign in again"
                   : "Sign in to " + site;
     b.classList.toggle("primary", active);
     // While one login window is open, the others would only collide with it.
@@ -1043,6 +1045,19 @@ function setBusy(busy) {
   STOP_BUTTONS.forEach(id => { $(id).disabled = !busy; });
 }
 
+/* Put the run bar back to idle. Called when a finished job has been on screen
+   long enough, and whenever the page changes, so no source inherits another's
+   result. Never while something is running. */
+function resetRun() {
+  clearTimeout(resetRun.timer);
+  if (state.busy) return;
+  state.itemTotal = 0;
+  setProgress(0);
+  $("status-word").textContent = "Ready";
+  $("status-meta").textContent = "nothing downloading";
+  $("stat-count").textContent = "0 / 0";
+}
+
 function setProgress(pct, kind) {
   const fill = $("bar-fill");
   fill.style.width = Math.max(0, Math.min(100, pct)) + "%";
@@ -1078,7 +1093,7 @@ function setReady(ready) {
   state.ready = ready;
   GO_BUTTONS.forEach(id => {
     $(id).disabled = !ready || state.busy;
-    $(id).textContent = ready ? "Download" : "Setting upâ€¦";
+    $(id).textContent = ready ? "Download" : "Setting up…";
   });
 }
 
@@ -1094,7 +1109,7 @@ function handle(ev) {
       break;
     case "track": {
       const [count, total, name] = args;
-      $("status-meta").textContent = name || "downloadingâ€¦";
+      $("status-meta").textContent = name || "downloading…";
       $("stat-count").textContent = total ? count + " / " + total : String(count);
       if (total) setProgress((count / total) * 100);
       break;
@@ -1105,7 +1120,7 @@ function handle(ev) {
       break;
     case "bytes":
       // yt-dlp reports bytes per file, so a single item drives the bar directly.
-      $("status-meta").textContent = args[1] || "downloadingâ€¦";
+      $("status-meta").textContent = args[1] || "downloading…";
       if (!state.itemTotal || state.itemTotal === 1) setProgress(args[0]);
       break;
     case "success":
@@ -1123,6 +1138,10 @@ function handle(ev) {
       setBusy(false);
       if ($("status-word").textContent === "Downloading") $("status-word").textContent = "Ready";
       $("status-meta").textContent = "nothing downloading";
+      // Leave the result up long enough to read, then clear it: a full green bar
+      // is about the job that ended, and it has no business greeting the next one.
+      clearTimeout(resetRun.timer);
+      resetRun.timer = setTimeout(resetRun, 6000);
       break;
     case "setup":
       $("gate-title").textContent = args[0];
@@ -1143,7 +1162,7 @@ function handle(ev) {
       const busy = args[0];
       $("update-btn").disabled = busy;
       $("update-components").disabled = busy;
-      $("update-label").textContent = busy ? "Updatingâ€¦" : "Check for updates";
+      $("update-label").textContent = busy ? "Updating…" : "Check for updates";
       break;
     }
     case "components":
@@ -1200,7 +1219,7 @@ function wire() {
     setProgress(0);
     state.itemTotal = 0;
     $("status-word").textContent = "Downloading";
-    $("status-meta").textContent = "startingâ€¦";
+    $("status-meta").textContent = "starting…";
     api().start_download(url, state.format, state.quality);
   };
   $("url").addEventListener("keydown", e => { if (e.key === "Enter") $("download").click(); });
@@ -1221,7 +1240,7 @@ function wire() {
     setProgress(0);
     state.itemTotal = 0;
     $("status-word").textContent = "Downloading";
-    $("status-meta").textContent = "reading the linkâ€¦";
+    $("status-meta").textContent = "reading the link…";
     const limit = parseInt($(limitId).value.trim(), 10);
     api().start_media(kind, url, quality, audio, Number.isFinite(limit) ? limit : 0);
   };
