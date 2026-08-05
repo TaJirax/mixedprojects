@@ -504,6 +504,19 @@ body.busy .status-word { color: var(--spotify); }
 
 .bar { height: 6px; border-radius: 3px; overflow: hidden; background: var(--glass-3); flex: none; }
 .bar-fill { height: 100%; width: 0%; background: var(--signal); transition: width .3s ease-out; }
+/* The destination, one line, truncated from the left so the filename survives. */
+.run-path {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  direction: rtl;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-path:empty { display: none; }
 .bar-fill.done { background: var(--spotify); }
 .bar-fill.failed { background: var(--red); }
 .run-stats {
@@ -890,6 +903,8 @@ body.busy .status-word { color: var(--spotify); }
       </div>
 
       <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+      <!-- Where the file is going: the question every download prompts. -->
+      <div class="run-path" id="run-path"></div>
       <div class="run-stats">
         <span>Progress <b id="stat-pct">0%</b></span>
         <span>Items <b id="stat-count">—</b></span>
@@ -931,6 +946,7 @@ const state = {
   format: "mp3", quality: "320",
   proxy_enabled: false, proxy_type: "http", proxy_url: "",
   folder: "", busy: false, ready: false, signin: null, cookies: {},
+  itemTotal: 0, itemDone: 0, streams: 1, stream: 0, title: "",
   source: "spotify",
   yt: { kind: "video", quality: "best" },
   tt: { quality: "best" },
@@ -1051,11 +1067,23 @@ function setBusy(busy) {
 function resetRun() {
   clearTimeout(resetRun.timer);
   if (state.busy) return;
-  state.itemTotal = 0;
+  state.itemTotal = 0; state.itemDone = 0;
+  state.streams = 1; state.stream = 0; state.title = "";
   setProgress(0);
   $("status-word").textContent = "Ready";
   $("status-meta").textContent = "nothing downloading";
-  $("stat-count").textContent = "0 / 0";
+  $("stat-count").textContent = "—";
+  $("run-path").textContent = "";
+}
+
+/* Where the whole job stands, given a percentage for the file in flight.
+   A playlist of 40 songs is not 100% done because song 1 finished, and a video
+   is not finished because its video stream is — the audio is still to come. */
+function jobPercent(filePct) {
+  const items = Math.max(1, state.itemTotal || 1);
+  const streams = Math.max(1, state.streams || 1);
+  const withinItem = (Math.min(state.stream, streams - 1) + filePct / 100) / streams;
+  return Math.min(100, ((state.itemDone + withinItem) / items) * 100);
 }
 
 function setProgress(pct, kind) {
@@ -1107,24 +1135,59 @@ function handle(ev) {
     case "status":
       $("status-word").textContent = args[0];
       break;
+    case "plan":
+      // What this job consists of, before any of it happens.
+      state.itemTotal = args[0] || 1;
+      state.streams = args[1] || 1;
+      state.itemDone = 0;
+      state.stream = 0;
+      // A single item is on its way as soon as the job starts; a playlist is not.
+      $("stat-count").textContent = (state.itemTotal === 1 ? "1 / 1"
+                                                          : "0 / " + state.itemTotal);
+      $("run-path").textContent = args[2] || "";
+      break;
     case "track": {
       const [count, total, name] = args;
-      $("status-meta").textContent = name || "downloading…";
-      $("stat-count").textContent = total ? count + " / " + total : String(count);
-      if (total) setProgress((count / total) * 100);
+      state.itemDone = Math.max(0, count - 1);
+      state.itemTotal = total || state.itemTotal;
+      state.stream = 0;
+      if (name) $("status-meta").textContent = name;
+      $("stat-count").textContent = state.itemTotal
+        ? count + " / " + state.itemTotal : String(count);
+      setProgress(jobPercent(0));
       break;
     }
     case "total":
       state.itemTotal = args[0];
-      $("stat-count").textContent = "0 / " + args[0];
+      $("stat-count").textContent = state.itemDone + " / " + args[0];
       break;
-    case "bytes":
-      // yt-dlp reports bytes per file, so a single item drives the bar directly.
-      $("status-meta").textContent = args[1] || "downloading…";
-      if (!state.itemTotal || state.itemTotal === 1) setProgress(args[0]);
+    case "file":
+      // Each destination is one more stream of the current item finished.
+      state.stream = Math.max(0, (args[1] || 1) - 1);
+      $("run-path").textContent = args[0] || $("run-path").textContent;
       break;
+    case "stage":
+      $("status-meta").textContent = args[0];
+      break;
+    case "bytes": {
+      // yt-dlp counts bytes per file, so the raw number hits 100% once per
+      // stream. Fold it into the whole job before showing it.
+      const [pct, title, speed, eta] = args;
+      if (title) state.title = title;
+      // yt-dlp says "NA"/"Unknown" when it cannot estimate; neither is worth showing.
+      const known = v => v && !["NA", "Unknown", "N/A", "--:--"].includes(v);
+      const detail = [known(speed) ? speed : "", known(eta) ? "ETA " + eta : ""]
+        .filter(Boolean).join(" · ");
+      $("status-meta").textContent = detail
+        ? (state.title ? state.title + " — " + detail : detail)
+        : (state.title || "downloading…");
+      setProgress(jobPercent(pct));
+      break;
+    }
     case "success":
       setProgress(100, "done");
+      if (state.itemTotal)
+        $("stat-count").textContent = state.itemTotal + " / " + state.itemTotal;
       $("status-word").textContent = "Done";
       $("status-meta").textContent = "finished in " + args[0].toFixed(1) + "s";
       toast("Download complete.", "ok");
@@ -1217,7 +1280,8 @@ function wire() {
     if (!url) { toast("Paste a Spotify link first.", "err"); return; }
     setBusy(true);
     setProgress(0);
-    state.itemTotal = 0;
+    state.itemTotal = 0; state.itemDone = 0; state.stream = 0;
+    state.title = "";
     $("status-word").textContent = "Downloading";
     $("status-meta").textContent = "starting…";
     api().start_download(url, state.format, state.quality);
@@ -1238,7 +1302,8 @@ function wire() {
     if (!url) { toast("Paste a link first.", "err"); return; }
     setBusy(true);
     setProgress(0);
-    state.itemTotal = 0;
+    state.itemTotal = 0; state.itemDone = 0; state.stream = 0;
+    state.title = "";
     $("status-word").textContent = "Downloading";
     $("status-meta").textContent = "reading the link…";
     const limit = parseInt($(limitId).value.trim(), 10);

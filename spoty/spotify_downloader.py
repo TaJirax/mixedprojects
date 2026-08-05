@@ -484,6 +484,7 @@ class SpotifyDownloader:
         self._login_kind = None
         self._media_done = 0
         self._media_total = None
+        self._stream_index = 0
 
     # ------------------------------------------------------------------
     # State the page reads through the bridge
@@ -1100,6 +1101,8 @@ class SpotifyDownloader:
             cmd += ["--ffmpeg", self.ffmpeg_cmd]
 
         self._batch_log(f"Starting {fmt.upper()} download...", "download")
+        # Until spotDL reports how many songs the link holds, say one.
+        self.ui("plan", 1, 1, str(output))
 
         try:
             # Use larger buffer for better I/O performance
@@ -1125,7 +1128,8 @@ class SpotifyDownloader:
                 # Check for important lines only
                 if self._re_found_songs.search(line):
                     total = int(self._re_found_songs.search(line).group(1))
-                    self.ui("total", total)
+                    # The real count, replacing whatever the link implied.
+                    self.ui("plan", total, 1, str(output))
                     self._batch_log(f"Found {total} song(s)", "success")
                     continue
 
@@ -1261,7 +1265,10 @@ class SpotifyDownloader:
             "--retries", "10", "--socket-timeout", "30",
             "--ffmpeg-location", str(Path(self.ffmpeg_cmd).parent),
             # A machine-readable progress line beats scraping the pretty bar.
-            "--progress-template", "PROGRESS %(progress._percent_str)s %(info.title).80s",
+            # Pipe-separated because titles and speeds both contain spaces.
+            "--progress-template",
+            "PROGRESS|%(progress._percent_str)s|%(progress._speed_str)s"
+            "|%(progress._eta_str)s|%(info.title).70s",
         ]
         if audio_only:
             codec = self.download_format.get() if self.download_format.get() in ("mp3", "flac") else "mp3"
@@ -1293,6 +1300,12 @@ class SpotifyDownloader:
     def download_with_ytdlp(self, kind, url, output, quality, audio_only, limit):
         self._media_done = 0
         self._media_total = None
+        self._stream_index = 0
+        # A merged download writes video and audio separately, so per-file
+        # percentage would otherwise reach 100% halfway through the job.
+        streams = 2 if (not audio_only and kind != "instagram"
+                        and "+" in MEDIA_FORMATS.get(quality, "")) else 1
+        self.ui("plan", 1, streams, str(output))
         started = time.time()
         self._batch_log(f"{kind.title()}: {url}", "download")
 
@@ -1630,18 +1643,20 @@ class SpotifyDownloader:
                 if not line:
                     continue
 
-                if line.startswith("PROGRESS "):
+                if line.startswith("PROGRESS|"):
                     now = time.time()
                     if now - self.last_ui_update < UI_UPDATE_INTERVAL:
                         continue
                     self.last_ui_update = now
-                    parts = line.split(None, 2)
-                    percent = parts[1].rstrip("%") if len(parts) > 1 else ""
-                    title = parts[2] if len(parts) > 2 else ""
+                    parts = (line.split("|") + ["", "", "", ""])[1:5]
+                    percent, speed, eta, title = (p.strip() for p in parts)
                     try:
-                        self.ui("bytes", float(percent), title)
+                        pct = float(percent.rstrip("%"))
                     except ValueError:
-                        pass
+                        continue
+                    # The stream index is what stops a two-file download from
+                    # showing 100% while the audio has not started.
+                    self.ui("bytes", pct, title, speed, eta, self._stream_index)
                     continue
 
                 item = self._re_ytdlp_item.search(line)
@@ -1652,7 +1667,15 @@ class SpotifyDownloader:
                     continue
 
                 if "[download] Destination:" in line or "has already been downloaded" in line:
+                    # A new destination means the previous stream finished.
+                    self._stream_index += 1
+                    name = line.split("Destination:")[-1].strip() or line.strip()
+                    self.ui("file", Path(name).name, self._stream_index)
                     self._batch_log(line[:200], "success")
+                elif "[Merger]" in line or "Merging formats" in line:
+                    self.ui("stage", "merging video and audio")
+                elif "[ExtractAudio]" in line:
+                    self.ui("stage", "converting audio")
                 elif self._re_error.search(line):
                     error_lines.append(line)
                     self._batch_log(line[:200], "error")
