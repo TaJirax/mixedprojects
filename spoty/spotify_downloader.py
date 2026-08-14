@@ -13,31 +13,35 @@ import json
 import time
 import queue
 import contextlib
+import hashlib
 import shutil
 import threading
 import subprocess
 import webbrowser
 import zipfile
 import urllib.request
+import urllib.error
 import socket
 import socketserver
 import select
 import tempfile
 import ipaddress
-from urllib.parse import quote, unquote, urlsplit
+import io
+from html.parser import HTMLParser
+from urllib.parse import quote, unquote, urljoin, urlsplit
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from blueknight_paths import (
-    COOKIE_FAILURE, SITE_SESSION_COOKIES, candidate_label, cookie_candidates, cookie_dir,
-    download_dir, download_root, locked_by_browser, read_registry, record_jar,
-    registry_entry, ytdlp_cookie_args)
+    COOKIE_FAILURE, SITE_SESSION_COOKIES, SOURCES, candidate_label, cookie_candidates, cookie_dir,
+    download_dir, download_root, host_matches, jar_line_matches_domain, locked_by_browser,
+    read_registry, record_jar, registry_entry, ytdlp_cookie_args)
 
 import webview
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "6.1"
+APP_VERSION = "6.8"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -59,6 +63,10 @@ YTDLP_DOWNLOAD_URLS = (
     f"https://github.com/yt-dlp/yt-dlp/releases/download/{YTDLP_VERSION}/yt-dlp.exe",
     f"https://sourceforge.net/projects/yt-dlp.mirror/files/{YTDLP_VERSION}/yt-dlp.exe/download",
 )
+DENO_DOWNLOAD_URLS = (
+    "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip",
+    "https://dl.deno.land/release-latest/deno-x86_64-pc-windows-msvc.zip",
+)
 
 # Every downloadable tool is described once, so finding, downloading and
 # updating are one code path instead of one per tool.
@@ -71,6 +79,12 @@ TOOLS = {
         "label": "yt-dlp", "exe": "yt-dlp.exe", "urls": YTDLP_DOWNLOAD_URLS,
         "api": "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
     },
+    "deno": {
+        "label": "Deno", "exe": "deno.exe", "urls": DENO_DOWNLOAD_URLS,
+        "api": "https://api.github.com/repos/denoland/deno/releases/latest",
+        "archive_member": "deno.exe",
+        "checksum_urls": tuple(url + ".sha256sum" for url in DENO_DOWNLOAD_URLS),
+    },
 }
 
 # yt-dlp format specs shared by the YouTube and TikTok pages.
@@ -82,28 +96,47 @@ MEDIA_FORMATS = {
 }
 MEDIA_PATTERNS = {
     "youtube": re.compile(r"https?://(?:[\w-]+\.)*(?:youtube\.com|youtu\.be)/", re.I),
+    "ytmusic": re.compile(r"https?://music\.youtube\.com/", re.I),
     "tiktok": re.compile(r"https?://(?:[\w-]+\.)*tiktok\.com/", re.I),
     "instagram": re.compile(r"https?://(?:[\w-]+\.)*instagram\.com/", re.I),
+    "soundcloud": re.compile(r"https?://(?:[\w-]+\.)*soundcloud\.com/", re.I),
+    "x": re.compile(r"https?://(?:[\w-]+\.)*(?:x\.com|twitter\.com)/", re.I),
 }
+MEDIA_LABELS = {
+    "youtube": "YouTube", "ytmusic": "YouTube Music", "tiktok": "TikTok",
+    "instagram": "Instagram", "soundcloud": "SoundCloud", "x": "X",
+    "general": "Video",
+}
+YOUTUBE_DOMAINS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
+# Sources served by YouTube's extractor, and so subject to its bot checks and
+# its PO-token client dance. YouTube Music is youtube.com wearing a different hat.
+YOUTUBE_KINDS = {"youtube", "ytmusic"}
 # Sources that will not serve anything useful to a logged-out client.
 COOKIE_SOURCES = {"instagram"}
 # Sources that usually work logged out, but sometimes demand a session. They get
 # cookies only after asking for them, so the normal path stays cookie-free.
-COOKIE_ON_DEMAND = {"youtube", "tiktok"}
+COOKIE_ON_DEMAND = {"youtube", "ytmusic", "tiktok", "x", "general"}
 # YouTube is rolling out "PO tokens", and a client that needs one cannot serve a
 # download without it. Per yt-dlp's PO Token Guide the exceptions are android_vr,
 # web_embedded and tv — so those are the ones worth retrying as. tv_simply,
 # web_safari and mweb all need a token, which is why they answered the earlier
 # attempts with "Requested format is not available" rather than a video.
-YT_FALLBACK_CLIENTS = "android_vr,web_embedded,tv,default"
+YT_FALLBACK_CLIENTS = "web_safari,android_vr,web_embedded,tv,default"
+PO_TOKEN_PATTERN = re.compile(r"^mweb\.gvs\+[A-Za-z0-9._~=/+-]{20,4096}$")
 SIGNIN_DEMANDED = re.compile(
     r"not a bot|sign ?in to confirm|login required|account.*cookies|"
     r"this video is only available|use --cookies", re.I)
+GENERAL_CHALLENGE = re.compile(
+    r"captcha|cloudflare|cf-chl|attention required|verify (?:that )?you are human|"
+    r"not a bot|login required|sign ?in|use --cookies|http error 40[13]|forbidden", re.I)
 # yt-dlp loads the cookie jar before it touches the network, so a bogus URL is
 # enough to find out whether a jar is readable — no request, no rate limit.
 COOKIE_PROBE_URL = "blueknightprobe://cookies"
 # The domain whose session makes a jar worth using, per source.
-COOKIE_DOMAINS = {"instagram": "instagram.com", "youtube": "youtube.com", "tiktok": "tiktok.com"}
+COOKIE_DOMAINS = {
+    "instagram": "instagram.com", "youtube": "youtube.com",
+    "ytmusic": "youtube.com", "tiktok": "tiktok.com", "x": "x.com",
+}
 
 # Performance optimization: Batch UI updates
 UI_UPDATE_INTERVAL = 0.1
@@ -148,7 +181,343 @@ SIGNIN_PAGES = {
     "tiktok": ("https://www.tiktok.com/login",
                ("https://www.tiktok.com/",),
                "www.tiktok.com"),
+    "x": ("https://x.com/i/flow/login",
+          ("https://x.com/home",),
+          "x.com"),
 }
+# A source whose session belongs to another source. YouTube Music has no login
+# of its own — it is youtube.com — so it must read and refresh YouTube's jar
+# rather than opening a second window and writing a jar nothing looks for.
+COOKIE_SITE_ALIASES = {"ytmusic": "youtube"}
+
+
+def cookie_site(kind):
+    """Whose stored session this source uses."""
+    return COOKIE_SITE_ALIASES.get(kind, kind)
+
+
+_host_matches = host_matches
+
+
+def normalize_media_url(kind, value):
+    """Validate a media source and return the URL yt-dlp should receive."""
+    if kind not in MEDIA_LABELS:
+        raise ValueError("Unsupported download source.")
+
+    value = (value or "").strip()
+    if kind == "tiktok" and value.startswith("@"):
+        value = f"https://www.tiktok.com/{value}"
+    elif kind == "instagram" and value.startswith("@"):
+        value = f"https://www.instagram.com/{value[1:].strip('/')}/"
+
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Paste a complete http:// or https:// link.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Links containing a username or password are not supported.")
+
+    host = parsed.hostname.rstrip(".").lower()
+    if kind == "general":
+        if any(_host_matches(host, domain) for domain in YOUTUBE_DOMAINS):
+            raise ValueError("YouTube links must use the dedicated YouTube downloader.")
+    elif not MEDIA_PATTERNS[kind].search(value):
+        raise ValueError(f"That is not a {MEDIA_LABELS[kind]} link.")
+    return value
+
+
+# What to try when yt-dlp comes back empty-handed, in order. yt-dlp is always
+# first and is not listed here. "gallery-dl" resolves photos and mixed posts;
+# "direct" treats the link as the file itself, which needs no engine at all.
+ENGINES = {
+    "x": ("gallery-dl", "html5", "direct"),
+    "instagram": ("gallery-dl",),
+    "general": ("streamlink", "html5", "gallery-dl", "direct"),
+}
+
+
+def cookie_domain_for(kind, url):
+    """The only cookie domain an attempt may borrow for this URL."""
+    fixed = COOKIE_DOMAINS.get(kind)
+    if fixed:
+        return fixed
+    if kind != "general":
+        return None
+    try:
+        return (urlsplit(url).hostname or "").lower().rstrip(".") or None
+    except ValueError:
+        return None
+
+PYTHON_COMPONENTS = {
+    "gallery-dl": {"label": "gallery-dl", "module": "gallery_dl", "max_major": 2},
+    "streamlink": {"label": "Streamlink", "module": "streamlink", "max_major": 9},
+    "img2pdf": {"label": "img2pdf", "module": "img2pdf", "max_major": 1},
+    "pillow": {"label": "Pillow", "module": "PIL", "max_major": 13},
+    "pikepdf": {"label": "pikepdf", "module": "pikepdf", "max_major": 11},
+}
+ENGINE_UPDATE_ROOT = (Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) /
+                      "SpotifyDownloader" / "python-engines")
+ENGINE_UPDATE_REGISTRY = ENGINE_UPDATE_ROOT / "registry.json"
+
+
+def activate_engine_updates():
+    """Put previously verified component wheel overlays ahead of bundled copies."""
+    try:
+        registry = json.loads(ENGINE_UPDATE_REGISTRY.read_text("utf-8"))
+        root = ENGINE_UPDATE_ROOT.resolve()
+    except (OSError, ValueError):
+        return
+    for name in PYTHON_COMPONENTS:
+        try:
+            path = Path(registry[name]["path"]).resolve()
+            path.relative_to(root)
+            if path.is_dir():
+                sys.path.insert(0, str(path))
+        except (KeyError, OSError, ValueError):
+            continue
+
+
+activate_engine_updates()
+# yt-dlp saying "there is no video here" is not the same as yt-dlp failing. The
+# first means another engine should look; the second means the job is over.
+NO_VIDEO_FOR_YTDLP = re.compile(
+    r"no video could be found|there'?s no video|unsupported url|"
+    r"no media found|no video formats found|requested format is not available", re.I)
+
+PDF_MAGIC = b"%PDF-"
+DOCUMENT_EXTENSIONS = {
+    ".pdf", ".epub", ".mobi", ".azw", ".azw3", ".fb2", ".djvu", ".chm",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".odt", ".ods", ".odp", ".rtf", ".txt", ".md", ".csv", ".cbz",
+}
+MEDIA_EXTENSIONS = {
+    ".mp4", ".m4v", ".webm", ".mkv", ".mov", ".avi", ".flv", ".ts",
+    ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".flac",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif",
+}
+MEDIA_CONTENT_TYPES = {
+    "application/octet-stream", "application/vnd.apple.mpegurl",
+    "application/x-mpegurl", "application/ogg",
+}
+# A page can link to thousands of files. Without a ceiling one paste turns into
+# an unbounded crawl of someone else's server.
+PDF_SCAN_LIMIT = 200
+MANGA_PAGE_LIMIT = 500
+MEDIA_CONVERT_FORMATS = {
+    "mp3", "flac", "wav", "m4a", "ogg", "aac",
+    "mp4", "mkv", "webm", "mov", "avi",
+}
+VIDEO_CONVERT_FORMATS = {"mp4", "mkv", "webm", "mov", "avi"}
+VIDEO_CONVERT_CODECS = {"auto", "h264", "h265", "vp9"}
+VIDEO_CONVERT_QUALITY = {"high": 18, "balanced": 23, "compact": 28}
+VIDEO_RESIZE_PRESETS = {
+    "source": None, "2160p": (3840, 2160), "1440p": (2560, 1440),
+    "1080p": (1920, 1080), "720p": (1280, 720), "480p": (854, 480),
+}
+IMAGE_DOCUMENT_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".bmp", ".gif",
+}
+OFFICE_DOCUMENT_EXTENSIONS = {
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".odt", ".ods", ".odp", ".rtf", ".txt", ".csv", ".html", ".htm",
+}
+EBOOK_CONVERT_EXTENSIONS = {".epub", ".mobi", ".azw", ".azw3", ".fb2"}
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+
+class PdfLinkParser(HTMLParser):
+    """Every href and embed/iframe source on a page, in document order.
+
+    Deliberately not a .pdf-suffix filter: plenty of sites serve documents from
+    /download?id=… with no extension anywhere in the URL. What a link actually
+    is gets decided by fetching it and looking at the bytes.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        wanted = {"a": "href", "embed": "src", "iframe": "src", "object": "data"}.get(tag)
+        if not wanted:
+            return
+        for name, value in attrs:
+            if name == wanted and value:
+                self.links.append(value.strip())
+
+
+class HtmlMediaParser(HTMLParser):
+    """Media URLs exposed by ordinary HTML5 markup and social meta tags."""
+
+    META_NAMES = {"og:video", "og:video:url", "og:video:secure_url",
+                  "twitter:player:stream", "og:audio", "og:audio:url"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag in {"video", "audio", "source"} and values.get("src"):
+            self.links.append(values["src"].strip())
+        elif tag == "meta":
+            key = (values.get("property") or values.get("name") or "").lower()
+            if key in self.META_NAMES and values.get("content"):
+                self.links.append(values["content"].strip())
+        elif tag == "a" and values.get("href"):
+            path = urlsplit(values["href"]).path.lower()
+            if any(path.endswith(ext) for ext in MEDIA_EXTENSIONS):
+                self.links.append(values["href"].strip())
+
+
+class HtmlImageParser(HTMLParser):
+    """Likely page images for sites without a gallery-dl extractor."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag == "img":
+            value = (values.get("data-src") or values.get("data-original")
+                     or values.get("data-lazy-src") or values.get("src"))
+            if value:
+                self.links.append(value.strip())
+        elif tag == "source" and values.get("srcset"):
+            value = values["srcset"].split(",")[-1].strip().split()[0]
+            if value:
+                self.links.append(value)
+        elif tag == "a" and values.get("href"):
+            path = urlsplit(values["href"]).path.lower()
+            if Path(path).suffix in {".jpg", ".jpeg", ".png", ".webp", ".avif"}:
+                self.links.append(values["href"].strip())
+
+
+def normalize_page_url(value):
+    """Validate any http(s) address a person pasted. Returns the URL."""
+    value = (value or "").strip()
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Paste a complete http:// or https:// link.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Links containing a username or password are not supported.")
+    return value
+
+
+def safe_filename(name, fallback="document", suffix=".pdf"):
+    """A remote-supplied name, reduced to something safe to write.
+
+    The name comes from a server, so it is untrusted input: "../../boot.ini" and
+    "CON" are both things a hostile Content-Disposition can say. Only the basename
+    survives, and only characters Windows actually accepts.
+    """
+    name = unquote(name or "").replace("\\", "/").split("/")[-1].strip()
+    name = re.sub(r'[<>:"|?*\x00-\x1f]', "_", name).strip(". ")
+    stem, _, ext = name.rpartition(".")
+    if not stem:
+        stem, ext = name, ext or suffix.lstrip(".")
+    if stem.upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                        *(f"LPT{i}" for i in range(1, 10))}:
+        stem = f"_{stem}"
+    stem = (stem or fallback)[:120]
+    ext = (ext if ext.lower() == suffix.lstrip(".") else suffix.lstrip("."))
+    return f"{stem}.{ext}"
+
+
+def detect_document_extension(head, url, content_type=""):
+    """Return a validated document suffix, or None for non-document content."""
+    path_suffix = Path(urlsplit(url).path).suffix.lower()
+    content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if PDF_MAGIC in head[:1024]:
+        return ".pdf"
+    if head.startswith(b"PK\x03\x04"):
+        return ".zip"
+    if len(head) >= 68 and head[60:68] == b"BOOKMOBI":
+        return path_suffix if path_suffix in {".mobi", ".azw", ".azw3"} else ".mobi"
+    if b"<FictionBook" in head[:4096] and path_suffix == ".fb2":
+        return ".fb2"
+    if head.startswith(b"{\\rtf"):
+        return ".rtf"
+    if head.startswith(b"AT&TFORM") and b"DJVU" in head[:32]:
+        return ".djvu"
+    if head.startswith(b"ITSF"):
+        return ".chm"
+    if head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        office = {
+            "application/msword": ".doc",
+            "application/vnd.ms-excel": ".xls",
+            "application/vnd.ms-powerpoint": ".ppt",
+        }
+        return office.get(content_type, path_suffix if path_suffix in {".doc", ".xls", ".ppt"}
+                          else ".doc")
+    text_types = {".txt": {"text/plain"}, ".md": {"text/plain", "text/markdown"},
+                  ".csv": {"text/csv", "text/plain"}}
+    if path_suffix in text_types and content_type in text_types[path_suffix]:
+        return path_suffix
+    return None
+
+
+def inspect_zip_document(path):
+    """Identify a validated ZIP-based document container."""
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        mimetype = archive.read("mimetype").strip() if "mimetype" in names else b""
+        if mimetype == b"application/epub+zip":
+            return ".epub"
+        odf = {
+            b"application/vnd.oasis.opendocument.text": ".odt",
+            b"application/vnd.oasis.opendocument.spreadsheet": ".ods",
+            b"application/vnd.oasis.opendocument.presentation": ".odp",
+        }
+        if mimetype in odf:
+            return odf[mimetype]
+        if "[Content_Types].xml" in names:
+            if any(name.startswith("word/") for name in names):
+                return ".docx"
+            if any(name.startswith("xl/") for name in names):
+                return ".xlsx"
+            if any(name.startswith("ppt/") for name in names):
+                return ".pptx"
+        image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
+        files = [name for name in names if name and not name.endswith("/")]
+        if files and sum(Path(name).suffix.lower() in image_exts for name in files) >= max(1, len(files) // 2):
+            return ".cbz"
+    return None
+
+
+def unique_path(folder, filename):
+    """A path that does not overwrite an existing download."""
+    candidate = folder / filename
+    if not candidate.exists():
+        return candidate
+    stem, suffix = candidate.stem, candidate.suffix
+    for n in range(2, 1000):
+        candidate = folder / f"{stem} ({n}){suffix}"
+        if not candidate.exists():
+            return candidate
+    return folder / f"{stem} ({int(time.time())}){suffix}"
+
+
+def natural_sort_key(value):
+    """Case-insensitive numeric ordering: page2 precedes page10."""
+    return tuple((0, int(part)) if part.isdigit() else (1, part.casefold())
+                 for part in re.split(r"(\d+)", str(value)))
+
+
+def unique_chapter_paths(folder, name):
+    """Reserve a matching page folder, PDF and CBZ name without overwriting."""
+    stem = Path(safe_filename(name, fallback="chapter", suffix=".pdf")).stem
+    for number in range(1, 1000):
+        candidate = stem if number == 1 else f"{stem} ({number})"
+        page_folder = folder / candidate
+        pdf = folder / f"{candidate}.pdf"
+        cbz = folder / f"{candidate}.cbz"
+        if not any(path.exists() for path in (page_folder, pdf, cbz)):
+            return page_folder, pdf, cbz
+    stamp = int(time.time())
+    return (folder / f"{stem} ({stamp})", folder / f"{stem} ({stamp}).pdf",
+            folder / f"{stem} ({stamp}).cbz")
 
 
 def write_netscape_jar(cookies, path):
@@ -219,7 +588,7 @@ def bundled_tool(name):
 
     seen = set()
     for root in roots:
-        for candidate in (root / "tools" / name, root / name):
+        for candidate in (root / "tools" / name, root / "vendor" / name, root / name):
             key = str(candidate)
             if key not in seen and candidate.is_file():
                 return str(candidate)
@@ -459,12 +828,16 @@ class SpotifyDownloader:
         self.use_proxy = Var(False)
         self.proxy_type = Var("http")  # http or socks5
         self.proxy_url = Var("http://127.0.0.1:10809")  # v2rayN HTTP default
+        self.youtube_po_token = Var("")
         self.save_folder = Var(str(download_root()))
         self.status = Var("Preparing")
 
         self.spotdl_cmd = None
         self.ffmpeg_cmd = None
         self.ytdlp_cmd = None
+        self.deno_cmd = None
+        self.gallerydl_version = None
+        self.streamlink_version = None
         self.updating = False
 
         # Pre-compile regex patterns for performance
@@ -496,6 +869,7 @@ class SpotifyDownloader:
             "proxy_enabled": bool(self.use_proxy.get()),
             "proxy_type": self.proxy_type.get(),
             "proxy_url": self.proxy_url.get(),
+            "youtube_po_token": self.youtube_po_token.get(),
             "folder": self.save_folder.get(),
         }
 
@@ -532,6 +906,7 @@ class SpotifyDownloader:
             "proxy_type": self.proxy_type,
             "proxy_url": self.proxy_url,
             "proxy_enabled": self.use_proxy,
+            "youtube_po_token": self.youtube_po_token,
             "folder": self.save_folder,
         }
         var = options.get(name)
@@ -632,16 +1007,35 @@ class SpotifyDownloader:
             if not self.spotdl_cmd:
                 raise RuntimeError("spotDL was installed, but its command could not be located.")
 
-            self.ui("setup", "Checking yt-dlp...", "This downloads YouTube, TikTok and Instagram media")
+            self.ui("setup", "Checking yt-dlp...", "This downloads YouTube, TikTok, Instagram and video-site media")
             self.ytdlp_cmd = self.get_or_download_tool("yt-dlp")
             if not self.ytdlp_cmd:
                 raise RuntimeError("yt-dlp was installed, but its command could not be located.")
+
+            self.ui("setup", "Checking YouTube challenge runtime...",
+                    "Deno runs yt-dlp's bundled EJS challenge solver")
+            self.deno_cmd = self.get_or_download_tool("deno")
+            if not self.deno_cmd:
+                raise RuntimeError("Deno was installed, but its command could not be located.")
+
+            self.ui("setup", "Checking fallback engines...",
+                    "This adds live streams, HTML galleries and mixed media")
+            try:
+                import gallery_dl
+                import streamlink
+                self.gallerydl_version = gallery_dl.__version__
+                self.streamlink_version = streamlink.__version__
+            except ImportError as exc:
+                raise RuntimeError(f"A bundled fallback engine is missing: {exc.name}") from exc
 
             self.ui("setup_done", "Ready to download", "Everything is installed and up to date.")
             self.ui("components", self.component_summary())
             self.log("✓ FFmpeg: " + str(self.ffmpeg_cmd), "success")
             self.log("✓ spotDL: " + str(self.spotdl_cmd), "success")
             self.log("✓ yt-dlp: " + str(self.ytdlp_cmd), "success")
+            self.log(f"✓ Deno: {self.deno_cmd}", "success")
+            self.log(f"✓ gallery-dl: {self.gallerydl_version}", "success")
+            self.log(f"✓ Streamlink: {self.streamlink_version}", "success")
             self.log("💡 Use 'V2RayN HTTP' preset for proxy support", "info")
 
         except Exception as exc:
@@ -714,6 +1108,88 @@ class SpotifyDownloader:
             return None
 
     @staticmethod
+    def python_engine_version(module_name):
+        try:
+            module = __import__(module_name)
+            return str(module.__version__)
+        except (ImportError, AttributeError):
+            return None
+
+    def latest_python_engine(self, name):
+        """Latest supported wheel metadata from PyPI's HTTPS index."""
+        spec = PYTHON_COMPONENTS[name]
+        url = f"https://pypi.org/pypi/{name}/json"
+        with self._net_opener() as opener:
+            with opener.open(urllib.request.Request(url, headers={
+                    "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+                    "Accept": "application/json"}), timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        cpython = f"cp{sys.version_info.major}{sys.version_info.minor}-"
+        versions = []
+        for raw_version, files in payload.get("releases", {}).items():
+            if not re.fullmatch(r"\d+(?:\.\d+)*", raw_version):
+                continue
+            version_key = tuple(int(part) for part in raw_version.split("."))
+            if version_key[0] >= spec["max_major"]:
+                continue
+            versions.append((version_key, raw_version, files))
+        for _, version, files in sorted(versions, reverse=True):
+            wheels = [item for item in files
+                      if item.get("packagetype") == "bdist_wheel"
+                      and item.get("filename", "").endswith(".whl")
+                      and not item.get("yanked", False)
+                      and ("py3-none-any" in item["filename"]
+                           or "py3-none-win_amd64" in item["filename"]
+                           or (cpython in item["filename"]
+                               and "win_amd64" in item["filename"]))]
+            if wheels:
+                wheels.sort(key=lambda item: "win_amd64" not in item["filename"])
+                wheel = wheels[0]
+                return (version, wheel["url"], wheel["digests"]["sha256"],
+                        wheel["filename"])
+        raise RuntimeError(f"PyPI has no supported Windows wheel for {spec['label']}.")
+
+    def install_python_engine(self, name, version, url, digest, filename):
+        """Download, verify and unpack one component wheel for activation on restart."""
+        ENGINE_UPDATE_ROOT.mkdir(parents=True, exist_ok=True)
+        wheel_path = ENGINE_UPDATE_ROOT / (filename + ".part")
+        wheel_path.unlink(missing_ok=True)
+        try:
+            with self._net_opener() as opener:
+                request = urllib.request.Request(
+                    url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+                with opener.open(request, timeout=60) as response, wheel_path.open("wb") as target:
+                    shutil.copyfileobj(response, target, length=1024 * 1024)
+            actual = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
+            if actual.lower() != digest.lower():
+                raise RuntimeError("downloaded wheel failed its PyPI SHA-256 check")
+
+            target_dir = ENGINE_UPDATE_ROOT / f"{name}-{re.sub(r'[^0-9A-Za-z_.-]', '_', version)}"
+            if not target_dir.is_dir():
+                with tempfile.TemporaryDirectory(dir=ENGINE_UPDATE_ROOT) as temp:
+                    staging = Path(temp) / "package"
+                    staging.mkdir()
+                    root = staging.resolve()
+                    with zipfile.ZipFile(wheel_path) as wheel:
+                        for member in wheel.infolist():
+                            destination = (staging / member.filename).resolve()
+                            destination.relative_to(root)
+                        wheel.extractall(staging)
+                    os.replace(staging, target_dir)
+
+            try:
+                registry = json.loads(ENGINE_UPDATE_REGISTRY.read_text("utf-8"))
+            except (OSError, ValueError):
+                registry = {}
+            registry[name] = {"version": version, "path": str(target_dir)}
+            pending = ENGINE_UPDATE_REGISTRY.with_suffix(".json.new")
+            pending.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+            os.replace(pending, ENGINE_UPDATE_REGISTRY)
+            return target_dir
+        finally:
+            wheel_path.unlink(missing_ok=True)
+
+    @staticmethod
     def _is_windows_executable(path, minimum_size=1024 * 1024):
         try:
             path = Path(path)
@@ -747,7 +1223,35 @@ class SpotifyDownloader:
 
         target = self.tools_dir / spec["exe"]
         candidate = target.with_name(spec["exe"] + ".new")
-        self._download_with_fallbacks(spec["urls"], candidate, spec["label"])
+        archive_path = None
+        if spec.get("archive_member"):
+            archive_path = target.with_name(spec["exe"] + ".zip.new")
+            self._download_with_fallbacks(spec["urls"], archive_path, spec["label"])
+            try:
+                if spec.get("checksum_urls"):
+                    checksum_path = target.with_name(spec["exe"] + ".sha256.new")
+                    try:
+                        self._download_with_fallbacks(
+                            spec["checksum_urls"], checksum_path, f"{spec['label']} checksum")
+                        manifest = checksum_path.read_text("ascii", "replace")
+                        match = re.search(r"\b([0-9A-Fa-f]{64})\b", manifest)
+                        if not match:
+                            raise RuntimeError(f"{spec['label']} checksum manifest is invalid.")
+                        actual = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+                        if actual.lower() != match.group(1).lower():
+                            raise RuntimeError(f"{spec['label']} archive failed its SHA-256 check.")
+                    finally:
+                        checksum_path.unlink(missing_ok=True)
+                with zipfile.ZipFile(archive_path) as archive:
+                    member = spec["archive_member"]
+                    if member not in archive.namelist():
+                        raise RuntimeError(f"{spec['label']} archive does not contain {member}.")
+                    with archive.open(member) as source, candidate.open("wb") as output:
+                        shutil.copyfileobj(source, output, length=1024 * 1024)
+            finally:
+                archive_path.unlink(missing_ok=True)
+        else:
+            self._download_with_fallbacks(spec["urls"], candidate, spec["label"])
         if not self._is_windows_executable(candidate):
             candidate.unlink(missing_ok=True)
             raise RuntimeError(f"The downloaded {spec['label']} file is not a valid Windows executable.")
@@ -762,7 +1266,13 @@ class SpotifyDownloader:
                 text=True, encoding="utf-8", errors="replace", timeout=45,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            return result.stdout.strip().splitlines()[-1].strip() if result.stdout.strip() else "unknown"
+            lines = result.stdout.strip().splitlines()
+            if not lines:
+                return "unknown"
+            if Path(path).stem.lower() == "deno":
+                match = re.match(r"deno\s+([0-9][^\s]*)", lines[0])
+                return match.group(1) if match else lines[0].strip()
+            return lines[-1].strip()
         except Exception:
             return "unknown"
 
@@ -814,7 +1324,7 @@ class SpotifyDownloader:
                          if ln.strip() and not ln.startswith("#")]
             if not lines:
                 return False, "no cookies read"
-            if domain and not any(domain in ln for ln in lines):
+            if domain and not any(jar_line_matches_domain(ln, domain) for ln in lines):
                 return False, f"{len(lines)} cookies, none for {domain}"
             return True, (f"{len(lines)} cookies, {domain} session" if domain
                           else f"{len(lines)} cookies")
@@ -833,7 +1343,7 @@ class SpotifyDownloader:
             return False, str(exc)[:120]
         if not lines:
             return False, "the file is empty"
-        if domain and not any(domain in ln.split("\t", 1)[0] for ln in lines):
+        if domain and not any(jar_line_matches_domain(ln, domain) for ln in lines):
             return False, f"{len(lines)} cookies, none for {domain}"
         return True, (f"{len(lines)} cookies, {domain} session" if domain
                       else f"{len(lines)} cookies")
@@ -900,6 +1410,22 @@ class SpotifyDownloader:
                     failed.append(f"{label}: {str(exc)[:160]}")
                     self.log(f"{label} update failed: {str(exc)[:200]}", "error")
 
+            for name, spec in PYTHON_COMPONENTS.items():
+                label = spec["label"]
+                try:
+                    current = self.python_engine_version(spec["module"])
+                    self.log(f"Checking {label} (have {current or 'missing'})…", "info")
+                    latest, url, digest, filename = self.latest_python_engine(name)
+                    if current == latest:
+                        self.log(f"{label} is already current ({current}).", "success")
+                        continue
+                    self.install_python_engine(name, latest, url, digest, filename)
+                    changed.append(f"{label} {current or 'missing'} → {latest} (restart required)")
+                    self.log(f"✓ {label} {latest} is ready; restart to activate it.", "success")
+                except Exception as exc:
+                    failed.append(f"{label}: {str(exc)[:160]}")
+                    self.log(f"{label} update failed: {str(exc)[:200]}", "error")
+
             if not self.ffmpeg_cmd:
                 try:
                     self.ffmpeg_cmd = self.get_or_download_ffmpeg()
@@ -944,13 +1470,20 @@ class SpotifyDownloader:
     def _remember_tool(self, name, path):
         if name == "spotdl":
             self.spotdl_cmd = path
-        else:
+        elif name == "yt-dlp":
             self.ytdlp_cmd = path
+        elif name == "deno":
+            self.deno_cmd = path
 
     def component_summary(self):
         return (f"spotDL: {self.spotdl_cmd}\n"
                 f"yt-dlp: {self.ytdlp_cmd}\n"
-                f"FFmpeg: {self.ffmpeg_cmd}")
+                f"Deno/EJS: {self.deno_cmd}\n"
+                f"gallery-dl: {self.gallerydl_version or 'bundled'}\n"
+                f"Streamlink: {self.streamlink_version or 'bundled'}\n"
+                f"FFmpeg: {self.ffmpeg_cmd}\n"
+                f"Office converter: {self._converter_program('soffice') or 'LibreOffice not found'}\n"
+                f"Ebook converter: {self._converter_program('ebook-convert') or 'Calibre not found'}")
 
     def get_or_download_ffmpeg(self):
         packaged_ffmpeg = bundled_tool("ffmpeg.exe")
@@ -1217,7 +1750,7 @@ class SpotifyDownloader:
             self.ui("finished")
 
     # ------------------------------------------------------------------
-    # YouTube / TikTok / Instagram, through yt-dlp
+    # Video and audio sites, through yt-dlp
     # ------------------------------------------------------------------
     def start_media_download(self, kind, url, quality="best", audio_only=False, limit=None):
         if self.is_downloading:
@@ -1227,13 +1760,17 @@ class SpotifyDownloader:
             self.ui("finished")
             return
 
-        url = (url or "").strip()
-        if kind == "tiktok" and url.startswith("@"):
-            url = f"https://www.tiktok.com/{url}"
-        if kind == "instagram" and url.startswith("@"):
-            url = f"https://www.instagram.com/{url[1:].strip('/')}/"
-        if not MEDIA_PATTERNS[kind].search(url):
-            self.notify(f"That is not a {kind.title()} link.", "err")
+        try:
+            url = normalize_media_url(kind, url)
+            token = self.youtube_po_token.get().strip()
+            if kind in YOUTUBE_KINDS and token and not PO_TOKEN_PATTERN.fullmatch(token):
+                raise ValueError("The YouTube PO token must use mweb.gvs+TOKEN format.")
+            if limit is not None:
+                limit = int(limit)
+                if not 1 <= limit <= 10000:
+                    raise ValueError("Item limit must be between 1 and 10000.")
+        except (TypeError, ValueError) as exc:
+            self.notify(str(exc), "err")
             self.ui("finished")
             return
 
@@ -1252,8 +1789,617 @@ class SpotifyDownloader:
             daemon=True,
         ).start()
 
+    # ------------------------------------------------------------------
+    # Documents. No yt-dlp here: PDFs and ebooks are files, not streams.
+    # ------------------------------------------------------------------
+    def start_pdf_download(self, url, limit=None):
+        if self.is_downloading:
+            return
+        try:
+            url = normalize_page_url(url)
+            if limit is not None:
+                limit = int(limit)
+                if not 1 <= limit <= PDF_SCAN_LIMIT:
+                    raise ValueError(f"Document limit must be between 1 and {PDF_SCAN_LIMIT}.")
+        except (TypeError, ValueError) as exc:
+            self.notify(str(exc), "err")
+            self.ui("finished")
+            return
+
+        try:
+            output = download_dir("pdf", self.save_folder.get().strip())
+        except Exception as exc:
+            self.notify(f"Could not create the download folder.\n\n{exc}", "err")
+            self.ui("finished")
+            return
+
+        self.is_downloading = True
+        self.status.set("Downloading")
+        threading.Thread(target=self.download_pdfs, args=(url, output, limit),
+                         daemon=True).start()
+
+    def start_manga_download(self, url, limit=None):
+        if self.is_downloading:
+            return
+        try:
+            url = normalize_page_url(url)
+            if limit is not None:
+                limit = int(limit)
+                if not 1 <= limit <= MANGA_PAGE_LIMIT:
+                    raise ValueError(f"Page limit must be between 1 and {MANGA_PAGE_LIMIT}.")
+        except (TypeError, ValueError) as exc:
+            self.notify(str(exc), "err")
+            self.ui("finished")
+            return
+        try:
+            output = download_dir("pdf", self.save_folder.get().strip())
+        except Exception as exc:
+            self.notify(f"Could not create the download folder.\n\n{exc}", "err")
+            self.ui("finished")
+            return
+        self.is_downloading = True
+        self.status.set("Downloading")
+        threading.Thread(target=self.download_manga, args=(url, output, limit),
+                         daemon=True).start()
+
+    def _open_url(self, opener, url, timeout=45, headers=None):
+        request_headers = {"User-Agent": BROWSER_UA, "Accept": "*/*"}
+        request_headers.update(headers or {})
+        return opener.open(urllib.request.Request(url, headers=request_headers), timeout=timeout)
+
+    def _save_stream(self, response, output, url, index, total,
+                     expect=None, suffix=".pdf", name_hint=None):
+        """Stream one response to disk. Returns the path, or None if it is not wanted.
+
+        `expect` is the magic number the body must start with. For PDFs that check
+        is the whole point — servers mislabel downloads constantly, and a
+        200-with-an-HTML-error-page saved as .pdf is the classic way a
+        "successful" scrape produces 40 broken files. Media has no single magic
+        number, so there the guard is only that it must not be a web page.
+        """
+        head = response.read(max(len(expect), 512) if expect else 512)
+        if expect:
+            if not head.startswith(expect):
+                return None
+        else:
+            content_type = (response.headers.get_content_type() or "").lower()
+            hinted = Path(name_hint or urlsplit(url).path).suffix.lower()
+            looks_like_media = (content_type.startswith(("video/", "audio/", "image/"))
+                                or content_type in MEDIA_CONTENT_TYPES
+                                or hinted in MEDIA_EXTENSIONS)
+            looks_like_text = (content_type.startswith("text/")
+                               or content_type in {"application/json", "application/xml",
+                                                   "application/xhtml+xml"}
+                               or head.lstrip().lower().startswith((b"<html", b"<!doctype")))
+            if not looks_like_media or looks_like_text:
+                return None
+
+        disposition = response.headers.get("Content-Disposition", "")
+        match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', disposition, re.I)
+        name = (match.group(1) if match
+                else name_hint or urlsplit(url).path or "download")
+        if suffix == ".bin":
+            suffix = {
+                "video/mp4": ".mp4", "video/webm": ".webm", "video/mp2t": ".ts",
+                "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/ogg": ".ogg",
+                "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+                "image/webp": ".webp",
+            }.get(response.headers.get_content_type(), suffix)
+        path = unique_path(output, safe_filename(name, suffix=suffix))
+        partial = path.with_suffix(path.suffix + ".part")
+
+        try:
+            size = int(response.headers.get("Content-Length") or 0)
+        except ValueError:
+            size = 0
+        done = len(head)
+        self.ui("file", path.name, 0)
+        with partial.open("wb") as out:
+            out.write(head)
+            while self.is_downloading:
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                done += len(chunk)
+                now = time.time()
+                if now - self.last_ui_update >= UI_UPDATE_INTERVAL:
+                    self.last_ui_update = now
+                    pct = (done / size * 100) if size else 0
+                    self.ui("bytes", pct, path.name, f"{done / 1048576:.1f}MiB", "", 0)
+        if not self.is_downloading:
+            partial.unlink(missing_ok=True)
+            return None
+        os.replace(partial, path)
+        self.ui("track", index, total, path.name[:90])
+        return path
+
+    def _save_document_response(self, response, output, url, index, total):
+        """Save one validated PDF or ebook response. Returns (path, probe bytes)."""
+        head = response.read(4096)
+        disposition = response.headers.get("Content-Disposition", "")
+        match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', disposition, re.I)
+        name = match.group(1) if match else urlsplit(url).path or "document"
+        suffix = detect_document_extension(
+            head, name or url, response.headers.get("Content-Type", ""))
+        if not suffix:
+            return None, head
+
+        path = unique_path(output, safe_filename(name, suffix=suffix))
+        partial = path.with_suffix(path.suffix + ".part")
+        try:
+            size = int(response.headers.get("Content-Length") or 0)
+        except ValueError:
+            size = 0
+        done = len(head)
+        self.ui("file", path.name, 0)
+        try:
+            with partial.open("wb") as out:
+                out.write(head)
+                while self.is_downloading:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    done += len(chunk)
+                    now = time.time()
+                    if now - self.last_ui_update >= UI_UPDATE_INTERVAL:
+                        self.last_ui_update = now
+                        pct = (done / size * 100) if size else 0
+                        self.ui("bytes", pct, path.name, f"{done / 1048576:.1f}MiB", "", 0)
+            if not self.is_downloading:
+                partial.unlink(missing_ok=True)
+                return None, head
+            if suffix == ".zip":
+                actual_suffix = inspect_zip_document(partial)
+                if not actual_suffix:
+                    partial.unlink(missing_ok=True)
+                    return None, head
+                path = unique_path(output, safe_filename(name, suffix=actual_suffix))
+            os.replace(partial, path)
+            self.ui("track", index, total, path.name[:90])
+            return path, head
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+
+    def _resolve_html5_media(self, url):
+        """Resolve media exposed directly in HTML markup or social meta tags."""
+        with self._net_opener() as opener:
+            with self._open_url(opener, url, headers={"Accept": "text/html,*/*;q=0.8"}) as response:
+                content_type = response.headers.get_content_type()
+                if content_type and content_type != "text/html":
+                    return []
+                final_url = response.geturl()
+                body = response.read(8 * 1024 * 1024).decode(
+                    response.headers.get_content_charset() or "utf-8", "replace")
+        parser = HtmlMediaParser()
+        parser.feed(body)
+        found, seen = [], set()
+        for value in parser.links:
+            media_url = urljoin(final_url, value)
+            parsed = urlsplit(media_url)
+            if parsed.scheme not in {"http", "https"} or media_url in seen:
+                continue
+            seen.add(media_url)
+            ext = Path(parsed.path).suffix.lower()
+            found.append((media_url, Path(parsed.path).name, ext.lstrip(".") or "bin"))
+        return found
+
+    def _resolve_html_images(self, url):
+        """Resolve image URLs from a conventional chapter page."""
+        with self._net_opener() as opener:
+            with self._open_url(opener, url, headers={"Accept": "text/html,*/*;q=0.8"}) as response:
+                final_url = response.geturl()
+                body = response.read(12 * 1024 * 1024).decode(
+                    response.headers.get_content_charset() or "utf-8", "replace")
+        parser = HtmlImageParser()
+        parser.feed(body)
+        found, seen = [], set()
+        for value in parser.links:
+            image_url = urljoin(final_url, value)
+            parsed = urlsplit(image_url)
+            if parsed.scheme not in {"http", "https"} or image_url in seen:
+                continue
+            seen.add(image_url)
+            ext = Path(parsed.path).suffix.lower().lstrip(".") or "bin"
+            found.append((image_url, Path(parsed.path).name, ext))
+        return found
+
+    @staticmethod
+    def _pick_streamlink_stream(streams, quality):
+        if not streams:
+            return None, None
+        if quality == "best":
+            return "best", streams.get("best") or next(iter(streams.values()))
+        cap = int(quality) if str(quality).isdigit() else None
+        choices = []
+        if cap:
+            for name, stream in streams.items():
+                match = re.search(r"(\d{3,4})p", name)
+                if match and int(match.group(1)) <= cap:
+                    choices.append((int(match.group(1)), name, stream))
+        if choices:
+            _, name, stream = max(choices, key=lambda item: item[0])
+            return name, stream
+        return "best", streams.get("best") or next(iter(streams.values()))
+
+    def _download_with_streamlink(self, url, output, quality, audio_only):
+        """Record a Streamlink-supported live/VOD stream and return its path."""
+        try:
+            from streamlink import Streamlink
+        except ImportError as exc:
+            raise RuntimeError("Streamlink is not installed in this build.") from exc
+
+        session = Streamlink()
+        session.set_option("http-timeout", 30.0)
+        session.set_option("stream-timeout", 20.0)
+        session.set_option("http-headers", {"User-Agent": BROWSER_UA})
+        if self.use_proxy.get() and self.proxy_url.get().strip():
+            session.set_option(
+                "http-proxy", normalize_proxy_url(self.proxy_url.get(), self.proxy_type.get()))
+        streams = session.streams(url)
+        stream_name, stream = self._pick_streamlink_stream(streams, quality)
+        if stream is None:
+            return None
+
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        host = (urlsplit(url).hostname or "stream").replace(".", "_")
+        raw = unique_path(output, safe_filename(f"{host}_{stamp}", suffix=".ts"))
+        partial = raw.with_suffix(raw.suffix + ".part")
+        self.ui("plan", 1, 1, str(output))
+        self.ui("file", raw.name, 0)
+        self._batch_log(f"Streamlink opened {stream_name}. Stop saves the recording.", "info")
+        self._flush_logs()
+        done = 0
+        handle = stream.open()
+        try:
+            with partial.open("wb") as target:
+                while self.is_downloading:
+                    chunk = handle.read(256 * 1024)
+                    if not chunk:
+                        break
+                    target.write(chunk)
+                    done += len(chunk)
+                    now = time.time()
+                    if now - self.last_ui_update >= UI_UPDATE_INTERVAL:
+                        self.last_ui_update = now
+                        self.ui("bytes", 0, raw.name, f"{done / 1048576:.1f}MiB", "", 0)
+        finally:
+            handle.close()
+        if not done:
+            partial.unlink(missing_ok=True)
+            return None
+        os.replace(partial, raw)
+
+        codec = self.download_format.get() if self.download_format.get() in {"mp3", "flac"} else "mp3"
+        target = raw.with_suffix(f".{codec}" if audio_only else ".mp4")
+        command = ([self.ffmpeg_cmd, "-y", "-i", str(raw), "-vn", "-c:a",
+                    "libmp3lame" if codec == "mp3" else "flac", str(target)] if audio_only else
+                   [self.ffmpeg_cmd, "-y", "-i", str(raw), "-c", "copy",
+                    "-movflags", "+faststart", str(target)])
+        result = subprocess.run(
+            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if result.returncode == 0 and target.is_file() and target.stat().st_size:
+            raw.unlink(missing_ok=True)
+            return target
+        return raw
+
+    # ------------------------------------------------------------------
+    # Engines other than yt-dlp
+    # ------------------------------------------------------------------
+    def _resolve_with_gallery_dl(self, url, kind=None):
+        """Media URLs behind a page, via gallery-dl. Returns [(url, name, ext)].
+
+        gallery-dl is used only to *find* the media, not to fetch it. Its own
+        downloader would bring a second set of proxy settings, a second cookie
+        story and a second progress format; resolving here and streaming through
+        the app's own fetcher keeps one of each.
+        """
+        try:
+            import gallery_dl.config
+            import gallery_dl.job
+        except ImportError:
+            raise RuntimeError("gallery-dl is not installed in this build.")
+
+        gallery_dl.config.clear()
+        gallery_dl.config.set((), "verbosity", 0)
+        # X serves guests through the syndication endpoint; without this, photo
+        # posts need a login that public posts should not require.
+        gallery_dl.config.set(("extractor", "twitter"), "syndication", True)
+        # The same session yt-dlp would have used, in gallery-dl's spelling: a
+        # path for an exported jar, a [browser, profile] list for a live profile.
+        cookie_domain = COOKIE_DOMAINS.get(kind or "")
+        if cookie_domain:
+            for candidate in self.usable_cookies(cookie_domain):
+                if candidate[0] == "file":
+                    gallery_dl.config.set(("extractor",), "cookies", candidate[1])
+                elif len(candidate) > 2:
+                    gallery_dl.config.set(("extractor",), "cookies",
+                                          [candidate[1], candidate[2]])
+                else:
+                    continue
+                break
+
+        # DataJob dumps its findings as JSON to a file handle it binds from
+        # sys.stdout at import time — so redirect_stdout cannot catch it, and in
+        # a windowed build sys.stdout is None and writing to it would crash.
+        # Handing it a buffer of its own is the only thing that holds in both.
+        job = gallery_dl.job.DataJob(url, file=io.StringIO())
+        job.run()
+        if job.exception:
+            raise job.exception
+
+        found = []
+        for entry in job.data:
+            # (3, url, metadata) is gallery-dl's "here is a file" record.
+            if len(entry) >= 3 and entry[0] == 3 and isinstance(entry[1], str):
+                meta = entry[2] if isinstance(entry[2], dict) else {}
+                ext = str(meta.get("extension") or "").lstrip(".") or "bin"
+                name = str(meta.get("filename") or "") or urlsplit(entry[1]).path
+                found.append((entry[1], name, ext))
+        return found
+
+    def _download_media_urls(self, items, output, label, ordered_names=False):
+        """Stream already-resolved media URLs. Returns saved paths in source order."""
+        saved = []
+        self.ui("plan", len(items), 1, str(output))
+        with self._net_opener() as opener:
+            for index, (media_url, name, ext) in enumerate(items, 1):
+                if not self.is_downloading:
+                    break
+                self.ui("track", index - 1, len(items), "")
+                try:
+                    name_hint = f"{index:05d}.{ext}" if ordered_names else name
+                    with self._open_url(opener, media_url) as response:
+                        path = self._save_stream(response, output, media_url, index,
+                                                 len(items), suffix=f".{ext}",
+                                                 name_hint=name_hint)
+                    if path:
+                        saved.append(path)
+                        self._batch_log(f"Saved {path.name}", "success")
+                    else:
+                        self._batch_log(f"Skipped {media_url[:70]}: not media", "warning")
+                except Exception as exc:
+                    self._batch_log(f"Skipped {media_url[:70]}: {str(exc)[:80]}", "warning")
+        self._flush_logs()
+        return saved
+
+    def _no_engine_message(self, kind):
+        """What to say when every engine has looked and found nothing."""
+        tried = " → ".join(("yt-dlp",) + ENGINES.get(kind, ()))
+        detail = getattr(self, "_last_ytdlp_error", "") or ""
+        hint = ("\n\n🔧 Nothing downloadable was found at that link."
+                f"\n• Engines tried: {tried}"
+                "\n• Text-only posts and quote-tweets carry no media to save"
+                "\n• Protected or deleted posts need the account that can see them")
+        if kind == "x":
+            hint += "\n• Use Sign in on the X page if the post is followers-only"
+        return (detail[:220] + hint) if detail else hint.lstrip("\n")
+
+    def _try_other_engines(self, kind, url, output, started, quality="best", audio_only=False):
+        """Everything that is not yt-dlp, in order. True when one of them worked.
+
+        yt-dlp only knows video. A post that is a photo, or a page it has no
+        extractor for, is not a failure to report — it is a job for a different
+        engine.
+        """
+        for engine in ENGINES.get(kind, ()):
+            if not self.is_downloading:
+                return False
+            try:
+                if engine == "streamlink":
+                    self._batch_log("yt-dlp found no downloadable video — checking for a "
+                                    "live or HLS stream with Streamlink.", "info")
+                    self._flush_logs()
+                    path = self._download_with_streamlink(url, output, quality, audio_only)
+                    if path:
+                        self._batch_log(f"Streamlink saved {path.name}.", "success")
+                        self._flush_logs()
+                        self.ui("success", time.time() - started)
+                        return True
+                    continue
+                if audio_only:
+                    continue
+                if engine == "gallery-dl":
+                    self._batch_log("No video there — looking for photos and other "
+                                    "media with gallery-dl.", "info")
+                    self._flush_logs()
+                    items = self._resolve_with_gallery_dl(url, kind)
+                    if not items:
+                        continue
+                    self._batch_log(f"gallery-dl found {len(items)} file(s).", "info")
+                elif engine == "html5":
+                    self._batch_log("Inspecting the page's HTML5 video and audio sources.", "info")
+                    self._flush_logs()
+                    items = self._resolve_html5_media(url)
+                    if not items:
+                        continue
+                    self._batch_log(f"HTML5 resolver found {len(items)} media file(s).", "info")
+                elif engine == "direct":
+                    self._batch_log("Trying the link as a direct media file.", "info")
+                    self._flush_logs()
+                    items = [(url, "", (Path(urlsplit(url).path).suffix or ".bin").lstrip("."))]
+                else:
+                    continue
+
+                if self._download_media_urls(items, output, MEDIA_LABELS.get(kind, kind)):
+                    self.ui("success", time.time() - started)
+                    return True
+            except Exception as exc:
+                self._batch_log(f"{engine} could not handle this link: {str(exc)[:110]}",
+                                "warning")
+                self._flush_logs()
+        return False
+
+    def download_pdfs(self, url, output, limit):
+        """Fetch a PDF/ebook, or every validated document a page links to."""
+        started = time.time()
+        saved, failed = 0, 0
+        self.ui("plan", 1, 1, str(output))
+        self._batch_log(f"Documents: {url}", "download")
+        try:
+            with self._net_opener() as opener:
+                # One fetch answers both questions: a direct PDF is saved here and
+                # now, and anything else is a page whose links are worth reading.
+                try:
+                    with self._open_url(opener, url) as response:
+                        page_url = response.geturl()
+                        path, probe = self._save_document_response(
+                            response, output, page_url, 1, 1)
+                        if path:
+                            self._batch_log(f"Saved {path.name}", "success")
+                            self._flush_logs()
+                            self.ui("success", time.time() - started)
+                            return
+                        body = (probe + response.read(8 * 1024 * 1024)).decode(
+                            response.headers.get_content_charset() or "utf-8", "replace")
+                except urllib.error.HTTPError as exc:
+                    raise RuntimeError(f"The site answered HTTP {exc.code} ({exc.reason}).")
+
+                parser = PdfLinkParser()
+                parser.feed(body)
+                targets, seen = [], set()
+                for href in parser.links:
+                    if href.startswith(("javascript:", "mailto:", "#")):
+                        continue
+                    full = urljoin(page_url, href)
+                    if urlsplit(full).scheme not in ("http", "https") or full in seen:
+                        continue
+                    seen.add(full)
+                    targets.append(full)
+                # Links that name a document are the likely ones, so they go first and
+                # the limit spends itself on them rather than on navigation chrome.
+                targets.sort(key=lambda u: Path(urlsplit(u).path).suffix.lower()
+                             not in DOCUMENT_EXTENSIONS)
+                targets = targets[:min(limit or PDF_SCAN_LIMIT, PDF_SCAN_LIMIT)]
+
+                if not targets:
+                    raise RuntimeError("That page is not a PDF and links to no documents.")
+                self._batch_log(f"Checking {len(targets)} links for documents…", "info")
+                self.ui("plan", len(targets), 1, str(output))
+
+                for index, target in enumerate(targets, 1):
+                    if not self.is_downloading:
+                        break
+                    self.ui("track", index - 1, len(targets), "")
+                    try:
+                        with self._open_url(opener, target, timeout=30) as response:
+                            path, _ = self._save_document_response(
+                                response, output, response.geturl(), index, len(targets))
+                        if path:
+                            saved += 1
+                            self._batch_log(f"Saved {path.name}", "success")
+                    except Exception as exc:
+                        failed += 1
+                        self._batch_log(f"Skipped {target[:70]}: {str(exc)[:80]}", "warning")
+
+            self._flush_logs()
+            if not self.is_downloading:
+                self.log("Download stopped.", "warning")
+            elif saved:
+                self.log(f"{saved} document(s) saved to {output}."
+                         + (f" {failed} link(s) could not be read." if failed else ""), "success")
+                self.ui("success", time.time() - started)
+            else:
+                self.ui("failure",
+                        "No PDF or ebook files were found behind those links.\n\n"
+                        "🔧 Some sites build the document viewer with JavaScript, so the "
+                        "link to the file is not in the page source. Open the PDF itself "
+                        "in your browser and paste that address instead.")
+        except Exception as exc:
+            self._flush_logs()
+            detail = str(exc)[:300]
+            self.log(f"Document download failed: {detail}", "error")
+            self.ui("failure", detail)
+        finally:
+            self.ui("finished")
+
+    def download_manga(self, url, output, limit):
+        """Resolve a chapter into an ordered page folder, PDF and CBZ."""
+        started = time.time()
+        self._batch_log(f"Manga/manhwa chapter: {url}", "download")
+        try:
+            items = []
+            try:
+                items = self._resolve_with_gallery_dl(url, "manga")
+                items = [item for item in items
+                         if f".{item[2].lower()}" in {".jpg", ".jpeg", ".png", ".webp", ".avif"}]
+                if items:
+                    self._batch_log(f"gallery-dl found {len(items)} chapter page(s).", "info")
+            except Exception as exc:
+                self._batch_log(f"gallery-dl did not match this chapter: {str(exc)[:100]}",
+                                "warning")
+            if not items:
+                items = self._resolve_html_images(url)
+                if items:
+                    self._batch_log(f"HTML image resolver found {len(items)} candidate page(s).",
+                                    "info")
+            items = items[:min(limit or MANGA_PAGE_LIMIT, MANGA_PAGE_LIMIT)]
+            if not items:
+                raise RuntimeError("No chapter images were found at that link.")
+
+            slug = unquote(Path(urlsplit(url).path.rstrip("/")).name)
+            slug = slug or (urlsplit(url).hostname or "chapter")
+            page_folder, pdf_path, cbz_path = unique_chapter_paths(output, slug)
+            page_folder.mkdir(parents=True)
+            pages = self._download_media_urls(
+                items, page_folder, "chapter page", ordered_names=True)
+            if not self.is_downloading:
+                self.log("Download stopped.", "warning")
+                return
+            if not pages:
+                raise RuntimeError("The chapter links did not return readable images.")
+
+            # Failed page requests can leave gaps. Rename through temporary names
+            # so the permanent folder is always a contiguous reading sequence.
+            staged = []
+            for index, page in enumerate(pages, 1):
+                temporary = page_folder / f".ordered-{index:05d}{page.suffix.lower()}"
+                os.replace(page, temporary)
+                staged.append(temporary)
+            pages = []
+            for index, page in enumerate(staged, 1):
+                ordered = page_folder / f"{index:05d}{page.suffix.lower()}"
+                os.replace(page, ordered)
+                pages.append(ordered)
+
+            pdf_partial = pdf_path.with_suffix(".pdf.part")
+            cbz_partial = cbz_path.with_suffix(".cbz.part")
+            self.ui("stage", "building ordered folder, PDF and CBZ")
+            try:
+                with zipfile.ZipFile(cbz_partial, "w", compression=zipfile.ZIP_STORED) as archive:
+                    for page in pages:
+                        archive.write(page, page.name)
+                os.replace(cbz_partial, cbz_path)
+            finally:
+                cbz_partial.unlink(missing_ok=True)
+
+            try:
+                with tempfile.TemporaryDirectory() as temp:
+                    self._write_images_pdf(pages, pdf_partial, Path(temp))
+                os.replace(pdf_partial, pdf_path)
+            finally:
+                pdf_partial.unlink(missing_ok=True)
+
+            self._batch_log(f"Saved {len(pages)} ordered pages in {page_folder.name}, "
+                            f"plus {pdf_path.name} and {cbz_path.name}.",
+                            "success")
+            self._flush_logs()
+            self.ui("success", time.time() - started)
+        except Exception as exc:
+            self._flush_logs()
+            detail = str(exc)[:300]
+            self.log(f"Manga/manhwa download failed: {detail}", "error")
+            self.ui("failure", detail +
+                    "\n\nOnly public or account-authorized chapter pages are supported. "
+                    "DRM and paywalls are not bypassed.")
+        finally:
+            self.ui("finished")
+
     def _ytdlp_cmd_for(self, kind, url, output, quality, audio_only, limit, candidate=None,
-                       clients=None):
+                       clients=None, impersonate=False):
         cmd = [
             self.ytdlp_cmd, url,
             "--output", str(output / "%(title).150B.%(ext)s"),
@@ -1273,6 +2419,12 @@ class SpotifyDownloader:
         if audio_only:
             codec = self.download_format.get() if self.download_format.get() in ("mp3", "flac") else "mp3"
             cmd += ["--extract-audio", "--audio-format", codec, "--audio-quality", f"{self.quality.get()}K"]
+            if kind == "ytmusic":
+                # A music library is only as good as its tags. YouTube Music
+                # carries real artist/album/track metadata and cover art, and a
+                # file without them is unsortable in any player.
+                cmd += ["--embed-metadata", "--embed-thumbnail",
+                        "--parse-metadata", "%(release_year,upload_date>%Y)s:%(meta_date)s"]
         elif kind == "instagram":
             # Posts are as often stills as video: a height-capped video selector
             # matches nothing on a photo, and merging into mp4 makes no sense.
@@ -1288,10 +2440,42 @@ class SpotifyDownloader:
             cmd += ["--playlist-end", str(limit)]
         if candidate:
             cmd += ytdlp_cookie_args(candidate)
-        if clients:
-            # Each YouTube client is checked for bots differently. When the
-            # default is challenged, another one usually is not.
-            cmd += ["--extractor-args", f"youtube:player_client={clients}"]
+
+        # Some extractors and generic pages also ship JavaScript challenges.
+        # Supplying Deno is harmless when unused and lets yt-dlp invoke it when
+        # an extractor supports EJS or another external challenge script.
+        runtime = (self.deno_cmd if self.deno_cmd and Path(self.deno_cmd).is_file()
+                   else shutil.which("node"))
+        if runtime:
+            runtime_name = "deno" if Path(runtime).stem.lower() == "deno" else "node"
+            cmd += ["--js-runtimes", f"{runtime_name}:{runtime}"]
+
+        # Impersonation is deliberately a challenge-only General fallback.
+        # yt-dlp warns that forcing it globally can reduce speed and stability.
+        if kind == "general" and impersonate:
+            # A generic family lets yt-dlp select the newest Chrome profile its
+            # bundled curl_cffi actually supports. An empty "any" target is
+            # fragile on Windows because some launchers discard empty arguments.
+            cmd += ["--impersonate", "chrome"]
+
+        if kind in YOUTUBE_KINDS:
+            # YouTube documents rate limits separately from bot challenges.
+            # Modest spacing keeps playlists from burning through a session.
+            cmd += ["--sleep-requests", "1", "--sleep-interval", "3",
+                    "--max-sleep-interval", "6"]
+
+            token = self.youtube_po_token.get().strip()
+            selected_clients = clients
+            extractor_args = []
+            if token and PO_TOKEN_PATTERN.fullmatch(token):
+                selected_clients = selected_clients or "mweb,default"
+                if "mweb" not in selected_clients.split(","):
+                    selected_clients = "mweb," + selected_clients
+                extractor_args.append(f"po_token={token}")
+            if selected_clients:
+                extractor_args.insert(0, f"player_client={selected_clients}")
+            if extractor_args:
+                cmd += ["--extractor-args", "youtube:" + ";".join(extractor_args)]
         if self.use_proxy.get() and self.proxy_url.get().strip():
             # yt-dlp speaks SOCKS5 directly, so the HTTP bridge is not needed here.
             cmd += ["--proxy", normalize_proxy_url(self.proxy_url.get(), self.proxy_type.get())]
@@ -1307,7 +2491,7 @@ class SpotifyDownloader:
                         and "+" in MEDIA_FORMATS.get(quality, "")) else 1
         self.ui("plan", 1, streams, str(output))
         started = time.time()
-        self._batch_log(f"{kind.title()}: {url}", "download")
+        self._batch_log(f"{MEDIA_LABELS[kind]}: {url}", "download")
 
         # A cookie source that exists is not a cookie source that reads: a running
         # Chromium browser locks its DB, and Chrome 127+ encrypts it app-bound.
@@ -1320,11 +2504,11 @@ class SpotifyDownloader:
                     "No readable cookies — log into Instagram in Firefox, or drop a cookies.txt "
                     "beside the app. Trying anyway.", "warning")
 
-        # Each attempt is a cookie jar, a set of YouTube player clients, and a
-        # proxy override. The ladder is climbed only when a run says why it
+        # Each attempt is a cookie jar, a set of YouTube player clients, and an
+        # optional browser-impersonation pass. The ladder is climbed when a run says why it
         # failed, and every rung is used at most once — otherwise a jar that can
         # never satisfy the site gets retried forever.
-        plan = [{"cookies": c, "clients": None} for c in cookies]
+        plan = [{"cookies": c, "clients": None, "impersonate": False} for c in cookies]
         spent = set()
 
         try:
@@ -1335,19 +2519,30 @@ class SpotifyDownloader:
                     self._batch_log(f"Cookies: {candidate_label(candidate)}", "info")
                 verdict = self._run_ytdlp(
                     kind, url, output, quality, audio_only, limit, candidate, started,
-                    may_borrow_cookies=(kind in COOKIE_ON_DEMAND),
-                    clients=attempt["clients"])
+                    # Instagram belongs here too: it probes cookies up front, but a
+                    # stored session that expired between runs only shows up as a
+                    # sign-in demand mid-download, and that is what the ladder fixes.
+                    may_borrow_cookies=(kind in COOKIE_ON_DEMAND or kind in COOKIE_SOURCES),
+                    clients=attempt["clients"], impersonate=attempt["impersonate"])
 
                 if verdict is None:
                     return
 
-                if verdict == "signin":
-                    nxt = self._next_signin_step(kind, attempt, spent)
+                if verdict == "other-engine":
+                    if self._try_other_engines(kind, url, output, started, quality, audio_only):
+                        return
+                    self._flush_logs()
+                    self.ui("failure", self._no_engine_message(kind))
+                    return
+
+                if verdict in ("signin", "challenge"):
+                    nxt = self._next_signin_step(kind, url, attempt, spent,
+                                                 challenge=(verdict == "challenge"))
                     if nxt:
                         plan.insert(0, nxt)
                         continue
                     self._flush_logs()
-                    self._report_signin_failure(kind)
+                    self._report_signin_failure(kind, url)
                     return
 
                 # verdict == "cookies": that jar is unreadable.
@@ -1363,14 +2558,22 @@ class SpotifyDownloader:
         finally:
             self.ui("finished")
 
-    def _next_signin_step(self, kind, attempt, spent):
+    def _next_signin_step(self, kind, url, attempt, spent, challenge=False):
         """The next thing worth trying against a sign-in demand, or None.
 
         Cheapest first: another player client costs nothing, a cookie jar needs
         an account. Each rung is spent once, so a jar that can never satisfy the
         site is not retried forever.
         """
-        if kind == "youtube" and "clients" not in spent:
+        if kind == "general" and challenge and "impersonate" not in spent:
+            spent.add("impersonate")
+            self._batch_log(
+                "The site returned a browser challenge - retrying with browser impersonation.",
+                "warning")
+            self._flush_logs()
+            return {**attempt, "impersonate": True}
+
+        if kind in YOUTUBE_KINDS and "clients" not in spent:
             spent.add("clients")
             self._batch_log("YouTube asked for a bot check — retrying as a different client.",
                             "warning")
@@ -1380,12 +2583,15 @@ class SpotifyDownloader:
         # The stored login outlives its cookies, because the site rotates them.
         # If this app has ever signed in here, re-read the session before
         # deciding there is none — it costs seconds and needs no one's attention.
-        if "refresh" not in spent and read_registry().get(kind):
+        site = cookie_site(kind)
+        domain = cookie_domain_for(kind, url)
+        if site in SIGNIN_PAGES and "refresh" not in spent and read_registry().get(site):
             spent.add("refresh")
-            self._batch_log(f"Refreshing the stored {kind.title()} session…", "warning")
+            self._batch_log(f"Refreshing the stored {MEDIA_LABELS.get(site, site)} session…",
+                            "warning")
             self._flush_logs()
-            if self.refresh_session(kind, announce=False):
-                session = self.usable_cookies(COOKIE_DOMAINS.get(kind), require_session=True)
+            if self.refresh_session(site, announce=False):
+                session = self.usable_cookies(domain, require_session=True)
                 if session:
                     self._batch_log("Retrying with the refreshed session.", "success")
                     self._flush_logs()
@@ -1394,9 +2600,12 @@ class SpotifyDownloader:
         if "cookies" not in spent:
             spent.add("cookies")
             # Only a jar that actually holds this site's session can help here.
-            session = self.usable_cookies(COOKIE_DOMAINS.get(kind), require_session=True)
+            session = self.usable_cookies(domain, require_session=True)
             if session:
-                self._batch_log(f"Retrying with the {candidate_label(session[0])} session.", "warning")
+                suffix = f" for {domain}" if kind == "general" else ""
+                self._batch_log(
+                    f"Retrying with the {candidate_label(session[0])} session{suffix}.",
+                    "warning")
                 self._flush_logs()
                 return {**attempt, "cookies": session[0]}
             self._batch_log("No signed-in session for this site — skipping cookies.",
@@ -1583,7 +2792,7 @@ class SpotifyDownloader:
         session; one taken in a private window and never used again does not.
         """
         site = {"youtube": "www.youtube.com", "instagram": "www.instagram.com",
-                "tiktok": "www.tiktok.com"}.get(kind, "the site")
+                "tiktok": "www.tiktok.com", "x": "x.com"}.get(kind, "the site")
         return (f"\n\n🍪 Export a cookies.txt — this lasts:"
                 "\n1. Install the “Get cookies.txt LOCALLY” extension"
                 "\n2. Open a private/incognito window and sign in"
@@ -1594,20 +2803,34 @@ class SpotifyDownloader:
                 " holding this site's session. Do not open that private window again —"
                 " closing it is what keeps the session alive.")
 
-    def _report_signin_failure(self, kind):
-        detail = f"{kind.title()} wants a signed-in session and no usable cookies were found."
+    def _report_signin_failure(self, kind, url=None):
+        domain = cookie_domain_for(kind, url or "")
+        label = domain if kind == "general" and domain else kind.title()
+        detail = f"{label} wants a signed-in session and no usable cookies were found."
         self.log(f"{kind.title()} download failed: {detail}", "error")
 
         # A browser that is merely running is the most common — and most easily
         # fixed — reason we have no session, so name it instead of listing options.
-        locked = [candidate_label(c) for c in cookie_candidates(COOKIE_DOMAINS.get(kind))
+        locked = [candidate_label(c) for c in cookie_candidates(domain)
                   if locked_by_browser(c)]
         opening = ""
         if locked:
             names = " and ".join(dict.fromkeys(locked))
             opening = (f"\n\n🔧 {names} is open, and a running browser keeps its cookies locked."
                        f"\n• Close {names} completely — check the tray — then press Download again")
-        self.ui("failure", detail + opening + self.cookie_export_recipe(kind))
+        token_hint = ""
+        if kind in YOUTUBE_KINDS:
+            token_hint = (
+                "\n\nYouTube's JavaScript challenge solver was tried first. If the IP still "
+                "requires proof-of-origin, add an mweb.gvs+TOKEN in Connection settings.")
+        if kind == "general":
+            export_hint = (
+                f"\n\nExport a Netscape cookies.txt while signed in to {domain or 'the site'}, "
+                "then place it beside the app or in Downloads. Only cookies matching the "
+                "requested hostname are eligible for this retry.")
+        else:
+            export_hint = self.cookie_export_recipe(kind)
+        self.ui("failure", detail + opening + token_hint + export_hint)
 
     def _report_ytdlp_failure(self, kind, detail):
         self.log(f"{kind.title()} download failed: {detail}", "error")
@@ -1620,17 +2843,18 @@ class SpotifyDownloader:
                 " folder — an exported file wins over every browser")
 
     def _run_ytdlp(self, kind, url, output, quality, audio_only, limit, candidate, started,
-                   may_borrow_cookies=False, clients=None):
+                   may_borrow_cookies=False, clients=None, impersonate=False):
         """One yt-dlp run.
 
         Returns None when the job is over (success, stop, or a failure already
         reported), or a verdict the caller can act on: "cookies" for an unreadable
-        jar, "signin" for a site that wants a session.
+        jar, "signin" for a site that wants a session, or "challenge" for a
+        General-site browser challenge that has another safe fallback.
         """
         error_lines = []
         try:
             cmd = self._ytdlp_cmd_for(kind, url, output, quality, audio_only, limit, candidate,
-                                      clients)
+                                      clients, impersonate)
             self.process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=8192, encoding="utf-8", errors="replace",
@@ -1695,8 +2919,16 @@ class SpotifyDownloader:
             # Say nothing yet when the caller still has a move to make.
             if candidate and COOKIE_FAILURE.search(joined):
                 return "cookies"
+            if kind == "general" and GENERAL_CHALLENGE.search(joined):
+                return "challenge"
             if may_borrow_cookies and SIGNIN_DEMANDED.search(joined):
                 return "signin"
+            # "There is no video here" is a routing answer, not a failure: a photo
+            # post and a site yt-dlp has never heard of both land here, and both
+            # are somebody else's job.
+            if ENGINES.get(kind) and NO_VIDEO_FOR_YTDLP.search(joined):
+                self._last_ytdlp_error = joined
+                return "other-engine"
             raise RuntimeError(joined or f"yt-dlp exited with code {code}")
         except FileNotFoundError:
             self._flush_logs()
@@ -1711,6 +2943,13 @@ class SpotifyDownloader:
                 hint = ("\n\n🔧 The site asked for a signed-in session."
                         "\n• Log in with Firefox, or drop a cookies.txt beside the app"
                         "\n• A proxy in Connection settings also helps when it is region bait")
+            elif "drm" in detail.lower():
+                # Naming the wall beats a retry loop against it. Nothing in this
+                # app removes DRM, and no setting is going to change that.
+                hint = ("\n\n🔧 This title is DRM-protected, so it cannot be downloaded."
+                        "\n• Netflix and Crunchyroll encrypt their whole catalogue"
+                        "\n• SoundCloud Go+ tracks are protected the same way"
+                        "\n• Unprotected titles on the same site still work normally")
             elif kind == "tiktok":
                 hint = "\n\n🔧 TikTok rate-limits hard. Enable a proxy and retry in a minute."
             elif kind == "instagram":
@@ -1817,9 +3056,11 @@ class SpotifyDownloader:
 
         self.spotdl_cmd = self.find_tool("spotdl")
         self.ytdlp_cmd = self.find_tool("yt-dlp")
+        self.deno_cmd = self.find_tool("deno")
 
         missing = [label for label, found in (
             ("spotDL", self.spotdl_cmd), ("yt-dlp", self.ytdlp_cmd), ("FFmpeg", self.ffmpeg_cmd),
+            ("Deno", self.deno_cmd),
         ) if not found]
         self.ui("components", self.component_summary())
         if not missing:
@@ -1832,28 +3073,323 @@ class SpotifyDownloader:
     # ------------------------------------------------------------------
     # Conversion
     # ------------------------------------------------------------------
-    def convert_single_flac(self, path):
+    @staticmethod
+    def normalize_media_conversion_options(options):
+        """Validate the converter payload received from the web UI."""
+        if isinstance(options, str):
+            options = {"format": options}
+        if not isinstance(options, dict):
+            raise ValueError("Invalid converter settings.")
+        output_format = str(options.get("format", "mp4")).lower()
+        if output_format not in MEDIA_CONVERT_FORMATS:
+            raise ValueError("Choose a supported media output format.")
+        codec = str(options.get("codec", "auto")).lower()
+        if codec not in VIDEO_CONVERT_CODECS:
+            raise ValueError("Choose a supported video codec.")
+        quality = str(options.get("quality", "balanced")).lower()
+        if quality not in VIDEO_CONVERT_QUALITY:
+            raise ValueError("Choose a supported video quality.")
+        resize = str(options.get("resize", "source")).lower()
+        if resize not in {*VIDEO_RESIZE_PRESETS, "custom"}:
+            raise ValueError("Choose a supported resize preset.")
+        fps = str(options.get("fps", "source")).lower()
+        if fps not in {"source", "24", "30", "60"}:
+            raise ValueError("Choose a supported frame rate.")
+        bitrate = str(options.get("audio_bitrate", "192"))
+        if bitrate not in {"128", "192", "256", "320"}:
+            raise ValueError("Choose a supported audio bitrate.")
+        width = int(options.get("width") or 0)
+        height = int(options.get("height") or 0)
+        if resize == "custom":
+            if not width and not height:
+                raise ValueError("Enter a custom width, height, or both.")
+            if width and not 16 <= width <= 7680:
+                raise ValueError("Custom width must be between 16 and 7680 pixels.")
+            if height and not 16 <= height <= 4320:
+                raise ValueError("Custom height must be between 16 and 4320 pixels.")
+        if output_format == "webm":
+            codec = "vp9"
+        elif output_format == "avi":
+            codec = "h264"
+        elif output_format == "mov" and codec == "vp9":
+            codec = "h264"
+        elif codec == "auto":
+            codec = "h264"
+        return {
+            "format": output_format, "codec": codec, "quality": quality,
+            "resize": resize, "fps": fps, "audio_bitrate": bitrate,
+            "width": width, "height": height,
+        }
+
+    @staticmethod
+    def media_conversion_command(ffmpeg, source, target, options):
+        """Build a complete resize, codec, quality and audio transcode command."""
+        output_format = options["format"]
+        bitrate = options["audio_bitrate"]
+        base = [
+            ffmpeg, "-hide_banner", "-y", "-i", str(source),
+            "-map", "0:v:0?", "-map", "0:a:0?", "-map_metadata", "0",
+        ]
+        if output_format == "mp3":
+            return base + ["-vn", "-c:a", "libmp3lame", "-b:a", f"{bitrate}k", str(target)]
+        if output_format == "flac":
+            return base + ["-vn", "-c:a", "flac", "-compression_level", "8", str(target)]
+        if output_format == "wav":
+            return base + ["-vn", "-c:a", "pcm_s16le", str(target)]
+        if output_format in {"m4a", "aac"}:
+            return base + ["-vn", "-c:a", "aac", "-b:a", f"{bitrate}k", str(target)]
+        if output_format == "ogg":
+            return base + ["-vn", "-c:a", "libopus", "-b:a", f"{bitrate}k", str(target)]
+
+        filters = []
+        resize = options["resize"]
+        if resize == "custom":
+            width = options["width"] or -2
+            height = options["height"] or -2
+            filters.append(
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2")
+        elif VIDEO_RESIZE_PRESETS[resize]:
+            width, height = VIDEO_RESIZE_PRESETS[resize]
+            filters.append(
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2")
+        if options["fps"] != "source":
+            filters.append(f"fps={options['fps']}")
+        if filters:
+            base += ["-vf", ",".join(filters)]
+
+        crf = str(VIDEO_CONVERT_QUALITY[options["quality"]])
+        codec = options["codec"]
+        if codec == "h265":
+            command = base + ["-c:v", "libx265", "-preset", "medium", "-crf", crf]
+            if output_format in {"mp4", "mov"}:
+                command += ["-tag:v", "hvc1"]
+        elif codec == "vp9":
+            command = base + ["-c:v", "libvpx-vp9", "-crf", crf, "-b:v", "0", "-row-mt", "1"]
+        else:
+            command = base + ["-c:v", "libx264", "-preset", "medium", "-crf", crf,
+                              "-pix_fmt", "yuv420p"]
+        if output_format == "webm":
+            command += ["-c:a", "libopus", "-b:a", f"{bitrate}k"]
+        elif output_format == "avi":
+            command += ["-c:a", "libmp3lame", "-b:a", f"{bitrate}k"]
+        else:
+            command += ["-c:a", "aac", "-b:a", f"{bitrate}k"]
+        if output_format in {"mp4", "mov"}:
+            command += ["-movflags", "+faststart"]
+        return command + [str(target)]
+
+    def start_media_conversion(self, path, options):
+        try:
+            options = self.normalize_media_conversion_options(options)
+        except (TypeError, ValueError) as exc:
+            self.notify(str(exc), "err")
+            return
         if self.is_converting:
             self.notify("A conversion is already running.", "err")
             return
         self.is_converting = True
+        threading.Thread(
+            target=self.convert_media_file, args=(path, options), daemon=True).start()
+
+    def convert_media_file(self, path, options):
         source = Path(path)
-        target = source.with_suffix(".flac")
+        partial = None
+        output_format = options["format"]
+        self.ui("converting", True, "media")
         try:
-            self.log(f"Converting {source.name} → FLAC…", "info")
-            cmd = [self.ffmpeg_cmd, "-i", str(source), "-ar", "44100", "-c:a", "flac", "-compression_level", "8", "-y", str(target)]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
-            if result.returncode == 0 and target.exists():
-                self.log(f"✓ Converted: {target.name}", "success")
-                self.notify(f"Created {target.name}", "ok")
-            else:
-                self.log("FLAC conversion failed.", "error")
-                self.notify("FFmpeg could not convert that file.", "err")
+            if not self.ffmpeg_cmd or not Path(self.ffmpeg_cmd).is_file():
+                raise RuntimeError("FFmpeg is not ready. Run Check setup first.")
+            if not source.is_file():
+                raise RuntimeError("The selected media file no longer exists.")
+            target = unique_path(source.parent, safe_filename(
+                source.stem, fallback="converted", suffix=f".{output_format}"))
+            partial = target.with_name(target.stem + ".working" + target.suffix)
+            partial.unlink(missing_ok=True)
+            self.log(f"Converting {source.name} to {output_format.upper()}...", "info")
+            command = self.media_conversion_command(
+                self.ffmpeg_cmd, source, partial, options)
+            result = subprocess.run(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode != 0 or not partial.is_file() or partial.stat().st_size == 0:
+                detail = (result.stderr or result.stdout or "FFmpeg returned no output").strip()
+                raise RuntimeError(detail.splitlines()[-1][:220])
+            os.replace(partial, target)
+            self.log(f"Converted: {target.name}", "success")
+            self.notify(f"Created {target.name}", "ok")
         except Exception as exc:
-            self.log(f"Conversion error: {str(exc)[:250]}", "error")
-            self.notify("FFmpeg could not convert that file.", "err")
+            self.log(f"Media conversion failed: {str(exc)[:250]}", "error")
+            self.notify(str(exc)[:220], "err")
         finally:
+            if partial:
+                partial.unlink(missing_ok=True)
             self.is_converting = False
+            self.ui("converting", False, "media")
+
+    @staticmethod
+    def _converter_program(name):
+        found = shutil.which(name)
+        if found:
+            return found
+        roots = [os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)")]
+        relative = ("LibreOffice/program/soffice.exe" if name == "soffice"
+                    else "Calibre2/ebook-convert.exe")
+        for root in filter(None, roots):
+            candidate = Path(root) / Path(relative)
+            if candidate.is_file():
+                return str(candidate)
+        return None
+
+    @staticmethod
+    def _write_images_pdf(image_sources, target, workspace):
+        import img2pdf
+        from PIL import Image
+
+        normalized = []
+        for index, source in enumerate(image_sources, 1):
+            destination = workspace / f"{index:05d}.png"
+            if isinstance(source, tuple):
+                _, payload = source
+                image = Image.open(io.BytesIO(payload))
+            else:
+                image = Image.open(source)
+            with image:
+                image.seek(0)
+                rgba = image.convert("RGBA")
+                canvas = Image.new("RGB", rgba.size, "white")
+                canvas.paste(rgba, mask=rgba.getchannel("A"))
+                canvas.save(destination, "PNG", optimize=True)
+            normalized.append(str(destination))
+        if not normalized:
+            raise RuntimeError("No readable images were found.")
+        target.write_bytes(img2pdf.convert(normalized))
+
+    def start_document_conversion(self, path):
+        if self.is_converting:
+            self.notify("A conversion is already running.", "err")
+            return
+        self.is_converting = True
+        threading.Thread(target=self.convert_document_file, args=(path,), daemon=True).start()
+
+    def start_image_folder_conversion(self, path):
+        if self.is_converting:
+            self.notify("A conversion is already running.", "err")
+            return
+        self.is_converting = True
+        threading.Thread(target=self.convert_image_folder, args=(path,), daemon=True).start()
+
+    def convert_image_folder(self, path):
+        """Combine a chapter/image folder into a naturally ordered PDF."""
+        folder = Path(path)
+        partial = None
+        self.ui("converting", True, "document")
+        try:
+            if not folder.is_dir():
+                raise RuntimeError("The selected image folder no longer exists.")
+            images = [item for item in folder.rglob("*")
+                      if item.is_file() and item.suffix.lower() in IMAGE_DOCUMENT_EXTENSIONS]
+            images.sort(key=lambda item: natural_sort_key(item.relative_to(folder).as_posix()))
+            if not images:
+                raise RuntimeError("No supported images were found in that folder.")
+            if len(images) > MANGA_PAGE_LIMIT:
+                raise RuntimeError(f"Image folders are limited to {MANGA_PAGE_LIMIT} pages.")
+            target = unique_path(folder.parent, safe_filename(
+                folder.name, fallback="chapter", suffix=".pdf"))
+            partial = target.with_name(target.stem + ".working.pdf")
+            self.log(f"Combining {len(images)} ordered images into {target.name}...", "info")
+            with tempfile.TemporaryDirectory() as temp:
+                self._write_images_pdf(images, partial, Path(temp))
+            if not partial.is_file() or partial.stat().st_size == 0:
+                raise RuntimeError("The image converter returned an empty PDF.")
+            os.replace(partial, target)
+            self.log(f"Created {target.name} from {len(images)} images.", "success")
+            self.notify(f"Created {target.name}", "ok")
+        except Exception as exc:
+            detail = str(exc)[:250]
+            self.log(f"Image-folder conversion failed: {detail}", "error")
+            self.notify(detail, "err")
+        finally:
+            if partial:
+                partial.unlink(missing_ok=True)
+            self.is_converting = False
+            self.ui("converting", False, "document")
+
+    def convert_document_file(self, path):
+        source = Path(path)
+        partial = None
+        self.ui("converting", True, "document")
+        try:
+            if not source.is_file():
+                raise RuntimeError("The selected document no longer exists.")
+            target = unique_path(source.parent, safe_filename(
+                source.stem, fallback="document", suffix=".pdf"))
+            partial = target.with_name(target.stem + ".working.pdf")
+            partial.unlink(missing_ok=True)
+            suffix = source.suffix.lower()
+            self.log(f"Converting {source.name} to PDF...", "info")
+
+            with tempfile.TemporaryDirectory() as temp:
+                workspace = Path(temp)
+                if suffix in IMAGE_DOCUMENT_EXTENSIONS:
+                    self._write_images_pdf([source], partial, workspace)
+                elif suffix == ".cbz":
+                    with zipfile.ZipFile(source) as archive:
+                        names = [name for name in archive.namelist()
+                                 if Path(name).suffix.lower() in IMAGE_DOCUMENT_EXTENSIONS]
+                        names.sort(key=natural_sort_key)
+                        if len(names) > MANGA_PAGE_LIMIT:
+                            raise RuntimeError(f"Comic archives are limited to {MANGA_PAGE_LIMIT} pages.")
+                        images = [(name, archive.read(name)) for name in names]
+                    self._write_images_pdf(images, partial, workspace)
+                elif suffix == ".pdf":
+                    import pikepdf
+                    with pikepdf.Pdf.open(source) as document:
+                        document.save(partial)
+                elif suffix in EBOOK_CONVERT_EXTENSIONS:
+                    converter = self._converter_program("ebook-convert")
+                    if not converter:
+                        raise RuntimeError(
+                            "Calibre is required for EPUB, MOBI, AZW, AZW3 and FB2 conversion.")
+                    result = subprocess.run(
+                        [converter, str(source), str(partial)], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace",
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    if result.returncode != 0:
+                        raise RuntimeError((result.stderr or result.stdout).strip()[-220:])
+                elif suffix in OFFICE_DOCUMENT_EXTENSIONS:
+                    converter = self._converter_program("soffice")
+                    if not converter:
+                        raise RuntimeError(
+                            "LibreOffice is required for Office and OpenDocument conversion.")
+                    result = subprocess.run(
+                        [converter, "--headless", "--convert-to", "pdf", "--outdir",
+                         str(workspace), str(source)], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace",
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    generated = workspace / f"{source.stem}.pdf"
+                    if result.returncode != 0 or not generated.is_file():
+                        raise RuntimeError((result.stderr or result.stdout or
+                                            "LibreOffice returned no PDF").strip()[-220:])
+                    shutil.copyfile(generated, partial)
+                else:
+                    raise RuntimeError("That document type cannot be converted to PDF.")
+
+            if not partial.is_file() or partial.stat().st_size == 0:
+                raise RuntimeError("The converter returned an empty PDF.")
+            os.replace(partial, target)
+            self.log(f"Converted: {target.name}", "success")
+            self.notify(f"Created {target.name}", "ok")
+        except Exception as exc:
+            detail = str(exc)[:250]
+            self.log(f"Document conversion failed: {detail}", "error")
+            self.notify(detail, "err")
+        finally:
+            if partial:
+                partial.unlink(missing_ok=True)
+            self.is_converting = False
+            self.ui("converting", False, "document")
 
     def on_close(self):
         self.closing = True
@@ -1908,6 +3444,12 @@ class Api:
     def start_media(self, kind, url, quality, audio_only, limit):
         self._app.start_media_download(kind, url, quality, audio_only, limit or None)
 
+    def start_pdf(self, url, limit):
+        self._app.start_pdf_download(url, limit or None)
+
+    def start_manga(self, url, limit):
+        self._app.start_manga_download(url, limit or None)
+
     def stop_download(self):
         self._app.stop_download()
 
@@ -1947,8 +3489,10 @@ class Api:
             f"{APP_NAME} {APP_VERSION}\n"
             f"Created by {CREATOR}\n"
             f"{TELEGRAM_URL}\n\n"
-            "Spotify, YouTube, TikTok and Instagram.\n"
-            "FFmpeg, spotDL and yt-dlp ship inside the app and update from\n"
+            "Spotify, YouTube, YouTube Music, TikTok, Instagram, SoundCloud, X,\n"
+            "documents, ebooks, manga/manhwa and general video sites.\n"
+            "FFmpeg, spotDL, yt-dlp, Deno, Streamlink and gallery-dl ship inside the app.\n"
+            "The core command-line tools update from\n"
             "mirrored sources. V2RayN compatible.",
             "info",
         )
@@ -1960,15 +3504,35 @@ class Api:
             self._app.set_option("folder", folder)
             self._app.ui("folder", folder)
 
-    def convert(self):
+    def convert_media(self, options):
         if not self._app.ffmpeg_cmd:
             self._app.notify("FFmpeg is not ready yet.", "err")
             return
         picked = self._window.create_file_dialog(
-            webview.OPEN_DIALOG, file_types=("MP3 files (*.mp3)", "All files (*.*)")
+            webview.OPEN_DIALOG,
+            file_types=(
+                "Media files (*.mp4;*.mkv;*.webm;*.mov;*.avi;*.m4v;*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg)",
+                "All files (*.*)",
+            ),
         )
         if picked:
-            threading.Thread(target=self._app.convert_single_flac, args=(picked[0],), daemon=True).start()
+            self._app.start_media_conversion(picked[0], options)
+
+    def convert_document(self):
+        picked = self._window.create_file_dialog(
+            webview.OPEN_DIALOG,
+            file_types=(
+                "Documents (*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.odt;*.ods;*.odp;*.rtf;*.txt;*.csv;*.html;*.epub;*.mobi;*.azw;*.azw3;*.fb2;*.cbz;*.jpg;*.jpeg;*.png;*.webp;*.avif;*.gif;*.tif;*.tiff;*.bmp)",
+                "All files (*.*)",
+            ),
+        )
+        if picked:
+            self._app.start_document_conversion(picked[0])
+
+    def convert_image_folder(self):
+        picked = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if picked:
+            self._app.start_image_folder_conversion(picked[0])
 
 
 def main():
@@ -1978,9 +3542,9 @@ def main():
         f"{APP_NAME} {APP_VERSION}",
         url=web_index(),
         js_api=api,
-        width=1180,
-        height=800,
-        min_size=(980, 680),
+        width=1210,
+        height=820,
+        min_size=(1005, 697),
         frameless=True,
         easy_drag=False,
         background_color="#05080d",
@@ -2002,17 +3566,195 @@ if __name__ == "__main__":
         spotdl = bundled_tool("spotdl.exe")
         ffmpeg = bundled_tool("ffmpeg.exe")
         ytdlp = bundled_tool("yt-dlp.exe")
-        if not spotdl or not ffmpeg or not ytdlp:
+        deno = bundled_tool("deno.exe")
+        if not ffmpeg and os.environ.get("LOCALAPPDATA"):
+            local_ffmpeg = (Path(os.environ["LOCALAPPDATA"]) / "SpotifyDownloader" /
+                            "ffmpeg" / "bin" / "ffmpeg.exe")
+            ffmpeg = str(local_ffmpeg) if local_ffmpeg.is_file() else None
+        if not spotdl or not ffmpeg or not ytdlp or not deno:
             raise SystemExit(2)
         assert MEDIA_PATTERNS["youtube"].search("https://youtu.be/abc")
         assert MEDIA_PATTERNS["tiktok"].search("https://www.tiktok.com/@u/video/1")
+        assert normalize_media_url("soundcloud", "https://soundcloud.com/a/song")
+        assert normalize_media_url("x", "https://x.com/user/status/1")
+        assert normalize_media_url("general", "https://example.com/watch/1")
+        for blocked in ("https://youtube.com/watch?v=1", "https://m.youtube.com/shorts/1",
+                        "https://youtu.be/1", "https://www.youtube-nocookie.com/embed/1"):
+            try:
+                normalize_media_url("general", blocked)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"General downloader accepted YouTube URL: {blocked}")
+        assert normalize_media_url("ytmusic", "https://music.youtube.com/watch?v=1")
+        # YouTube Music is a narrower door than YouTube, not the same one.
+        for wrong in ("https://www.youtube.com/watch?v=1", "https://youtu.be/1"):
+            try:
+                normalize_media_url("ytmusic", wrong)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"YouTube Music accepted a plain YouTube URL: {wrong}")
+        assert cookie_site("ytmusic") == "youtube" and cookie_site("x") == "x"
+        assert SIGNIN_PAGES["x"][0] == "https://x.com/i/flow/login"
+        assert "auth_token" in SITE_SESSION_COOKIES["x"]
+        _app = SpotifyDownloader()
+        _app.ytdlp_cmd, _app.ffmpeg_cmd, _app.deno_cmd = ytdlp, ffmpeg, deno
+        _ym_cmd = _app._ytdlp_cmd_for(
+            "ytmusic", "https://music.youtube.com/watch?v=1", Path(tempfile.gettempdir()),
+            "best", True, None)
+        _sc_cmd = _app._ytdlp_cmd_for(
+            "soundcloud", "https://soundcloud.com/a/song", Path(tempfile.gettempdir()),
+            "best", True, None)
+        _general_cmd = _app._ytdlp_cmd_for(
+            "general", "https://video.example.com/watch/1", Path(tempfile.gettempdir()),
+            "best", False, None, impersonate=True)
+        assert "--embed-metadata" in _ym_cmd and "--embed-thumbnail" in _ym_cmd
+        assert "--js-runtimes" in _ym_cmd and any(str(deno) in part for part in _ym_cmd)
+        assert "--js-runtimes" in _sc_cmd and "--js-runtimes" in _general_cmd
+        assert "--sleep-requests" in _ym_cmd
+        _app.youtube_po_token.set("mweb.gvs+" + "A" * 32)
+        _pot_cmd = _app._ytdlp_cmd_for(
+            "youtube", "https://youtube.com/watch?v=1", Path(tempfile.gettempdir()),
+            "best", False, None)
+        assert any("po_token=mweb.gvs+" in part and "player_client=mweb,default" in part
+                   for part in _pot_cmd)
+        assert "--extract-audio" in _sc_cmd and "--embed-metadata" not in _sc_cmd
+        assert _general_cmd[_general_cmd.index("--impersonate") + 1] == "chrome"
+        assert "--sleep-requests" not in _general_cmd
+        assert not any("youtube:" in part or "po_token=" in part or "player_client=" in part
+                       for part in _general_cmd)
+        assert cookie_domain_for("general", "https://video.Example.com/watch") == "video.example.com"
+        assert cookie_domain_for("youtube", "https://music.youtube.com/watch") == "youtube.com"
+        for phrase in ("HTTP Error 403: Forbidden", "Cloudflare CAPTCHA",
+                       "Please verify that you are human"):
+            assert GENERAL_CHALLENGE.search(phrase), phrase
+        assert SIGNIN_DEMANDED.search("Sign in to confirm you’re not a bot")
+        assert set(MEDIA_LABELS) <= set(SOURCES), "every media source needs a folder"
+        assert "pdf" in SOURCES
+
+        # A server picks these names, so they are untrusted input.
+        assert safe_filename("../../../../boot.ini") == "boot.pdf"
+        assert safe_filename("report.pdf") == "report.pdf"
+        assert safe_filename("a/b/CON.pdf") == "_CON.pdf"
+        assert safe_filename('bad:name*?.pdf') == "bad_name__.pdf"
+        assert safe_filename("") == "document.pdf"
+        assert "/" not in safe_filename("x/y") and "\\" not in safe_filename("x\\y")
+        for bad in ("ftp://host/a.pdf", "file:///c:/a.pdf", "https://u:p@host/a.pdf", "notaurl"):
+            try:
+                normalize_page_url(bad)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"PDF downloader accepted {bad}")
+        assert normalize_page_url("https://example.com/docs")
+        _p = PdfLinkParser()
+        _p.feed('<a href="/a.pdf">x</a><iframe src="b.pdf"></iframe><a href="#top">y</a>')
+        assert _p.links == ["/a.pdf", "b.pdf", "#top"], _p.links
+        assert detect_document_extension(b"%PDF-1.7", "https://host/download") == ".pdf"
+        assert detect_document_extension(b"PK\x03\x04data", "https://host/book.epub") == ".zip"
+        _mobi = bytearray(80)
+        _mobi[60:68] = b"BOOKMOBI"
+        assert detect_document_extension(bytes(_mobi), "https://host/book.azw3") == ".azw3"
+        assert detect_document_extension(b"<FictionBook/>", "https://host/book.fb2") == ".fb2"
+        assert detect_document_extension(b"<html>error</html>", "https://host/book.epub") is None
+        with tempfile.TemporaryDirectory() as _tmp:
+            _book = Path(_tmp) / "book.zip"
+            with zipfile.ZipFile(_book, "w") as _archive:
+                _archive.writestr("mimetype", "application/epub+zip")
+                _archive.writestr("META-INF/container.xml", "<container/>")
+            assert inspect_zip_document(_book) == ".epub"
+            _office = Path(_tmp) / "office.zip"
+            with zipfile.ZipFile(_office, "w") as _archive:
+                _archive.writestr("[Content_Types].xml", "<Types/>")
+                _archive.writestr("word/document.xml", "<document/>")
+            assert inspect_zip_document(_office) == ".docx"
+        _media = HtmlMediaParser()
+        _media.feed('<video src="/movie.mp4"></video><meta property="og:video" '
+                    'content="https://cdn.test/master.m3u8"><a href="sound.mp3">x</a>')
+        assert _media.links == ["/movie.mp4", "https://cdn.test/master.m3u8", "sound.mp3"]
+        _images = HtmlImageParser()
+        _images.feed('<img data-src="/001.jpg"><img src="/002.webp">')
+        assert _images.links == ["/001.jpg", "/002.webp"]
+        _bulk_images = HtmlImageParser()
+        _bulk_images.feed("".join(
+            f'<img data-lazy-src="/chapter/page-{index:03d}.jpg">'
+            for index in range(1, 101)))
+        assert len(_bulk_images.links) == 100
+        assert _bulk_images.links[0].endswith("001.jpg")
+        assert _bulk_images.links[-1].endswith("100.jpg")
+        _streams = {"360p": object(), "720p": object(), "1080p60": object()}
+        assert SpotifyDownloader._pick_streamlink_stream(_streams, "720")[0] == "720p"
+        assert sorted(["page10.jpg", "page2.jpg", "page1.jpg"], key=natural_sort_key) == [
+            "page1.jpg", "page2.jpg", "page10.jpg"]
+        _convert_options = SpotifyDownloader.normalize_media_conversion_options({
+            "format": "mp4", "codec": "h265", "quality": "high",
+            "resize": "1080p", "fps": "30", "audio_bitrate": "256",
+        })
+        _convert_cmd = SpotifyDownloader.media_conversion_command(
+            ffmpeg, Path("input.mkv"), Path("output.mp4"), _convert_options)
+        assert "libx265" in _convert_cmd and "fps=30" in " ".join(_convert_cmd)
+        assert "scale=1920:1080" in " ".join(_convert_cmd) and "+faststart" in _convert_cmd
+        _audio_options = SpotifyDownloader.normalize_media_conversion_options({
+            "format": "ogg", "audio_bitrate": "320"})
+        _audio_cmd = SpotifyDownloader.media_conversion_command(
+            ffmpeg, Path("input.mp4"), Path("output.ogg"), _audio_options)
+        assert "-vn" in _audio_cmd and "libopus" in _audio_cmd and "320k" in _audio_cmd
+        with tempfile.TemporaryDirectory() as _tmp:
+            _chapter_dir, _chapter_pdf, _chapter_cbz = unique_chapter_paths(
+                Path(_tmp), "chapter 12")
+            assert _chapter_dir.name == "chapter 12"
+            assert _chapter_pdf.name == "chapter 12.pdf" and _chapter_cbz.name == "chapter 12.cbz"
+            _chapter_dir.mkdir()
+            assert unique_chapter_paths(Path(_tmp), "chapter 12")[0].name == "chapter 12 (2)"
+
+        # yt-dlp saying "no video here" must route to another engine; yt-dlp
+        # failing for any other reason must not.
+        for phrase in ("ERROR: [twitter] 1: No video could be found in this tweet",
+                       "ERROR: Unsupported URL: https://example.com/gallery",
+                       "ERROR: no video formats found"):
+            assert NO_VIDEO_FOR_YTDLP.search(phrase), phrase
+        for phrase in ("ERROR: unable to download video data: HTTP Error 403",
+                       "ERROR: [DRM] The requested site is known to use DRM protection",
+                       "ERROR: Video unavailable"):
+            assert not NO_VIDEO_FOR_YTDLP.search(phrase), phrase
+        # Only sources with a second engine may hand off at all.
+        assert set(ENGINES) <= set(MEDIA_LABELS), set(ENGINES) - set(MEDIA_LABELS)
+        assert not ({"youtube", "ytmusic"} & set(ENGINES)), (
+            "YouTube and YouTube Music have their own client ladder, not general fallbacks")
+        assert "gallery-dl" in ENGINES["x"] and "direct" in ENGINES["general"]
+        assert ENGINES["general"][:2] == ("streamlink", "html5")
+        # Dynamic plugin imports are easy for a freezer to miss. Exercise both
+        # engines inside the packaged executable without touching the network.
+        import gallery_dl
+        from gallery_dl.job import DataJob
+        from streamlink import Streamlink
+        import img2pdf
+        import pikepdf
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as _tmp:
+            _page = Path(_tmp) / "page.png"
+            Image.new("RGB", (8, 8), "white").save(_page)
+            _pdf_bytes = img2pdf.convert([str(_page)])
+            assert _pdf_bytes.startswith(PDF_MAGIC)
+            with pikepdf.Pdf.open(io.BytesIO(_pdf_bytes)) as _pdf:
+                assert len(_pdf.pages) == 1
+        _gallery_job = DataJob("https://x.com/example/status/1", file=io.StringIO())
+        assert _gallery_job.extractor.category == "twitter"
+        _stream_name, _, _ = Streamlink().resolve_url("hls://example.com/live.m3u8")
+        assert _stream_name == "hls"
+        # Media must keep its own extension; only the PDF page forces .pdf.
+        assert safe_filename("clip", suffix=".mp4") == "clip.mp4"
+        assert safe_filename("../x/photo.jpg", suffix=".jpg") == "photo.jpg"
+
         assert not MEDIA_PATTERNS["tiktok"].search("https://open.spotify.com/track/1")
         assert not MEDIA_PATTERNS["youtube"].search("https://nyoutube.com.evil.tld/x")
         # Every tool must be reachable through the same generic lookup.
         for _name in TOOLS:
             assert bundled_tool(TOOLS[_name]["exe"]), _name
             assert len(TOOLS[_name]["urls"]) >= 2, f"{_name} needs a fallback mirror"
-        checks = ([spotdl, "--version"], [ffmpeg, "-version"], [ytdlp, "--version"])
+        checks = ([spotdl, "--version"], [ffmpeg, "-version"], [ytdlp, "--version"],
+                  [deno, "--version"])
         for command in checks:
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
             if result.returncode != 0:

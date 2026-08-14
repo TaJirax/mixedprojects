@@ -13,8 +13,13 @@ ROOT_NAME = "BlueKnightdownloader"
 SOURCES = {
     "spotify": "Spotify",
     "youtube": "YouTube",
+    "ytmusic": "YouTube Music",
     "tiktok": "TikTok",
     "instagram": "Instagram",
+    "soundcloud": "SoundCloud",
+    "x": "X",
+    "general": "Video",
+    "pdf": "Documents & Ebooks",
 }
 
 # yt-dlp browser name -> the profile directory that only exists once it is installed.
@@ -100,14 +105,17 @@ COOKIE_FILE_GLOBS = ("cookies.txt", "*cookies*.txt")
 # be offered to YouTube, where it can only fail; separate folders mean a site's
 # cookies cannot reach another site even by accident.
 COOKIE_DIR_NAME = "cookies"
+# YouTube Music has no folder of its own here: music.youtube.com IS youtube.com,
+# so it shares that session rather than asking for a second login.
 SITE_DOMAINS = {"youtube": "youtube.com", "instagram": "instagram.com",
-                "tiktok": "tiktok.com", "spotify": "spotify.com"}
+                "tiktok": "tiktok.com", "spotify": "spotify.com", "x": "x.com"}
 # The cookie that means "signed in". Anything less is just a visitor.
 SITE_SESSION_COOKIES = {
     "youtube": ("SID", "__Secure-3PSID", "SAPISID", "__Secure-1PSID"),
     "instagram": ("sessionid",),
     "tiktok": ("sessionid", "sessionid_ss"),
     "spotify": ("sp_dc", "sp_key"),
+    "x": ("auth_token",),
 }
 REGISTRY_NAME = "registry.json"
 
@@ -121,10 +129,48 @@ def cookie_dir(site=None):
     return folder
 
 
+def host_matches(host, domain):
+    """Is this cookie host the site, or a subdomain of it?
+
+    Substring matching was wrong in a way that only bites on short domains:
+    "x.com" is inside "netflix.com", so a Netflix jar read as an X session and
+    got handed to X — exactly the cross-site leak the per-site folders prevent.
+    """
+    host = (host or "").strip().lstrip(".").rstrip(".").lower()
+    domain = (domain or "").strip().lstrip(".").rstrip(".").lower()
+    return bool(domain) and (host == domain or host.endswith("." + domain))
+
+
+def jar_line_host(line):
+    """The domain field of a Netscape cookie line, or "" if it is not one."""
+    parts = line.split("\t")
+    return parts[0] if len(parts) >= 7 else ""
+
+
+def jar_line_matches_domain(line, domain):
+    """Whether a Netscape cookie can belong to this host/site boundary.
+
+    Site-specific callers pass a registrable domain (``youtube.com``), while
+    the General downloader passes the exact URL hostname. Accepting both
+    directions is safe only when the jar's include-subdomains flag permits it.
+    """
+    parts = line.split("\t")
+    if len(parts) < 7:
+        return False
+    cookie_host = parts[0].strip().lstrip(".").rstrip(".").lower()
+    wanted = (domain or "").strip().lstrip(".").rstrip(".").lower()
+    if not cookie_host or not wanted:
+        return False
+    if host_matches(cookie_host, wanted):
+        return True
+    include_subdomains = parts[1].strip().upper() == "TRUE"
+    return include_subdomains and host_matches(wanted, cookie_host)
+
+
 def site_for_domain(domain):
     """Which site a domain belongs to, or None."""
     for site, site_domain in SITE_DOMAINS.items():
-        if domain and site_domain in domain:
+        if domain and host_matches(domain, site_domain):
             return site
     return None
 
@@ -225,7 +271,7 @@ def jar_has_domain(path, domain):
     try:
         for line in path.read_text("utf-8", "replace").splitlines():
             if line.strip() and not line.lstrip().startswith("#"):
-                if domain in line.split("\t", 1)[0]:
+                if jar_line_matches_domain(line, domain):
                     return True
     except OSError:
         return False
@@ -353,4 +399,25 @@ if __name__ == "__main__":
     assert COOKIE_FAILURE.search("ERROR: Could not copy Chrome cookie database. See ...")
     assert COOKIE_FAILURE.search("ERROR: could not find firefox cookies database in ...")
     assert not COOKIE_FAILURE.search("ERROR: Restricted Video: Sign in to confirm your age")
+
+    # A jar belongs to one site. Short domains are where substring matching leaked:
+    # "x.com" sits inside "netflix.com", and a cookie value can contain anything.
+    assert host_matches("x.com", "x.com") and host_matches(".api.x.com", "x.com")
+    assert not host_matches("netflix.com", "x.com")
+    assert not host_matches("notyoutube.com", "youtube.com")
+    assert jar_line_matches_domain(
+        ".example.com\tTRUE\t/\tTRUE\t0\tsession\tx", "video.example.com")
+    assert not jar_line_matches_domain(
+        "example.com\tFALSE\t/\tTRUE\t0\tsession\tx", "video.example.com")
+    assert not jar_line_matches_domain(
+        ".notexample.com\tTRUE\t/\tTRUE\t0\tsession\tx", "example.com")
+    assert site_for_domain("netflix.com") is None
+    assert site_for_domain("x.com") == "x" and site_for_domain("www.youtube.com") == "youtube"
+    with tempfile.TemporaryDirectory() as tmp:
+        jar = Path(tmp) / "cookies.txt"
+        jar.write_text("# comment\n"
+                       ".netflix.com\tTRUE\t/\tTRUE\t0\tNetflixId\tx.com-lookalike\n",
+                       encoding="utf-8")
+        assert not jar_has_domain(jar, "x.com"), "a Netflix jar must not read as X"
+        assert jar_has_domain(jar, "netflix.com")
     print("ok", cookie_candidates())

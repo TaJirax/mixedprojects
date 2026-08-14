@@ -38,10 +38,14 @@
   --r-md: 12px;
   --r-sm: 8px;
   --gap: 14px;
-  --titlebar: 38px;
+  --outer-gutter: 14px;
+  /* At the normal 820px window this lifts both panes by about 12px (1.5%). */
+  --pane-lift: clamp(10px, 1.5vh, 13px);
+  --titlebar: calc(38px - var(--pane-lift));
 }
 
 html[data-theme="dark"] {
+  color-scheme: dark;
   --void:    #05080d;
   --wash-a:  rgba(46, 125, 233, 0.20);
   --wash-b:  rgba(30, 215, 96, 0.14);
@@ -58,17 +62,28 @@ html[data-theme="dark"] {
   --ink-3:   #6c7885;
   --on-accent: #04140a;
   --pane-solid: #0d131a;
+  --control-solid: #111a24;
   /* Light enough that the knight reads through the panes — the glass is a
      veil, not a wall. Push it back up if text starts fighting the art. */
   --blur: saturate(150%);
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
   --lift: 0 8px 20px rgba(0, 0, 0, 0.45);
   --sheen: rgba(255, 255, 255, 0.16);
+  --scroll-track: rgba(255, 255, 255, 0.035);
+  --scroll-track-edge: rgba(255, 255, 255, 0.075);
+  --scroll-thumb: linear-gradient(135deg, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0.10));
+  --scroll-thumb-edge: rgba(255, 255, 255, 0.30);
+  --scroll-thumb-hover: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--spotify) 48%, rgba(255, 255, 255, 0.26)),
+    color-mix(in srgb, var(--spotify) 25%, rgba(255, 255, 255, 0.12)));
+  --scroll-shadow: 0 3px 12px rgba(0, 0, 0, 0.34), inset 0 1px rgba(255, 255, 255, 0.20);
   --art: 0.20;
   --art-sat: 0.45;
 }
 
 html[data-theme="light"] {
+  color-scheme: light;
   --void:    #e6eaf0;
   /* Lighter washes here than the theme started with: at full strength they sat
      on the art as pastel haze, which is what made the room look cheap. */
@@ -89,11 +104,21 @@ html[data-theme="light"] {
   --spotify-2:#0b7f39;
   --on-accent: #ffffff;
   --pane-solid: #f4f6fa;
+  --control-solid: #f7f9fc;
   /* No blur at all in light: clear glass reads expensive, frost reads cheap. */
   --blur: saturate(115%);
   --shadow: 0 18px 44px rgba(30, 45, 70, 0.20);
   --lift: 0 8px 18px rgba(30, 45, 70, 0.18);
   --sheen: rgba(255, 255, 255, 0.75);
+  --scroll-track: rgba(40, 55, 72, 0.055);
+  --scroll-track-edge: rgba(255, 255, 255, 0.70);
+  --scroll-thumb: linear-gradient(135deg, rgba(255, 255, 255, 0.90), rgba(192, 207, 222, 0.58));
+  --scroll-thumb-edge: rgba(90, 108, 126, 0.25);
+  --scroll-thumb-hover: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--spotify) 24%, rgba(255, 255, 255, 0.96)),
+    color-mix(in srgb, var(--spotify) 32%, rgba(190, 207, 221, 0.70)));
+  --scroll-shadow: 0 3px 12px rgba(36, 52, 70, 0.18), inset 0 1px rgba(255, 255, 255, 0.92);
   /* The art is a night scene, so on a pale room it needs less opacity to carry
      the same weight — but the knights still have to be readable, not a smudge. */
   --art: 0.21;
@@ -117,6 +142,26 @@ html[data-mode="youtube"] {
 html[data-theme="light"][data-mode="youtube"] {
   --spotify: #d32219; --spotify-2: #ab1a13; --red: #b4356f;
   --wash-a: rgba(255, 59, 48, 0.26); --wash-b: rgba(255, 180, 84, 0.22);
+}
+
+/* YouTube Music is red like YouTube, so it cannot also ramp into amber or the
+   two rooms look identical. Red into rose reads as the same family, not the
+   same page. */
+html[data-mode="ytmusic"] {
+  --spotify:   #ff0f2e;
+  --spotify-2: #ff5468;
+  --red:       #ffa8b4;
+  --on-accent: #ffffff;
+  --wash-a: rgba(255, 15, 46, 0.20);
+  --wash-b: rgba(255, 132, 160, 0.13);
+  --wash-c: rgba(60, 4, 12, 0.28);
+  --signal:      linear-gradient(90deg, #3c040c, var(--spotify) 50%, #ff8fa0);
+  --signal-text: linear-gradient(90deg, #ff5468, #ff9fb0);
+}
+html[data-theme="light"][data-mode="ytmusic"] {
+  --spotify: #d1001f; --spotify-2: #a80019; --red: #a3306b;
+  --signal-text: linear-gradient(90deg, #d1001f, #c2415c);
+  --wash-a: rgba(255, 15, 46, 0.24); --wash-b: rgba(255, 132, 160, 0.20);
 }
 
 html[data-mode="tiktok"] {
@@ -153,7 +198,99 @@ html[data-theme="light"][data-mode="instagram"] {
   --wash-a: rgba(131, 58, 180, 0.20); --wash-b: rgba(252, 176, 69, 0.14);
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+html[data-mode="soundcloud"] {
+  --spotify: #ff6a00; --spotify-2: #ff9345; --on-accent: #241006;
+  --wash-a: rgba(255, 106, 0, 0.20); --wash-b: rgba(0, 188, 212, 0.12);
+  --wash-c: rgba(98, 35, 0, 0.22);
+  --signal: linear-gradient(90deg, #b33d00, var(--spotify) 50%, #00bcd4);
+  --signal-text: linear-gradient(90deg, var(--spotify), #00bcd4);
+}
+html[data-theme="light"][data-mode="soundcloud"] {
+  --spotify: #e04e00; --spotify-2: #b83f00; --on-accent: #ffffff;
+  --signal-text: linear-gradient(90deg, #e04e00, #0088a0);
+  --wash-a: rgba(255, 106, 0, 0.26); --wash-b: rgba(0, 188, 212, 0.18);
+}
+
+html[data-mode="x"] {
+  --spotify: #f2f5f7; --spotify-2: #c6d0d8; --on-accent: #101418;
+  --wash-a: rgba(242, 245, 247, 0.11); --wash-b: rgba(29, 155, 240, 0.16);
+  --wash-c: rgba(20, 26, 32, 0.28);
+  --signal: linear-gradient(90deg, #687580, var(--spotify) 52%, #1d9bf0);
+  --signal-text: linear-gradient(90deg, #aeb9c2, #1d9bf0);
+}
+/* X's mark inverts with the room: white on black, black on white. The dark
+   theme's near-white accent would vanish on a pale pane, so light flips it. */
+html[data-theme="light"][data-mode="x"] {
+  --spotify: #14181c; --spotify-2: #000000; --on-accent: #ffffff;
+  --signal: linear-gradient(90deg, #14181c, #46525c 52%, #1d9bf0);
+  --signal-text: linear-gradient(90deg, #14181c, #1583cc);
+  --wash-a: rgba(20, 24, 28, 0.14); --wash-b: rgba(29, 155, 240, 0.20);
+}
+
+/* Documents & Ebooks have no brand to borrow, and every other source already owns a warm
+   hue. Indigo is the one part of the wheel left free, and it reads as paper. */
+html[data-mode="pdf"] {
+  --spotify: #7c6cff; --spotify-2: #a79bff; --on-accent: #0b0820;
+  --wash-a: rgba(124, 108, 255, 0.20); --wash-b: rgba(120, 200, 255, 0.12);
+  --wash-c: rgba(30, 24, 90, 0.26);
+  --signal: linear-gradient(90deg, #2b2470, var(--spotify) 52%, #9fd4ff);
+  --signal-text: linear-gradient(90deg, var(--spotify), #9fd4ff);
+}
+html[data-theme="light"][data-mode="pdf"] {
+  --spotify: #5546d6; --spotify-2: #4034ad; --on-accent: #ffffff;
+  --signal-text: linear-gradient(90deg, #5546d6, #1f7fb8);
+  --wash-a: rgba(124, 108, 255, 0.24); --wash-b: rgba(120, 200, 255, 0.18);
+}
+
+html[data-mode="general"] {
+  --spotify: #27c499; --spotify-2: #56dfba; --on-accent: #041813;
+  --wash-a: rgba(39, 196, 153, 0.18); --wash-b: rgba(255, 180, 84, 0.13);
+  --wash-c: rgba(25, 100, 135, 0.22);
+  --signal: linear-gradient(90deg, #196487, var(--spotify) 50%, #ffb454);
+  --signal-text: linear-gradient(90deg, var(--spotify), #ffb454);
+}
+html[data-theme="light"][data-mode="general"] {
+  --spotify: #0f8a6b; --spotify-2: #0b6c53; --on-accent: #ffffff;
+  --signal-text: linear-gradient(90deg, #0f8a6b, #b4741a);
+  --wash-a: rgba(39, 196, 153, 0.24); --wash-b: rgba(255, 180, 84, 0.20);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--spotify) 38%, var(--ink-3)) transparent;
+}
+
+*::-webkit-scrollbar { width: 12px; height: 12px; }
+*::-webkit-scrollbar-track {
+  margin: 4px;
+  border: 1px solid var(--scroll-track-edge);
+  border-radius: 999px;
+  background: var(--scroll-track);
+  box-shadow: inset 0 0 9px rgba(0, 0, 0, 0.08);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  backdrop-filter: blur(12px) saturate(150%);
+}
+*::-webkit-scrollbar-thumb {
+  min-height: 42px;
+  border: 1px solid var(--scroll-thumb-edge);
+  border-radius: 999px;
+  background: var(--scroll-thumb);
+  box-shadow: var(--scroll-shadow);
+  -webkit-backdrop-filter: blur(16px) saturate(175%);
+  backdrop-filter: blur(16px) saturate(175%);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+  border-color: color-mix(in srgb, var(--spotify) 46%, var(--scroll-thumb-edge));
+}
+*::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--spotify) 52%, var(--glass-3));
+}
+*::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+*::-webkit-scrollbar-corner { background: transparent; }
 
 body {
   height: 100vh;
@@ -210,8 +347,9 @@ body::before {
   grid-template-rows: var(--titlebar) 1fr;
   grid-template-columns: 244px 1fr;
   grid-template-areas: "bar bar" "side main";
-  gap: var(--gap);
-  padding: 0 var(--gap) var(--gap);
+  column-gap: var(--gap);
+  row-gap: var(--outer-gutter);
+  padding: 0 var(--outer-gutter) var(--outer-gutter);
 }
 
 .titlebar {
@@ -224,7 +362,7 @@ body::before {
 }
 .titlebar .grab { flex: 1; height: 100%; }
 .wbtn {
-  width: 42px; height: 26px;
+  width: 42px; height: 24px;
   display: grid; place-items: center;
   border: 0; border-radius: var(--r-sm);
   background: transparent; color: var(--ink-2);
@@ -269,9 +407,9 @@ body::before {
 /* The one place the two brand colours meet: blue of the mark into Spotify green. */
 .brand-rule { height: 2px; border-radius: 1px; background: var(--signal); margin: 14px 8px 0; }
 
-/* Six entries now: let the list scroll rather than crush the footer on a
+/* The source list can grow: let it scroll rather than crush the footer on a
    short window. */
-.nav { margin-top: 22px; display: flex; flex-direction: column; gap: 2px;
+.nav { margin-top: 22px; display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px;
        min-height: 0; overflow-y: auto; }
 .nav button {
   display: flex; align-items: center; gap: 11px;
@@ -291,11 +429,26 @@ body::before {
 }
 .nav button.on .dot { background: var(--spotify); box-shadow: 0 0 8px var(--spotify); }
 
-.side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+.side-foot {
+  flex: none;
+  min-height: 126px;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 
 /* Signature: the equaliser from the mark. Flat while idle, dancing on download. */
-.eq-wrap { display: flex; align-items: center; gap: 11px; padding: 0 12px; }
-.eq { display: flex; align-items: flex-end; gap: 2px; height: 20px; }
+.eq-wrap {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 11px;
+  min-height: 34px;
+  padding: 5px 12px;
+  overflow: visible;
+}
+.eq { display: flex; flex: none; align-items: flex-end; gap: 2px; width: 22px; height: 22px; }
 .eq i {
   display: block; width: 2px; height: 2px; border-radius: 1px;
   background: var(--edge);
@@ -310,7 +463,7 @@ body.busy .eq i { background: var(--spotify); animation: bounce 1s ease-in-out i
 .eq i:nth-child(6) { animation-delay: .6s; }
 @keyframes bounce {
   0%, 100% { height: 3px; }
-  50% { height: 18px; }
+  50% { height: 20px; }
 }
 .eq-label {
   font-family: var(--font-mono);
@@ -436,11 +589,12 @@ h1 {
 .btn.danger { color: var(--red); }
 .btn.danger:hover { background: var(--red); color: #fff; }
 .btn[disabled] { opacity: .4; cursor: not-allowed; }
+#convert { display: none; }
 
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .spacer { flex: 1; }
 
-input[type="text"], select {
+input[type="text"], input[type="password"], input[type="number"], select {
   width: 100%;
   padding: 8px 11px;
   border: 1px solid var(--edge);
@@ -451,8 +605,24 @@ input[type="text"], select {
   -webkit-user-select: text; user-select: text;
   transition: border-color .16s, background .16s;
 }
-input[type="text"]:focus, select:focus {
+input[type="text"]:focus, input[type="password"]:focus, input[type="number"]:focus, select:focus {
   outline: none; border-color: var(--spotify); background: var(--glass-3);
+}
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 34px;
+  background-color: var(--control-solid);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-2) 50%),
+    linear-gradient(135deg, var(--ink-2) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+select option, select optgroup {
+  color: var(--ink);
+  background-color: var(--control-solid);
 }
 
 .switch {
@@ -547,10 +717,6 @@ body.busy .status-word { color: var(--spotify); }
 
 /* ============================================================ settings ==== */
 .scroll { flex: 1; min-height: 0; overflow-y: auto; padding-right: 14px; }
-.scroll::-webkit-scrollbar { width: 8px; }
-.scroll::-webkit-scrollbar-track { background: transparent; }
-.scroll::-webkit-scrollbar-thumb { background: var(--glass-3); border-radius: 4px; }
-.scroll::-webkit-scrollbar-thumb:hover { background: var(--spotify); }
 
 .group-head {
   display: flex; align-items: center; gap: 10px;
@@ -582,6 +748,56 @@ body.busy .status-word { color: var(--spotify); }
   background: color-mix(in srgb, var(--spotify) 12%, transparent);
 }
 .segment button:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
+.fixed-value {
+  justify-self: start;
+  padding: 6px 14px;
+  border: 1px solid var(--spotify);
+  border-radius: 999px;
+  color: var(--spotify);
+  background: color-mix(in srgb, var(--spotify) 12%, transparent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.converter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 10px 14px;
+  padding: 3px 2px 10px;
+}
+.converter-control { min-width: 0; }
+.converter-control > label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+}
+.converter-control[hidden] { display: none; }
+.dimension-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.converter-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 2px 2px 12px;
+}
+.converter-actions .primary { min-width: 168px; }
+.document-converter {
+  display: grid;
+  grid-template-columns: 168px 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 2px;
+  border-top: 1px solid var(--edge-2);
+}
+.document-converter > label { color: var(--ink-2); font-size: 12.5px; }
+
+@media (max-width: 1050px) {
+  .converter-grid { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
+  .document-converter { grid-template-columns: 150px 1fr; }
+}
 
 /* ============================================================ overlays ==== */
 .toast-stack { position: fixed; right: 22px; bottom: 20px; z-index: 40; display: flex; flex-direction: column; gap: 8px; }
@@ -662,9 +878,7 @@ body.busy .status-word { color: var(--spotify); }
       <img src="logo.png" alt="Blue Knight">
       <div>
         <div class="brand-name">Blue Knight<br>Downloader</div>
-        <!-- Four sources will not fit the sidebar on one line, so the break is
-             placed rather than left to chance. -->
-        <div class="brand-sub">Spotify · YouTube<br>TikTok · Instagram</div>
+        <div class="brand-sub">Audio and video<br>from across the web</div>
       </div>
     </div>
     <div class="brand-rule"></div>
@@ -744,6 +958,32 @@ body.busy .status-word { color: var(--spotify); }
     </section>
 
     <!-- --------------------------------------------------------- tiktok -->
+    <!-- --------------------------------------------------- youtube music -->
+    <section class="page" data-page="ytmusic">
+      <div class="page-head">
+        <div class="eyebrow">Song · album · playlist</div>
+        <h1>YouTube Music</h1>
+        <p class="lede">Paste a <b>music.youtube.com</b> link. Everything comes down as audio, tagged with the artist, album and cover art, using the format and bitrate from Download settings.</p>
+      </div>
+
+      <div class="paste-row">
+        <input type="text" id="ym-url" placeholder="https://music.youtube.com/watch?v=… or /playlist?list=…" spellcheck="false">
+        <button class="btn" data-paste="ym-url">Paste</button>
+        <button class="btn primary" id="ym-go">Download</button>
+        <button class="btn danger" id="ym-stop" disabled>Stop</button>
+      </div>
+
+      <div class="field" style="padding-top:16px">
+        <label for="ym-limit">Playlist limit</label>
+        <input type="text" id="ym-limit" placeholder="all" spellcheck="false">
+        <span class="hint">tracks</span>
+      </div>
+      <div class="row" style="padding-top:4px">
+        <button class="btn" data-signin="youtube">Sign in to YouTube</button><span class="hint signin-note"></span>
+      </div>
+      <p class="hint">YouTube Music uses your YouTube account, so signing in on either page covers both. A library or Liked-songs link needs that session; public playlists do not.</p>
+    </section>
+
     <section class="page" data-page="tiktok">
       <div class="page-head">
         <div class="eyebrow">Video · profile · hashtag</div>
@@ -802,6 +1042,124 @@ body.busy .status-word { color: var(--spotify); }
       <p class="hint warn">Instagram serves almost nothing logged out. Sign in above — the app opens a real Instagram window and keeps the session itself. A browser you are already logged into works too, as long as it is closed.</p>
     </section>
 
+    <!-- ----------------------------------------------------- soundcloud -->
+    <section class="page" data-page="soundcloud">
+      <div class="page-head">
+        <div class="eyebrow">Track · set · profile</div>
+        <h1>SoundCloud</h1>
+        <p class="lede">Paste a track, playlist, or profile link. Audio uses the format and bitrate selected in Download settings.</p>
+      </div>
+      <div class="paste-row">
+        <input type="text" id="sc-url" placeholder="https://soundcloud.com/artist/track" spellcheck="false">
+        <button class="btn" data-paste="sc-url">Paste</button>
+        <button class="btn primary" id="sc-go">Download</button>
+        <button class="btn danger" id="sc-stop" disabled>Stop</button>
+      </div>
+      <div class="field" style="padding-top:16px">
+        <label for="sc-limit">Collection limit</label>
+        <input type="text" id="sc-limit" placeholder="all" spellcheck="false">
+        <span class="hint">tracks</span>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------- x -->
+    <section class="page" data-page="x">
+      <div class="page-head">
+        <div class="eyebrow">Video · photo · GIF · Space</div>
+        <h1>X</h1>
+        <p class="lede">Paste any x.com or twitter.com post. Video comes down at the quality you pick; photo posts, GIFs and mixed posts are collected at full resolution.</p>
+      </div>
+      <div class="paste-row">
+        <input type="text" id="x-url" placeholder="https://x.com/user/status/123" spellcheck="false">
+        <button class="btn" data-paste="x-url">Paste</button>
+        <button class="btn primary" id="x-go">Download</button>
+        <button class="btn danger" id="x-stop" disabled>Stop</button>
+      </div>
+      <div class="field" style="padding-top:16px">
+        <label>Video quality</label>
+        <div class="segment" id="x-quality">
+          <button data-value="best" aria-pressed="true">Best</button>
+          <button data-value="1080" aria-pressed="false">1080p</button>
+          <button data-value="720" aria-pressed="false">720p</button>
+          <button data-value="480" aria-pressed="false">480p</button>
+        </div>
+        <span></span>
+      </div>
+      <div class="row" style="padding-top:4px">
+        <button class="btn" data-signin="x">Sign in to X</button><span class="hint signin-note"></span>
+      </div>
+      <p class="hint">Video is fetched with yt-dlp. When a post carries no video — a photo, a GIF, a multi-image post — the app falls through to gallery-dl automatically, so every media type on X lands the same way. Public posts usually work without signing in; use sign-in for followers-only or age-gated posts.</p>
+    </section>
+
+    <!-- ------------------------------------------------------- general -->
+    <section class="page" data-page="general">
+      <div class="page-head">
+        <div class="eyebrow">Supported sites · direct media</div>
+        <h1>Video</h1>
+        <p class="lede">Paste a public video page or direct media link. yt-dlp handles regular video, Streamlink covers live streams, and HTML5, gallery, and direct-file fallbacks cover the rest. YouTube links stay on the dedicated YouTube page.</p>
+      </div>
+      <div class="paste-row">
+        <input type="text" id="gen-url" placeholder="https://example.com/watch/video" spellcheck="false">
+        <button class="btn" data-paste="gen-url">Paste</button>
+        <button class="btn primary" id="gen-go">Download</button>
+        <button class="btn danger" id="gen-stop" disabled>Stop</button>
+      </div>
+      <div class="field" style="padding-top:16px">
+        <label>Get</label>
+        <div class="segment" id="gen-kind">
+          <button data-value="video" aria-pressed="true">Video</button>
+          <button data-value="audio" aria-pressed="false">Audio only</button>
+        </div>
+        <span></span>
+      </div>
+      <div class="field" id="gen-quality-field">
+        <label>Video quality</label>
+        <div class="segment" id="gen-quality">
+          <button data-value="best" aria-pressed="true">Best</button>
+          <button data-value="1080" aria-pressed="false">1080p</button>
+          <button data-value="720" aria-pressed="false">720p</button>
+          <button data-value="480" aria-pressed="false">480p</button>
+        </div>
+        <span></span>
+      </div>
+      <div class="field">
+        <label for="gen-limit">Collection limit</label>
+        <input type="text" id="gen-limit" placeholder="all" spellcheck="false">
+        <span class="hint">items</span>
+      </div>
+      <p class="hint warn">Only download media you have the right to save. DRM-protected, paywalled, and login-only media are not bypassed.</p>
+    </section>
+
+    <!-- ----------------------------------------------------- documents -->
+    <section class="page" data-page="pdf">
+      <div class="page-head">
+        <div class="eyebrow">PDF · EPUB · MOBI · AZW3 · FB2</div>
+        <h1>Documents &amp; Ebooks</h1>
+        <p class="lede" id="doc-lede">Paste a direct document or ebook link, or a page that links to files. Valid downloads keep their original format.</p>
+      </div>
+      <div class="paste-row">
+        <input type="text" id="pdf-url" placeholder="https://example.com/book.epub or a document index" spellcheck="false">
+        <button class="btn" data-paste="pdf-url">Paste</button>
+        <button class="btn primary" id="pdf-go">Download</button>
+        <button class="btn danger" id="pdf-stop" disabled>Stop</button>
+      </div>
+      <div class="field" style="padding-top:16px">
+        <label>Download type</label>
+        <div class="segment" id="doc-kind">
+          <button data-value="document" aria-pressed="true">Document / ebook</button>
+          <button data-value="manga" aria-pressed="false">Manga / manhwa</button>
+        </div>
+        <span></span>
+      </div>
+      <div class="field" style="padding-top:16px">
+        <label for="pdf-limit" id="doc-limit-label">Link limit</label>
+        <input type="text" id="pdf-limit" placeholder="200" spellcheck="false">
+        <span class="hint" id="doc-limit-unit">links checked</span>
+      </div>
+      <p class="hint" id="doc-format-note">Files are checked from their contents, not just their names. Common documents, Office files, ebooks, comic archives, and text formats are supported.</p>
+      <p class="hint warn" id="doc-warning">Sites that build their viewer in JavaScript can hide the real file. Open the document itself and paste that address when an index page finds nothing.</p>
+    </section>
+
     <!-- ---------------------------------------------- connection settings -->
     <section class="page" data-page="connection">
       <div class="page-head">
@@ -839,6 +1197,14 @@ body.busy .status-word { color: var(--spotify); }
         </div>
         <p class="hint">V2RayN: HTTP 10809 · SOCKS5 10808 &nbsp;|&nbsp; Clash mixed port 7890</p>
         <p class="hint warn">SOCKS5 opens a local HTTP bridge for the length of the download.</p>
+
+        <div class="group-head"><span>YouTube verification</span><span class="line"></span></div>
+        <div class="field">
+          <label for="youtube-po-token">PO token</label>
+          <input type="password" id="youtube-po-token" placeholder="mweb.gvs+TOKEN" autocomplete="off" spellcheck="false">
+          <span class="hint">optional</span>
+        </div>
+        <p class="hint">Kept in memory only and cleared when the app closes.</p>
       </div>
     </section>
 
@@ -883,6 +1249,94 @@ body.busy .status-word { color: var(--spotify); }
         <div class="row" style="padding:8px 2px">
           <button class="btn" id="open-folder">Open folder</button>
           <button class="btn" id="convert">Convert MP3 â†’ FLAC</button>
+        </div>
+
+        <div class="group-head"><span>Local converters</span><span class="line"></span></div>
+        <div class="converter-grid">
+          <div class="converter-control">
+            <label for="media-convert-format">Output</label>
+            <select class="converter-input" id="media-convert-format">
+              <optgroup label="Video">
+                <option value="mp4" selected>MP4</option>
+                <option value="mkv">MKV</option>
+                <option value="webm">WebM</option>
+                <option value="mov">MOV</option>
+                <option value="avi">AVI</option>
+              </optgroup>
+              <optgroup label="Audio">
+                <option value="mp3">MP3</option>
+                <option value="flac">FLAC</option>
+                <option value="wav">WAV</option>
+                <option value="m4a">M4A</option>
+                <option value="ogg">OGG</option>
+                <option value="aac">AAC</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="converter-control" data-video-option>
+            <label for="media-convert-codec">Video codec</label>
+            <select class="converter-input" id="media-convert-codec">
+              <option value="auto" selected>Automatic</option>
+              <option value="h264">H.264</option>
+              <option value="h265">H.265 / HEVC</option>
+              <option value="vp9">VP9</option>
+            </select>
+          </div>
+          <div class="converter-control" data-video-option>
+            <label for="media-convert-quality">Video quality</label>
+            <select class="converter-input" id="media-convert-quality">
+              <option value="high">High</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="compact">Smaller file</option>
+            </select>
+          </div>
+          <div class="converter-control" data-video-option>
+            <label for="media-convert-resize">Resize</label>
+            <select class="converter-input" id="media-convert-resize">
+              <option value="source" selected>Original size</option>
+              <option value="2160p">Up to 4K</option>
+              <option value="1440p">Up to 1440p</option>
+              <option value="1080p">Up to 1080p</option>
+              <option value="720p">Up to 720p</option>
+              <option value="480p">Up to 480p</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="converter-control" data-video-option>
+            <label for="media-convert-fps">Frame rate</label>
+            <select class="converter-input" id="media-convert-fps">
+              <option value="source" selected>Keep source</option>
+              <option value="24">24 FPS</option>
+              <option value="30">30 FPS</option>
+              <option value="60">60 FPS</option>
+            </select>
+          </div>
+          <div class="converter-control">
+            <label for="media-convert-bitrate">Audio bitrate</label>
+            <select class="converter-input" id="media-convert-bitrate">
+              <option value="128">128 kbps</option>
+              <option value="192" selected>192 kbps</option>
+              <option value="256">256 kbps</option>
+              <option value="320">320 kbps</option>
+            </select>
+          </div>
+          <div class="converter-control" id="media-custom-size" data-video-option hidden>
+            <label>Custom dimensions</label>
+            <div class="dimension-pair">
+              <input class="converter-input" id="media-convert-width" type="number" min="16" max="7680" placeholder="Width">
+              <input class="converter-input" id="media-convert-height" type="number" min="16" max="4320" placeholder="Height">
+            </div>
+          </div>
+        </div>
+        <div class="converter-actions">
+          <button class="btn primary" id="convert-media">Choose media &amp; convert</button>
+          <span class="hint" id="converter-status">Ready</span>
+        </div>
+        <div class="document-converter">
+          <label>Document / images</label>
+          <span class="fixed-value">PDF</span>
+          <button class="btn" id="convert-document">Choose document</button>
+          <button class="btn" id="convert-image-folder">Choose image folder</button>
         </div>
 
         <div class="group-head"><span>Components</span><span class="line"></span></div>
@@ -945,26 +1399,42 @@ const api = () => window.pywebview.api;
 const state = {
   format: "mp3", quality: "320",
   proxy_enabled: false, proxy_type: "http", proxy_url: "",
-  folder: "", busy: false, ready: false, signin: null, cookies: {},
+  folder: "", youtube_po_token: "", busy: false, ready: false, signin: null, cookies: {},
   itemTotal: 0, itemDone: 0, streams: 1, stream: 0, title: "",
   source: "spotify",
   yt: { kind: "video", quality: "best" },
   tt: { quality: "best" },
+  x: { quality: "best" },
+  general: { kind: "video", quality: "best" },
+  docs: { kind: "document" },
 };
 
 /* ------------------------------------------------------------- chrome --- */
 const PAGES = [
   ["download", "Spotify"],
   ["youtube", "YouTube"],
+  ["ytmusic", "YouTube Music"],
   ["tiktok", "TikTok"],
   ["instagram", "Instagram"],
+  ["soundcloud", "SoundCloud"],
+  ["x", "X"],
+  ["general", "Video"],
+  ["pdf", "Documents & Ebooks"],
   ["connection", "Connection"],
   ["settings", "Download settings"],
 ];
 /* Only the source pages retint. Settings pages keep whichever source is active,
    so opening settings never looks like you left the source you were using. */
-const MODES = { download: "spotify", youtube: "youtube", tiktok: "tiktok", instagram: "instagram" };
-const LABELS = { spotify: "Spotify", youtube: "YouTube", tiktok: "TikTok", instagram: "Instagram" };
+const MODES = {
+  download: "spotify", youtube: "youtube", ytmusic: "ytmusic", tiktok: "tiktok",
+  instagram: "instagram", soundcloud: "soundcloud", x: "x",
+  general: "general", pdf: "pdf",
+};
+const LABELS = {
+  spotify: "Spotify", youtube: "YouTube", ytmusic: "YouTube Music", tiktok: "TikTok",
+  instagram: "Instagram", soundcloud: "SoundCloud", x: "X",
+  general: "Video", pdf: "Documents & Ebooks",
+};
 
 function buildNav() {
   const nav = $("nav");
@@ -1016,6 +1486,30 @@ function applyTheme(theme) {
   localStorage.setItem("theme", theme);
 }
 
+function paintConverter() {
+  const format = $("media-convert-format").value;
+  const audioOnly = ["mp3", "flac", "wav", "m4a", "ogg", "aac"].includes(format);
+  document.querySelectorAll("[data-video-option]").forEach(el => { el.hidden = audioOnly; });
+  $("media-custom-size").hidden = audioOnly || $("media-convert-resize").value !== "custom";
+  const codec = $("media-convert-codec");
+  codec.disabled = audioOnly || format === "webm" || format === "avi";
+  if (format === "webm") codec.value = "vp9";
+  if (format === "avi") codec.value = "h264";
+}
+
+function converterOptions() {
+  return {
+    format: $("media-convert-format").value,
+    codec: $("media-convert-codec").value,
+    quality: $("media-convert-quality").value,
+    resize: $("media-convert-resize").value,
+    fps: $("media-convert-fps").value,
+    audio_bitrate: $("media-convert-bitrate").value,
+    width: Number($("media-convert-width").value) || 0,
+    height: Number($("media-convert-height").value) || 0,
+  };
+}
+
 /* -------------------------------------------------------------- toasts -- */
 function toast(message, kind = "info", ms = 5200) {
   const el = document.createElement("div");
@@ -1050,8 +1544,10 @@ function setSegment(id, value) {
   $(id).querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.value === value)));
 }
 
-const GO_BUTTONS = ["download", "yt-go", "tt-go", "ig-go"];
-const STOP_BUTTONS = ["stop", "yt-stop", "tt-stop", "ig-stop"];
+const GO_BUTTONS = ["download", "yt-go", "ym-go", "tt-go", "ig-go", "sc-go", "x-go",
+                    "gen-go", "pdf-go"];
+const STOP_BUTTONS = ["stop", "yt-stop", "ym-stop", "tt-stop", "ig-stop", "sc-stop", "x-stop",
+                      "gen-stop", "pdf-stop"];
 
 function setBusy(busy) {
   state.busy = busy;
@@ -1095,15 +1591,24 @@ function setProgress(pct, kind) {
 
 function refreshStats() {
   const mp3 = state.format === "mp3";
+  const audioFormat = state.format === "flac" ? "FLAC" : "MP3 " + state.quality;
   $("stat-source").textContent = LABELS[state.source];
   $("stat-format").textContent =
     state.source === "spotify"
       ? (mp3 ? "MP3 " + state.quality : state.format.toUpperCase())
       : state.source === "youtube" && state.yt.kind === "audio"
-        ? "MP3 " + state.quality
-        // Instagram has no quality ladder: you get what was posted.
-        : { youtube: state.yt.quality, tiktok: state.tt.quality, instagram: "source" }[state.source].toUpperCase();
+        ? audioFormat
+      // YouTube Music is audio, always — there is no video to choose.
+      : state.source === "soundcloud" || state.source === "ytmusic"
+        || (state.source === "general" && state.general.kind === "audio")
+        ? audioFormat
+        // Instagram has no quality ladder: you get what was posted. Documents
+        // have no format ladder at all — a PDF is a PDF.
+        : { youtube: state.yt.quality, tiktok: state.tt.quality, instagram: "source",
+            x: state.x.quality, pdf: state.docs.kind === "manga" ? "PDF + CBZ" : "source",
+            general: state.general.quality }[state.source].toUpperCase();
   $("yt-quality-field").classList.toggle("muted", state.yt.kind === "audio");
+  $("gen-quality-field").classList.toggle("muted", state.general.kind === "audio");
   $("stat-proxy").textContent = state.proxy_enabled ? state.proxy_type.toUpperCase() : "off";
 
   // Only offer what currently applies.
@@ -1228,6 +1733,18 @@ function handle(ev) {
       $("update-label").textContent = busy ? "Updating…" : "Check for updates";
       break;
     }
+    case "converting": {
+      const busy = args[0];
+      $("convert-media").disabled = busy;
+      $("convert-document").disabled = busy;
+      $("convert-image-folder").disabled = busy;
+      document.querySelectorAll(".converter-input").forEach(el => { el.disabled = busy; });
+      $("converter-status").textContent = busy
+        ? (args[1] === "document" ? "Converting document..." : "Converting media...")
+        : "Ready";
+      if (!busy) paintConverter();
+      break;
+    }
     case "components":
       $("components").textContent = args[0];
       break;
@@ -1306,7 +1823,7 @@ function wire() {
     state.title = "";
     $("status-word").textContent = "Downloading";
     $("status-meta").textContent = "reading the link…";
-    const limit = parseInt($(limitId).value.trim(), 10);
+    const limit = limitId ? parseInt($(limitId).value.trim(), 10) : NaN;
     api().start_media(kind, url, quality, audio, Number.isFinite(limit) ? limit : 0);
   };
 
@@ -1314,9 +1831,34 @@ function wire() {
     startMedia("youtube", "yt-url", "yt-limit", state.yt.quality, state.yt.kind === "audio");
   $("tt-go").onclick = () => startMedia("tiktok", "tt-url", "tt-limit", state.tt.quality, false);
   $("ig-go").onclick = () => startMedia("instagram", "ig-url", "ig-limit", "best", false);
+  $("sc-go").onclick = () => startMedia("soundcloud", "sc-url", "sc-limit", "best", true);
+  $("x-go").onclick = () => startMedia("x", "x-url", null, state.x.quality, false);
+  $("ym-go").onclick = () => startMedia("ytmusic", "ym-url", "ym-limit", "best", true);
+  $("gen-go").onclick = () =>
+    startMedia("general", "gen-url", "gen-limit", state.general.quality,
+               state.general.kind === "audio");
+  $("pdf-go").onclick = () => {
+    const url = $("pdf-url").value.trim();
+    if (!url) { toast("Paste a link first.", "err"); return; }
+    setBusy(true);
+    setProgress(0);
+    state.itemTotal = 0; state.itemDone = 0; state.stream = 0;
+    state.title = "";
+    $("status-word").textContent = "Downloading";
+    $("status-meta").textContent = state.docs.kind === "manga" ? "reading the chapter…" : "reading the page…";
+    const limit = parseInt($("pdf-limit").value.trim(), 10);
+    if (state.docs.kind === "manga") api().start_manga(url, Number.isFinite(limit) ? limit : 0);
+    else api().start_pdf(url, Number.isFinite(limit) ? limit : 0);
+  };
+
   $("yt-url").addEventListener("keydown", e => { if (e.key === "Enter") $("yt-go").click(); });
   $("tt-url").addEventListener("keydown", e => { if (e.key === "Enter") $("tt-go").click(); });
   $("ig-url").addEventListener("keydown", e => { if (e.key === "Enter") $("ig-go").click(); });
+  $("sc-url").addEventListener("keydown", e => { if (e.key === "Enter") $("sc-go").click(); });
+  $("x-url").addEventListener("keydown", e => { if (e.key === "Enter") $("x-go").click(); });
+  $("gen-url").addEventListener("keydown", e => { if (e.key === "Enter") $("gen-go").click(); });
+  $("ym-url").addEventListener("keydown", e => { if (e.key === "Enter") $("ym-go").click(); });
+  $("pdf-url").addEventListener("keydown", e => { if (e.key === "Enter") $("pdf-go").click(); });
 
   // One button per source: it opens the login window, then finishes the job.
   document.querySelectorAll("[data-signin]").forEach(b => {
@@ -1329,6 +1871,29 @@ function wire() {
   segment("yt-kind", v => { state.yt.kind = v; refreshStats(); });
   segment("yt-quality", v => { state.yt.quality = v; refreshStats(); });
   segment("tt-quality", v => { state.tt.quality = v; refreshStats(); });
+  segment("x-quality", v => { state.x.quality = v; refreshStats(); });
+  segment("gen-kind", v => { state.general.kind = v; refreshStats(); });
+  segment("gen-quality", v => { state.general.quality = v; refreshStats(); });
+  segment("doc-kind", v => {
+    state.docs.kind = v;
+    const manga = v === "manga";
+    $("doc-lede").textContent = manga
+      ? "Paste a public or account-authorized manga/manhwa chapter. Its pages are saved in an ordered folder, PDF, and CBZ."
+      : "Paste a direct document or ebook link, or a page that links to files. Valid downloads keep their original format.";
+    $("pdf-url").placeholder = manga
+      ? "https://example.com/series/chapter-12"
+      : "https://example.com/book.epub or a document index";
+    $("doc-limit-label").textContent = manga ? "Page limit" : "Link limit";
+    $("doc-limit-unit").textContent = manga ? "chapter pages" : "links checked";
+    $("pdf-limit").placeholder = manga ? "500" : "200";
+    $("doc-format-note").textContent = manga
+      ? "Images are resolved with gallery-dl first, then standard page markup, and named 00001, 00002, ... in reading order."
+      : "Files are checked from their contents, not just their names. Common documents, Office files, ebooks, comic archives, and text formats are supported.";
+    $("doc-warning").textContent = manga
+      ? "Only download chapters you have the right to save. DRM, paywalls, and access controls are not bypassed."
+      : "Sites that build their viewer in JavaScript can hide the real file. Open the document itself and paste that address when an index page finds nothing.";
+    refreshStats();
+  });
 
   $("console-clear").onclick = () => { $("console").innerHTML = ""; };
   $("console-copy").onclick = () => {
@@ -1348,6 +1913,10 @@ function wire() {
     refreshStats();
   };
   $("proxy-url").onchange = () => api().set_option("proxy_url", $("proxy-url").value.trim());
+  $("youtube-po-token").onchange = () => {
+    state.youtube_po_token = $("youtube-po-token").value.trim();
+    api().set_option("youtube_po_token", state.youtube_po_token);
+  };
   $("test-proxy").onclick = () => api().test_proxy();
   document.querySelectorAll("[data-preset]").forEach(b => {
     b.onclick = () => {
@@ -1359,7 +1928,11 @@ function wire() {
   $("folder").onchange = () => api().set_option("folder", $("folder").value.trim());
   $("browse").onclick = () => api().browse();
   $("open-folder").onclick = () => api().open_folder();
-  $("convert").onclick = () => api().convert();
+  $("media-convert-format").onchange = paintConverter;
+  $("media-convert-resize").onchange = paintConverter;
+  $("convert-media").onclick = () => api().convert_media(converterOptions());
+  $("convert-document").onclick = () => api().convert_document();
+  $("convert-image-folder").onclick = () => api().convert_image_folder();
   $("check-setup").onclick = () => api().check_setup();
   [$("update-btn"), $("update-components")].forEach(b => { b.onclick = () => api().update_tools(); });
   $("about").onclick = () => api().about();
@@ -1370,6 +1943,7 @@ function boot() {
   boot.done = true;
   buildNav();
   wire();
+  paintConverter();
   applyTheme(localStorage.getItem("theme") || "dark");
   document.documentElement.dataset.mode = state.source;
   refreshStats();
@@ -1377,6 +1951,7 @@ function boot() {
   api().hello().then(s => {
     state.format = s.format; state.quality = s.quality;
     state.folder = s.folder;
+    state.youtube_po_token = s.youtube_po_token || "";
     state.proxy_enabled = s.proxy_enabled;
     state.proxy_type = s.proxy_type;
     setSegment("format", s.format);
@@ -1384,6 +1959,7 @@ function boot() {
     setSegment("proxy-type", s.proxy_type);
     $("folder").value = s.folder;
     $("proxy-url").value = s.proxy_url;
+    $("youtube-po-token").value = state.youtube_po_token;
     $("proxy-toggle").setAttribute("aria-checked", String(s.proxy_enabled));
     refreshStats();
   });

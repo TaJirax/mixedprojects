@@ -1,11 +1,14 @@
 # Blue Knight Downloader
 
-A single-file Windows app that downloads from **Spotify, YouTube, TikTok and
-Instagram**, sorts what it fetches, and handles the two things that actually
-break downloaders in practice: **restricted networks** and **sign-in walls**.
+A single-file Windows app that downloads from **Spotify, YouTube, YouTube
+Music, TikTok, Instagram, SoundCloud, X, PDF/ebook documents, and other
+yt-dlp-supported video sites**, sorts what it fetches, and handles restricted
+networks and common sign-in walls.
 
-No install, no Python, no command line. ffmpeg, spotDL and yt-dlp ship inside
-the executable and update themselves.
+No install, no Python, no command line. ffmpeg, spotDL, yt-dlp, Deno, Streamlink,
+gallery-dl and the document conversion libraries ship inside the executable.
+The **Update tools** button checks each bundled downloader and converter, verifies
+Python wheels against PyPI's SHA-256 digest, and activates those updates on restart.
 
 <sub>Telegram: <a href="https://t.me/BlueKnight_Net">@BlueKnight_Net</a></sub>
 
@@ -26,10 +29,69 @@ metadata and fetch media.
 | --- | --- | --- |
 | **Spotify** | track · album · playlist | MP3 320 kbps or FLAC, tagged |
 | **YouTube** | video · Short · playlist | MP4 up to best/1080/720/480, or audio-only as MP3 |
+| **YouTube Music** | song · album · playlist | MP3 or FLAC, tagged with artist, album and cover art |
 | **TikTok** | video link · `@username` · hashtag page | MP4 |
 | **Instagram** | reel · post · `@username` | source quality, photo or video |
+| **SoundCloud** | track · set · profile | MP3 or FLAC |
+| **X** | `x.com` or `twitter.com` post - video, photo, GIF, multi-image | MP4, or JPG/PNG at full resolution |
+| **Video** | public video page or direct media URL, excluding YouTube | MP4 or audio-only |
+| **Documents & Ebooks** | documents, Office files, ebooks, comic archives, or an index page | original format |
+| **Manga / manhwa** | public or account-authorized chapter page | PDF and CBZ |
 
 Playlist and profile downloads take an optional item limit.
+
+### More than one engine
+
+yt-dlp only understands video. A post that is a photo, a GIF or a mix of both
+is not a failure - it is a job for a different engine, so the X and **Video**
+pages fall through automatically:
+
+1. **yt-dlp** - video, everywhere it has an extractor.
+2. **Streamlink** - live and HLS streams on its supported services.
+3. **HTML5 resolver** - standard video/audio tags and social media metadata.
+4. **gallery-dl** - photos, GIFs, galleries and mixed posts.
+5. **direct download** - the link treated as the file itself, using neither
+   yt-dlp nor ffmpeg.
+
+The hand-off is silent, and only happens when yt-dlp reports that there is no
+video at the link. A genuine dead post or DRM failure stops where it happened
+rather than being retried pointlessly by every engine in turn. The engines use
+the app's proxy and Stop button.
+
+For a General-site bot check, CAPTCHA, or HTTP 401/403 response, yt-dlp gets a
+separate challenge ladder before engine hand-off: the bundled Deno runtime,
+then a browser-impersonated request, then a signed-in browser or exported jar
+only when it contains cookies applicable to that exact hostname. Impersonation
+is not forced on normal downloads because yt-dlp documents a speed and stability
+cost. YouTube's player-client and PO-token arguments remain exclusive to the
+YouTube pages and are never sent to other sites.
+
+### What it cannot do
+
+**Netflix, Crunchyroll, Disney+ and similar services are not supported and
+cannot be added.** Every stream they serve is encrypted with Widevine DRM, and
+downloading one means breaking that encryption. yt-dlp refuses these sites
+outright, and so does this app. The same applies to individual protected
+tracks elsewhere — SoundCloud Go+, for instance — which report `DRM protected`
+and stop. Unprotected media on those same sites still works.
+
+### Documents
+
+The **Documents & Ebooks** page takes either a direct file link, or a page that
+links to documents — a course page, a manual index, a journal issue — and collects
+validated PDF, EPUB, MOBI, AZW/AZW3, FB2, Office, OpenDocument, RTF, text, DjVu,
+CHM and CBZ files. Each link is checked by reading the file's first
+bytes rather than trusting its name, so pages that serve documents from
+`/download?id=…` work, and an HTML error page never lands on disk as a broken
+`.pdf`. Sites that build their viewer in JavaScript hide the real file from the
+page source; there, open the PDF in a browser and paste that address.
+
+Switch the same page to **Manga / manhwa** for a public or account-authorized
+chapter URL. gallery-dl is tried first, then the built-in HTML image resolver.
+The extractor/HTML reading sequence is preserved and saved permanently as
+`00001`, `00002`, ... inside a chapter folder; PDF and CBZ are built from that
+same ordered list. It does not bypass DRM, subscriptions, paywalls, or site
+access controls.
 
 ## Where files go
 
@@ -39,18 +101,38 @@ Everything lands next to the app, one folder per source:
 BlueKnightdownloader/
 ├─ Spotify/
 ├─ YouTube/
+├─ YouTube Music/
 ├─ TikTok/
-└─ Instagram/
+├─ Instagram/
+├─ SoundCloud/
+├─ X/
+├─ Video/
+└─ Documents & Ebooks/
 ```
 
 Change the parent folder in **Download settings**; the per-source folders follow.
+
+## Local conversion
+
+**Download settings** includes a local media converter for MP3, FLAC, WAV, M4A,
+OGG, AAC, MP4, MKV, WebM, MOV and AVI. Video conversion offers H.264, H.265 and
+VP9, three quality profiles, original/preset/custom dimensions, source/24/30/60
+FPS, and selectable audio bitrate. FFmpeg performs a real transcode and writes
+the result beside the selected source without overwriting it.
+
+The document converter creates PDF from images, CBZ archives and PDF using the
+bundled libraries. **Choose image folder** collects up to 500 images recursively,
+uses numeric-aware ordering (`page2` before `page10`), and creates one PDF beside
+the folder. Office and OpenDocument conversion uses LibreOffice when installed;
+ebook conversion uses Calibre when installed. DRM-protected inputs are not
+decrypted or bypassed.
 
 ## Sign-in and cookies
 
 Some things are simply not served to a logged-out client — most Instagram
 content, and YouTube whenever it decides your IP looks like a robot.
 
-**The easy way.** Press **Sign in** on the YouTube or Instagram page. The app
+**The easy way.** Press **Sign in** on the YouTube, X, or Instagram page. The app
 opens a real login window of its own, you sign in normally, and it keeps the
 session itself. That login survives restarts, and the app quietly re-reads it
 when a site rotates its cookies — which YouTube does constantly.
@@ -64,7 +146,9 @@ and never reopen it.
 
 Cookie jars are kept **per site** in `cookies/<site>/`, with a small registry
 recording what each holds and when it expires. An Instagram jar is never
-offered to YouTube.
+offered to YouTube. General-site cookie retries are challenge-triggered and
+domain checked; unrelated cookies in a browser or export are not sent to the
+requested host.
 
 > Use a throwaway account, not your main one. yt-dlp's wiki warns that
 > accounts used for downloading can be banned.
@@ -94,17 +178,20 @@ to check.
 
 ## When YouTube asks for a bot check
 
-YouTube is rolling out "PO tokens", and most player clients now require one.
-When it challenges a download, the app retries as the clients that do not need
-a token — `android_vr`, `web_embedded`, `tv` — before asking for cookies. That
-alone clears it most of the time, with no account involved.
+The app bundles Deno so yt-dlp can execute its EJS JavaScript challenge solver,
+then retries the current token-free and HLS-capable clients before asking for a
+fresh signed-in session. Playlist requests are spaced out to reduce session
+rate limits.
 
-If it keeps failing: sign in (throwaway account), or route through a proxy —
-the check follows your IP, and datacenter ranges are flagged hardest.
+If YouTube still requires proof-of-origin attestation, **Connection settings**
+accepts an `mweb.gvs+TOKEN` value in yt-dlp's official format. It is kept in
+memory only. These tokens are session/video-bound and expire, so this is an
+advanced fallback rather than a permanent credential. A signed-in throwaway
+account or a different IP may still be required.
 
 ## Keeping it current
 
-**Check for updates** refreshes spotDL and yt-dlp from mirrored hosts (GitHub,
+**Check for updates** refreshes spotDL, yt-dlp, Deno and the Python engines from mirrored hosts (GitHub,
 with SourceForge as the escape hatch for blocked networks), and reports whether
 a usable Instagram session is on file. Sites change their defences constantly;
 an outdated yt-dlp is the single most common cause of a download that used to
@@ -117,8 +204,8 @@ cd spoty
 .\build_portable.ps1
 ```
 
-Needs Python 3.12, PyInstaller, pywebview, and `vendor/spotdl.exe`,
-`vendor/yt-dlp.exe` plus an ffmpeg build. The result is
+Needs Python 3.12, PyInstaller, pywebview, `vendor/spotdl.exe`,
+`vendor/yt-dlp.exe`, `vendor/deno.exe` plus an ffmpeg build. The result is
 `release/SpotifyDownloader.exe`.
 
 | File | Role |

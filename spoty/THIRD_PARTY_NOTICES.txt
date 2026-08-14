@@ -33,6 +33,47 @@ FFmpeg source: https://ffmpeg.org/download.html
 Licensed under GNU GPL version 3 or later for this build. The complete GPLv3
 license text is included as GPL-3.0.txt.
 
+Deno 2.9.5
+----------
+Copyright 2018-2026 the Deno authors
+Licensed under the MIT License.
+Project and source: https://github.com/denoland/deno
+Bundled as the JavaScript runtime for yt-dlp's EJS YouTube challenge solver.
+
+gallery-dl 1.32.9
+-----------------
+Copyright (c) 2014-2025 Mike Faehrmann
+Licensed under GNU GPL version 2.
+Project and corresponding source: https://github.com/mikf/gallery-dl
+Used by this app to resolve photo, GIF and mixed media posts that yt-dlp,
+being video-only, cannot extract.
+
+Streamlink 8.5.0
+----------------
+Copyright (c) 2015-2026 Streamlink Team
+Licensed under the Simplified BSD License.
+Project and source: https://github.com/streamlink/streamlink
+Used by this app to resolve and record supported live and HLS streams.
+
+img2pdf
+-------
+Copyright (c) 2015-2026 Johannes Schauer Marin Rodrigues
+Licensed under GNU LGPL version 3 or later.
+Project and source: https://gitlab.mister-muffin.de/josch/img2pdf
+Used to assemble authorized/public manga and manhwa images into PDF files.
+
+pikepdf
+-------
+Copyright (c) 2017-2026 James R. Barlow
+Licensed under the Mozilla Public License 2.0.
+Project and source: https://github.com/pikepdf/pikepdf
+
+Pillow
+------
+Copyright (c) 2010-2026 Alex Clark and contributors
+Licensed under the HPND License.
+Project and source: https://github.com/python-pillow/Pillow
+
 PyInstaller bootloader
 ----------------------
 The GUI executable contains the PyInstaller bootloader.

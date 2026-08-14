@@ -9,7 +9,7 @@ android {
         applicationId = "com.whitebooster.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 27
+        versionCode = 39
         versionName = "5.7.1"
         vectorDrawables { useSupportLibrary = true }
     }

@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -17,8 +18,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -27,6 +42,12 @@ import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material3.*
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.runtime.SideEffect
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.Typography
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.*
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -38,10 +59,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
-import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.SSLSocket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.SupervisorJob
@@ -60,16 +82,57 @@ import java.net.DatagramSocket
 import java.util.Base64
 import kotlin.system.measureTimeMillis
 
-private val Accent = Color(0xFF0D9B9B)
+object GwdPrefs {
+    private const val NAME = "gwd_prefs"
+    private const val KEY_CONFIG = "saved_config"
+    fun loadConfig(ctx: Context): String =
+        try { ctx.getSharedPreferences(NAME, Context.MODE_PRIVATE).getString(KEY_CONFIG, "") ?: "" } catch (_: Exception) { "" }
+    fun saveConfig(ctx: Context, value: String) {
+        try {
+            ctx.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().putString(KEY_CONFIG, value).apply()
+        } catch (_: Exception) {}
+    }
+}
+
 private val Green = Color(0xFF00C853)
 private val Yellow = Color(0xFFFFD600)
 private val Red = Color(0xFFFF5252)
-private val Bg = Color(0xFF0A0F0F)
-private val Surface = Color(0xFF121A1A)
-private val Surface2 = Color(0xFF1A2626)
-private val TextP = Color(0xFFE8EAED)
-private val TextS = Color(0xFF8B95A5)
-private val TextM = Color(0xFF5A6577)
+
+private val _Accent = androidx.compose.runtime.mutableStateOf(Color(0xFF0D9B9B))
+private val _Bg = androidx.compose.runtime.mutableStateOf(Color(0xFF0A0F0F))
+private val _Surface = androidx.compose.runtime.mutableStateOf(Color(0xFF121A1A))
+private val _Surface2 = androidx.compose.runtime.mutableStateOf(Color(0xFF1A2626))
+private val _TextP = androidx.compose.runtime.mutableStateOf(Color(0xFFE8EAED))
+private val _TextS = androidx.compose.runtime.mutableStateOf(Color(0xFF8B95A5))
+private val _TextM = androidx.compose.runtime.mutableStateOf(Color(0xFF5A6577))
+
+private val Accent: Color get() = _Accent.value
+private val Bg: Color get() = _Bg.value
+private val Surface: Color get() = _Surface.value
+private val Surface2: Color get() = _Surface2.value
+private val TextP: Color get() = _TextP.value
+private val TextS: Color get() = _TextS.value
+private val TextM: Color get() = _TextM.value
+
+private fun applyDayNight(dark: Boolean) {
+    if (dark) {
+        _Accent.value = Color(0xFF0D9B9B)
+        _Bg.value = Color(0xFF0A0F0F)
+        _Surface.value = Color(0xFF121A1A)
+        _Surface2.value = Color(0xFF1A2626)
+        _TextP.value = Color(0xFFE8EAED)
+        _TextS.value = Color(0xFF8B95A5)
+        _TextM.value = Color(0xFF5A6577)
+    } else {
+        _Accent.value = Color(0xFF0B7F7F)
+        _Bg.value = Color(0xFFF4F7F7)
+        _Surface.value = Color(0xFFFFFFFF)
+        _Surface2.value = Color(0xFFE6EEEE)
+        _TextP.value = Color(0xFF101418)
+        _TextS.value = Color(0xFF5A6577)
+        _TextM.value = Color(0xFF8B95A5)
+    }
+}
 
 data class DnsItem(
     val n: Int, val ip: String, val provider: String, val tier: Int, val notes: String,
@@ -210,6 +273,12 @@ object ScanHub {
     private var v2Job: Job? = null
     @Volatile private var v2Stop = false
 
+    /** Pipeline caption for DNS tab: what the app is doing */
+    var flowStep by mutableStateOf(0) // 0 idle · 1 config tested · 2 dns scanning · 3 best ready
+    var flowCaption by mutableStateOf("Paste a config in Test · then scan DNS here to find the best resolver.")
+    var bestDnsIp by mutableStateOf<String?>(null)
+    var bestDnsDetail by mutableStateOf("")
+
     fun ensureDns() {
         if (dnsRows.isEmpty()) dnsRows = DNS_LIST.map { it.copy() }
     }
@@ -275,10 +344,43 @@ object ScanHub {
                     dnsRows = updated.toList()
                 }
                 dnsProgress = if (dnsStop) "stopped" else "done · ${target.size} scanned"
+                if (!dnsStop) {
+                    val best = dnsRows
+                        .filter { it.pingMs != null }
+                        .sortedWith(compareBy({ it.lossPct ?: 999 }, { it.pingMs ?: 9999L }, { it.jitterMs ?: 9999L }))
+                        .firstOrNull()
+                    if (best != null) {
+                        bestDnsIp = best.ip
+                        bestDnsDetail = "${best.provider} · ${best.pingMs}ms · loss ${best.lossPct}% · ${best.gameLabel}"
+                        flowStep = 3
+                        flowCaption = "Best DNS: ${best.ip} (${best.provider}) · ${best.pingMs}ms loss ${best.lossPct}%. Set yourself (Private DNS). DNS helps resolve; it does not set in-match ping."
+                    } else {
+                        flowStep = 2
+                        flowCaption = "DNS scan finished — no strong resolver. Keep system DNS or try Tier-1 again."
+                    }
+                }
             } finally {
                 dnsScanning = false
             }
         }
+    }
+
+    fun markConfigTested() {
+        val best = v2Nodes.filter { it.reachable == true }
+            .sortedWith(compareBy({ it.tcpLoss ?: 100 }, { it.tcpMs ?: 9999L }))
+            .firstOrNull()
+        flowStep = 1
+        flowCaption = if (best != null) {
+            "Config OK: ${best.protocol} ${best.host}:${best.port} · ${best.gameLabel}. Next: scan DNS (Tier-1) to pick the best resolver."
+        } else {
+            "Config tested — no reachable node. Fix the link, then scan DNS for resolvers."
+        }
+    }
+
+    fun beginDnsFlow() {
+        flowStep = 2
+        flowCaption = "Scanning DNS list (ping · loss · jitter)… wait for best resolver."
+        startDns(1)
     }
 
     fun stopV2() {
@@ -358,6 +460,7 @@ object ScanHub {
                     if (best.isNotEmpty()) {
                         v2Status += " · best: ${best.first().protocol} ${best.first().host} (${best.first().gameLabel})"
                     }
+                    markConfigTested()
                 }
             } finally {
                 v2Busy = false
@@ -370,12 +473,35 @@ object ScanHub {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-        )
+        val saved = GwdPrefs.loadConfig(this)
+        if (saved.isNotBlank() && ScanHub.v2Text.isBlank()) ScanHub.v2Text = saved
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Surface)) {
+            val dark = androidx.compose.foundation.isSystemInDarkTheme()
+            applyDayNight(dark)
+            val scheme = if (dark) {
+                darkColorScheme(primary = Accent, background = Bg, surface = Surface, onBackground = TextP, onSurface = TextP)
+            } else {
+                lightColorScheme(primary = Accent, background = Bg, surface = Surface, onBackground = TextP, onSurface = TextP)
+            }
+            SideEffect {
+                enableEdgeToEdge(
+                    statusBarStyle = if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                    else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+                    navigationBarStyle = if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                    else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+                )
+            }
+            MaterialTheme(
+                colorScheme = scheme,
+                typography = Typography(
+                    bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Normal),
+                    bodyMedium = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Normal),
+                    bodySmall = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Normal),
+                    titleLarge = TextStyle(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold),
+                    titleMedium = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold),
+                    labelLarge = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold)
+                )
+            ) {
                 Surface(Modifier.fillMaxSize(), color = Bg) { Root() }
             }
         }
@@ -460,7 +586,6 @@ suspend fun tlsConnect(host: String, port: Int, timeoutMs: Int = 3000): Long? = 
                 val socket = Socket()
                 socket.connect(InetSocketAddress(host, port), timeoutMs)
                 socket.soTimeout = timeoutMs
-                // createSocket is declared to return Socket; the handshake lives on SSLSocket.
                 val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                     .createSocket(socket, host, port, true) as SSLSocket
                 ssl.soTimeout = timeoutMs
@@ -576,14 +701,14 @@ fun gamingScoreDns(avg: Long?, loss: Int, jitter: Long?, tier: Int): Pair<String
     if (tier == 1) score += 10
     score = score.coerceIn(0, 100)
     val label = when {
-        score >= 80 -> "Excellent for games"
-        score >= 65 -> "Good for games"
+        score >= 80 -> "Excellent path (DNS)"
+        score >= 65 -> "Good path (DNS)"
         score >= 45 -> "Acceptable / casual"
         score >= 25 -> "Poor for competitive"
         else -> "Not suitable for games"
     }
     val advice = when {
-        tier == 1 && score >= 60 -> "Tier-1 anti-sanction resolver — best for launchers/stores (Shecan, 403, Electro…). Does not lower in-match ping."
+        tier == 1 && score >= 60 -> "Tier-1 resolver for launchers/stores. Does not lower in-match ping."
         tier == 2 && score >= 60 -> "ISP DNS — low RTT but zero sanction bypass. Fine if game already works."
         tier == 3 -> "Public international DNS — benchmark only; often a downgrade on Iranian lines for blocked titles."
         loss >= 20 -> "High packet loss — expect rubber-banding if used as system DNS under load."
@@ -649,8 +774,8 @@ fun gamingScoreNode(
     if (udpHeavy && udp?.status == "BLOCKED") score -= 12
     score = score.coerceIn(0, 100)
     val label = when {
-        score >= 80 -> "Excellent for games"
-        score >= 65 -> "Good for games"
+        score >= 80 -> "Excellent path score"
+        score >= 65 -> "Good path score"
         score >= 45 -> "OK for casual / non-ranked"
         score >= 25 -> "Poor for competitive"
         else -> "Not suitable for games"
@@ -716,6 +841,63 @@ fun splitConfigBlocks(raw: String): List<String> {
     }
     if (text.contains("[Interface]", ignoreCase = true) && text.contains("[Peer]", ignoreCase = true)) blocks.add(text)
     return blocks.distinct().ifEmpty { if (text.length > 8) listOf(text) else emptyList() }
+}
+
+private fun shareParts(link: String): Triple<String, Int, Map<String, String>> {
+    val body = link.substringAfter("://").substringBefore("#")
+    val endpoint = body.substringAfterLast("@").substringBefore("?")
+    val host = endpoint.substringBeforeLast(":").removePrefix("[").removeSuffix("]")
+    val port = endpoint.substringAfterLast(":", "443").toIntOrNull() ?: 443
+    val params = body.substringAfter("?", "").split("&").mapNotNull {
+        val p = it.indexOf('=')
+        if (p > 0) it.substring(0, p) to it.substring(p + 1) else null
+    }.toMap()
+    return Triple(host, port, params)
+}
+
+private fun parseShareNode(link: String, i: Int, protocol: String): V2Node {
+    val (host, port, params) = shareParts(link)
+    val name = link.substringAfter("#", "$protocol-$i").ifBlank { "$protocol-$i" }
+    val security = params["security"] ?: if (protocol == "Trojan") "tls" else "none"
+    val network = params["type"] ?: if (protocol == "Hysteria2" || protocol == "TUIC") "udp" else "tcp"
+    return V2Node(i, protocol, host, port, name, security, network, link.take(80))
+}
+
+private fun parseVless(link: String, i: Int) = parseShareNode(link, i, "VLESS")
+private fun parseTrojan(link: String, i: Int) = parseShareNode(link, i, "Trojan")
+private fun parseHy2(link: String, i: Int) = parseShareNode(link, i, "Hysteria2")
+private fun parseTuic(link: String, i: Int) = parseShareNode(link, i, "TUIC")
+
+private fun parseSs(link: String, i: Int): V2Node {
+    val body = link.substringAfter("://").substringBefore("#")
+    val decoded = if ('@' in body) body else try {
+        String(Base64.getUrlDecoder().decode(body.substringBefore("?")))
+    } catch (_: Exception) { body }
+    val endpoint = decoded.substringAfterLast("@").substringBefore("?")
+    val host = endpoint.substringBeforeLast(":").removePrefix("[").removeSuffix("]")
+    val port = endpoint.substringAfterLast(":", "8388").toIntOrNull() ?: 8388
+    return V2Node(i, "Shadowsocks", host, port, link.substringAfter("#", "ss-$i"), "AEAD", "tcp/udp", link.take(80))
+}
+
+private fun parseVmess(link: String, i: Int): V2Node {
+    val encoded = link.substringAfter("://").substringBefore("#")
+    val json = try {
+        val padded = encoded + "=".repeat((4 - encoded.length % 4) % 4)
+        String(Base64.getUrlDecoder().decode(padded))
+    } catch (_: Exception) { "" }
+    fun field(name: String) = Regex("\\\"$name\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").find(json)?.groupValues?.get(1)
+    val host = field("add") ?: field("address") ?: return parseShareNode(link, i, "VMess")
+    val port = (field("port") ?: "443").toIntOrNull() ?: 443
+    return V2Node(i, "VMess", host, port, field("ps") ?: "vmess-$i", field("tls") ?: "none", field("net") ?: "tcp", link.take(80))
+}
+
+private fun parseJsonNode(json: String, i: Int): V2Node {
+    fun field(name: String) = Regex("\\\"$name\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").find(json)?.groupValues?.get(1)
+    fun number(name: String) = Regex("\\\"$name\\\"\\s*:\\s*(\\d+)").find(json)?.groupValues?.get(1)?.toIntOrNull()
+    val protocol = field("protocol") ?: "JSON"
+    val host = field("address") ?: field("server") ?: "unknown"
+    val port = number("port") ?: field("port")?.toIntOrNull() ?: 443
+    return V2Node(i, protocol, host, port, "json-$i", field("security") ?: "none", field("network") ?: field("type") ?: "tcp", json.take(80))
 }
 
 fun parseOneConfig(raw: String, index: Int): V2Node? {
@@ -786,13 +968,13 @@ fun Root() {
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.ic_launcher_foreground),
-                    contentDescription = "GWD",
-                    modifier = Modifier.size(40.dp)
+                    contentDescription = null,
+                    modifier = Modifier.size(36.dp)
                 )
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(10.dp))
                 Column {
-                    Text("GWD", color = TextP, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text("Network · Device · Games", color = TextM, fontSize = 11.sp)
+                    Text("white launcher", color = TextP, fontWeight = FontWeight.Bold, fontSize = 18.sp, letterSpacing = 0.3.sp)
+                    Text("Bypass · DNS · Games", color = TextM, fontSize = 12.sp, letterSpacing = 0.2.sp)
                 }
             }
         },
@@ -804,14 +986,14 @@ fun Root() {
             ) {
                 NavigationBarItem(
                     selected = tab == 0, onClick = { tab = 0 },
-                    icon = { Icon(Icons.Outlined.Dns, null) },
-                    label = { Text("DNS", fontSize = 11.sp) },
+                    icon = { Icon(Icons.Outlined.Terminal, null) },
+                    label = { Text("Bypass", fontSize = 11.sp) },
                     colors = navColors
                 )
                 NavigationBarItem(
                     selected = tab == 1, onClick = { tab = 1 },
-                    icon = { Icon(Icons.Outlined.Terminal, null) },
-                    label = { Text("Test", fontSize = 11.sp) },
+                    icon = { Icon(Icons.Outlined.Dns, null) },
+                    label = { Text("DNS", fontSize = 11.sp) },
                     colors = navColors
                 )
                 NavigationBarItem(
@@ -820,21 +1002,38 @@ fun Root() {
                     label = { Text("Games", fontSize = 11.sp) },
                     colors = navColors
                 )
-                NavigationBarItem(
-                    selected = tab == 3, onClick = { tab = 3 },
-                    icon = { Icon(Icons.Outlined.PhoneAndroid, null) },
-                    label = { Text("Device", fontSize = 11.sp) },
-                    colors = navColors
-                )
             }
         }
     ) { pad ->
         Box(Modifier.fillMaxSize().padding(pad)) {
-            when (tab) {
-                0 -> DnsCheckerTab()
-                1 -> V2RayTestTab()
-                2 -> GamesOptimizeTab()
-                3 -> DeviceTab()
+            AnimatedContent(
+                targetState = tab,
+                transitionSpec = {
+                    // Shared short tweens — less jank, consistent feel
+                    val enter = tween<IntOffset>(durationMillis = 160, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                    val exit = tween<IntOffset>(durationMillis = 120, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
+                    val forward = targetState > initialState
+                    val slideIn = if (forward) {
+                        slideInHorizontally(animationSpec = enter, initialOffsetX = { it / 6 })
+                    } else {
+                        slideInHorizontally(animationSpec = enter, initialOffsetX = { -it / 6 })
+                    }
+                    val slideOut = if (forward) {
+                        slideOutHorizontally(animationSpec = exit, targetOffsetX = { -it / 6 })
+                    } else {
+                        slideOutHorizontally(animationSpec = exit, targetOffsetX = { it / 6 })
+                    }
+                    (slideIn + fadeIn(animationSpec = tween(160)))
+                        .togetherWith(slideOut + fadeOut(animationSpec = tween(120)))
+                        .using(SizeTransform(clip = false))
+                },
+                label = "tabs"
+            ) { page ->
+                when (page) {
+                    0 -> BypassTab()
+                    1 -> DnsCheckerTab()
+                    2 -> GamesOptimizeTab()
+                }
             }
         }
     }
@@ -843,118 +1042,164 @@ fun Root() {
 @Composable
 fun DnsCheckerTab() {
     ScanHub.ensureDns()
-    val rows = ScanHub.dnsRows
-    var filter by remember { mutableIntStateOf(0) }
     val scanning = ScanHub.dnsScanning
     val progress = ScanHub.dnsProgress
-    val shown = when (filter) {
-        1 -> rows.filter { it.tier == 1 }; 2 -> rows.filter { it.tier == 2 }; 3 -> rows.filter { it.tier == 3 }; else -> rows
-    }.sortedWith(compareBy({ it.lossPct ?: 999 }, { it.pingMs ?: 9999 }))
+    val caption = ScanHub.flowCaption
+    val bestIp = ScanHub.bestDnsIp
+    val bestDetail = ScanHub.bestDnsDetail
+    // Top optimized only (hide full list)
+    val top = ScanHub.dnsRows
+        .filter { it.pingMs != null && (it.lossPct ?: 100) <= 20 }
+        .sortedWith(compareBy({ it.lossPct ?: 999 }, { it.pingMs ?: 9999L }, { it.jitterMs ?: 9999L }))
+        .take(5)
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(10.dp))
-        Text("DNS Checker", color = TextP, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text("Scan · Start / Stop", color = TextS, fontSize = 12.sp)
+        Text("DNS", color = TextP, fontSize = 24.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.2.sp)
+        Text("Public & private resolvers · relay quality for games", color = TextS, fontSize = 12.sp)
         Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0 to "All", 1 to "Tier1", 2 to "Tier2", 3 to "Tier3").forEach { (v, l) ->
-                FilterChip(selected = filter == v, onClick = { filter = v }, label = { Text(l, fontSize = 11.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Accent.copy(0.2f), selectedLabelColor = Accent))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Relay check", color = Accent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Text(caption, color = TextS, fontSize = 12.sp, lineHeight = 17.sp)
+                if (progress.isNotBlank()) Text(progress, color = TextM, fontSize = 11.sp)
             }
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
-                onClick = { ScanHub.startDns(filter) },
+                onClick = {
+                    ScanHub.flowStep = 2
+                    ScanHub.flowCaption = "Scanning resolvers… measuring relay delay, loss, jitter."
+                    ScanHub.startDns(0)
+                },
                 enabled = !scanning,
-                modifier = Modifier.weight(1f).height(46.dp),
-                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier.weight(1f).height(36.dp),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Accent)
-            ) {
-                if (scanning) {
-                    CircularProgressIndicator(Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Running", color = Color.White, fontSize = 13.sp)
-                } else Text("Start", color = Color.White, fontSize = 13.sp)
-            }
+            ) { Text(if (scanning) "Scanning…" else "Scan", color = Color.White, fontWeight = FontWeight.Medium, fontSize = 13.sp) }
             Button(
                 onClick = { ScanHub.stopDns() },
                 enabled = scanning,
-                modifier = Modifier.weight(1f).height(46.dp),
-                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier.weight(1f).height(36.dp),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Red)
-            ) { Text("Stop", color = Color.White, fontSize = 13.sp) }
+            ) { Text("Stop", color = Color.White, fontWeight = FontWeight.Medium, fontSize = 13.sp) }
         }
-        if (progress.isNotEmpty()) Text(progress, color = TextM, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-        Spacer(Modifier.height(8.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
-            items(shown, key = { it.ip }) { d ->
-                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("#${d.n}", color = TextM, fontSize = 11.sp, modifier = Modifier.width(32.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(d.provider, color = TextP, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                Text(d.ip, color = TextS, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                            }
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(d.pingMs?.let { "$it ms" } ?: "—", color = when {
-                                    d.pingMs == null -> TextM; d.pingMs!! < 40 -> Green; d.pingMs!! < 80 -> Yellow; else -> Red
-                                }, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text(d.lossPct?.let { "loss $it%" } ?: "loss —", color = when {
-                                    d.lossPct == null -> TextM; d.lossPct!! == 0 -> Green; d.lossPct!! < 20 -> Yellow; else -> Red
-                                }, fontSize = 11.sp)
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Text("T${d.tier} · ${d.notes} · ${d.status}", color = TextM, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        if (d.jitterMs != null) {
-                            Text("Jitter ±${d.jitterMs} ms · loss ${d.lossPct ?: 0}%", color = TextS, fontSize = 11.sp)
-                        }
-                        if (d.gameLabel.isNotEmpty()) {
-                            Text(d.gameLabel, color = when {
-                                d.gameLabel.startsWith("Excellent") || d.gameLabel.startsWith("Good") -> Green
-                                d.gameLabel.startsWith("Acceptable") || d.gameLabel.startsWith("OK") -> Yellow
-                                else -> Red
-                            }, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                            Text(d.gameAdvice, color = TextM, fontSize = 10.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
+        Spacer(Modifier.height(14.dp))
+        if (bestIp != null) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Surface2),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Best relay", color = Green, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text(bestIp, color = TextP, fontFamily = FontFamily.Monospace, fontSize = 16.sp)
+                    if (bestDetail.isNotBlank()) Text(bestDetail, color = TextS, fontSize = 12.sp)
+                    Text("Set this DNS yourself (Private DNS / Wi-Fi). WGB only suggests.", color = TextM, fontSize = 11.sp)
                 }
             }
-            val good = rows.filter { it.gameLabel.startsWith("Excellent") || it.gameLabel.startsWith("Good") }
-                .sortedBy { it.pingMs ?: 9999 }.take(5)
-            if (good.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+        }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
+            if (top.isEmpty() && !scanning) {
                 item {
-                    Card(colors = CardDefaults.cardColors(containerColor = Surface2), shape = RoundedCornerShape(18.dp)) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text("Best for games (this scan)", color = Accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            good.forEach { g ->
-                                Text("• ${g.provider} ${g.ip} · ${g.pingMs}ms · ${g.gameLabel}", color = TextP, fontSize = 11.sp)
-                            }
+                    Text("Tap Scan. Only the best gaming resolvers will appear here.", color = TextM, fontSize = 13.sp)
+                }
+            }
+            items(top, key = { it.ip }) { d ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Surface),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(d.provider, color = Accent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Spacer(Modifier.weight(1f))
+                            Text(d.gameLabel.ifBlank { d.status }, color = when {
+                                d.gameLabel.startsWith("Excellent") || d.gameLabel.startsWith("Good") -> Green
+                                d.gameLabel.startsWith("OK") -> Yellow
+                                else -> TextS
+                            }, fontSize = 12.sp)
                         }
+                        Text(d.ip, color = TextP, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+                        Text(
+                            "Relay ${d.pingMs ?: "—"}ms · loss ${d.lossPct ?: "—"}% · jitter ±${d.jitterMs ?: "—"}",
+                            color = TextS, fontSize = 12.sp
+                        )
+                        if (d.gameAdvice.isNotBlank()) Text(d.gameAdvice, color = TextM, fontSize = 11.sp)
                     }
                 }
             }
         }
-        Text("Scan continues if you switch tabs · Stop cancels current job", color = TextM, fontSize = 10.sp, modifier = Modifier.padding(vertical = 6.dp))
     }
 }
 
 @Composable
-fun V2RayTestTab() {
+fun BypassTab() {
     val ctx = LocalContext.current
     val text = ScanHub.v2Text
     val nodes = ScanHub.v2Nodes
     val busy = ScanHub.v2Busy
     val status = ScanHub.v2Status
     var connMsg by remember { mutableStateOf("") }
+    var selectedIdx by remember { mutableIntStateOf(-1) }
+    var launchPkg by remember { mutableStateOf<String?>(null) }
+    var splitMode by remember { mutableStateOf(BoostState.splitMode.ifBlank { "games" }) } // full | games
     val scope = rememberCoroutineScope()
+    val pm = ctx.packageManager
+    val gamePkgs = remember {
+        mapOf(
+            "Mobile Legends: Bang Bang" to "com.mobile.legends",
+            "PUBG Mobile" to "com.tencent.ig",
+            "BGMI" to "com.pubg.imobile",
+            "Free Fire" to "com.dts.freefireth",
+            "Free Fire MAX" to "com.dts.freefiremax",
+            "Call of Duty: Mobile" to "com.activision.callofduty.shooter",
+            "Genshin Impact" to "com.miHoYo.GenshinImpact",
+            "Roblox" to "com.roblox.client",
+            "Minecraft" to "com.mojang.minecraftpe",
+            "Clash of Clans" to "com.supercell.clashofclans",
+            "Clash Royale" to "com.supercell.clashroyale",
+            "Brawl Stars" to "com.supercell.brawlstars",
+            "eFootball" to "jp.konami.pesam",
+            "EA Sports FC Mobile" to "com.ea.gp.fifamobile",
+            "Standoff 2" to "com.axlebolt.standoff2",
+            "Arena of Valor" to "com.garena.game.kgvn",
+            "League of Legends: Wild Rift" to "com.riotgames.mobile.leagueconnect"
+        )
+    }
+    val installedGames = remember {
+        ONLINE_GAMES.mapNotNull { g ->
+            val pkg = g.packageName ?: gamePkgs[g.name] ?: return@mapNotNull null
+            try {
+                pm.getPackageInfo(pkg, 0)
+                g to pkg
+            } catch (_: Exception) { null }
+        }
+    }
 
-    fun pickRaw(): String {
-        val best = nodes.filter { it.reachable == true }
-            .sortedWith(compareBy({ it.tcpLoss ?: 100 }, { it.tcpMs ?: 9999L }))
-            .firstOrNull()
+    fun ranked(): List<V2Node> = nodes
+        .filter { it.reachable != false }
+        .sortedWith(
+            compareBy<V2Node>(
+                { if (it.reachable == true) 0 else 1 },
+                { it.tcpLoss ?: 100 },
+                { predictLoss(it) },
+                { it.tcpMs ?: 9999L },
+                { it.tcpJitter ?: 9999L }
+            )
+        )
+
+    fun pickRaw(n: V2Node? = null): String {
+        val best = n ?: ranked().firstOrNull { it.reachable == true }
         if (best != null) {
             val hit = text.lines().map { it.trim() }.firstOrNull { it.contains(best.host) && "://" in it }
             if (hit != null) return hit
@@ -968,54 +1213,61 @@ fun V2RayTestTab() {
         } ?: text.trim()
     }
 
+    fun startVpnWith(raw: String) {
+        BoostState.activeConfigRaw = raw
+        val dns = ScanHub.bestDnsIp ?: BoostState.activeDns.ifBlank { "8.8.8.8" }
+        val pkgs = if (splitMode == "games") {
+            installedGames.map { it.second }.distinct().joinToString(",")
+        } else ""
+        BoostState.splitMode = splitMode
+        BoostState.splitPackages = pkgs
+        val i = Intent(ctx, BoostVpnService::class.java).apply {
+            putExtra(BoostVpnService.EXTRA_CONFIG, raw)
+            putExtra(BoostVpnService.EXTRA_DNS, dns)
+            putExtra(BoostVpnService.EXTRA_SESSION, "white launcher · ${BoostState.activeConfig.ifBlank { "Xray" }}")
+            putExtra(BoostVpnService.EXTRA_SPLIT_MODE, splitMode)
+            putExtra(BoostVpnService.EXTRA_PACKAGES, pkgs)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
+        connMsg = "Connecting TUN…"
+        scope.launch {
+            kotlinx.coroutines.delay(900)
+            connMsg = when {
+                BoostState.coreRunning && BoostState.splitMode == "games" ->
+                    "Path live · split games · check in-match ping"
+                BoostState.coreRunning -> "Path live · full tunnel · check in-match ping"
+                BoostState.connected -> "TUN up · core off · path limited"
+                else -> BoostState.status
+            }
+            // after connect, optional DNS scan tip
+            if (ScanHub.bestDnsIp == null && !ScanHub.dnsScanning) {
+                ScanHub.flowCaption = "Connected. Front path is up. Measure in-game. High loss/jitter → disconnect and pick next ranked node."
+            }
+        }
+    }
+
     val vpnLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
-            val raw = pickRaw()
-            BoostState.activeConfigRaw = raw
-            val best = nodes.firstOrNull { it.reachable == true }
-            if (best != null) BoostState.activeConfig = "${best.protocol} ${best.host}:${best.port}"
-            val i = Intent(ctx, BoostVpnService::class.java).apply {
-                putExtra(BoostVpnService.EXTRA_CONFIG, raw)
-                putExtra(BoostVpnService.EXTRA_DNS, "8.8.8.8")
-                putExtra(BoostVpnService.EXTRA_SESSION, "GWD · ${BoostState.activeConfig.ifBlank { "Xray" }}")
-            }
-            if (android.os.Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
-            connMsg = "Connecting TUN…"
-            scope.launch {
-                kotlinx.coroutines.delay(800)
-                connMsg = if (BoostState.coreRunning) "Connected · Xray ON (TUN)"
-                else if (BoostState.connected) "Connected · TUN (core check)"
-                else BoostState.status
-            }
+            val list = ranked()
+            val n = list.getOrNull(selectedIdx) ?: list.firstOrNull { it.reachable == true }
+            if (n != null) BoostState.activeConfig = "${n.protocol} ${n.host}:${n.port}"
+            startVpnWith(pickRaw(n))
         } else connMsg = "VPN permission denied"
     }
 
     fun doConnect() {
-        val raw = pickRaw()
+        val list = ranked()
+        val n = list.getOrNull(selectedIdx) ?: list.firstOrNull { it.reachable == true }
+        val raw = pickRaw(n)
         if (raw.isBlank()) {
-            connMsg = "Paste a share-link first"
+            connMsg = "Paste config list first"
             return
         }
-        BoostState.activeConfigRaw = raw
+        if (n != null) BoostState.activeConfig = "${n.protocol} ${n.host}:${n.port}"
         val prep = VpnService.prepare(ctx)
-        if (prep != null) vpnLauncher.launch(prep)
-        else {
-            val i = Intent(ctx, BoostVpnService::class.java).apply {
-                putExtra(BoostVpnService.EXTRA_CONFIG, raw)
-                putExtra(BoostVpnService.EXTRA_DNS, "8.8.8.8")
-                putExtra(BoostVpnService.EXTRA_SESSION, "GWD")
-            }
-            if (android.os.Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
-            connMsg = "Connecting TUN…"
-            scope.launch {
-                kotlinx.coroutines.delay(800)
-                connMsg = if (BoostState.coreRunning) "Connected · Xray ON (TUN)"
-                else if (BoostState.connected) "Connected · TUN"
-                else BoostState.status
-            }
-        }
+        if (prep != null) vpnLauncher.launch(prep) else startVpnWith(raw)
     }
 
     fun doDisconnect() {
@@ -1023,108 +1275,261 @@ fun V2RayTestTab() {
         connMsg = "Disconnected"
     }
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Details", color = TextP, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Spacer(Modifier.height(10.dp))
+    fun launchGame(pkg: String) {
+        try {
+            val launch = pm.getLaunchIntentForPackage(pkg)
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                ctx.startActivity(launch)
+                connMsg = "Launching $pkg"
+            } else connMsg = "Cannot launch $pkg"
+        } catch (e: Exception) {
+            connMsg = "Launch failed: ${e.message}"
+        }
+    }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(8.dp))
+        Text("Bypass", color = TextP, fontSize = 24.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.2.sp)
+        Text("Rank path · Games only · in-match is the real test", color = TextS, fontSize = 12.sp)
+        Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = text,
-            onValueChange = { ScanHub.v2Text = it },
-            modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 200.dp),
-            placeholder = {
-                Text("Paste VLESS / VMess / Trojan / SS…", color = TextM, fontSize = 12.sp)
+            onValueChange = {
+                ScanHub.v2Text = it
+                GwdPrefs.saveConfig(ctx, it)
             },
-            shape = RoundedCornerShape(18.dp),
-            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Accent, unfocusedBorderColor = Surface2, focusedTextColor = TextP, unfocusedTextColor = TextP, cursorColor = Accent)
+            modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp, max = 120.dp),
+            placeholder = {
+                Text("Paste full config list (one per line)…", color = TextM, fontSize = 12.sp)
+            },
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Accent, unfocusedBorderColor = Surface2,
+                focusedTextColor = TextP, unfocusedTextColor = TextP, cursorColor = Accent
+            )
         )
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
                 onClick = {
                     ScanHub.v2Nodes = parseAllConfigs(ScanHub.v2Text)
-                    ScanHub.v2Status = "${ScanHub.v2Nodes.size} endpoint(s) parsed"
+                    GwdPrefs.saveConfig(ctx, ScanHub.v2Text)
+                    ScanHub.startV2()
                 },
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-            ) { Text("Parse", color = TextP, fontSize = 13.sp) }
-            Button(
-                onClick = { ScanHub.startV2() },
                 enabled = !busy && text.isNotBlank(),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.weight(1f).height(36.dp),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Accent)
             ) {
-                if (busy) {
-                    CircularProgressIndicator(Modifier.size(14.dp), Color.White, strokeWidth = 2.dp)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Running", color = Color.White, fontSize = 13.sp)
-                } else Text("Start", color = Color.White, fontSize = 13.sp)
+                Text(if (busy) "Scanning…" else "Scan & Rank", color = Color.White, fontWeight = FontWeight.Medium, fontSize = 12.sp)
             }
             Button(
                 onClick = { ScanHub.stopV2() },
                 enabled = busy,
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.height(36.dp),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Red)
-            ) { Text("Stop", color = Color.White, fontSize = 13.sp) }
+            ) { Text("Stop", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium) }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Tunnel mode", color = TextM, fontSize = 12.sp)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = splitMode == "games",
+                onClick = { if (!BoostState.connected) splitMode = "games" },
+                enabled = !BoostState.connected,
+                label = { Text("Games only", fontSize = 12.sp) },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = Accent.copy(0.25f),
+                    selectedLabelColor = Accent
+                )
+            )
+            FilterChip(
+                selected = splitMode == "full",
+                onClick = { if (!BoostState.connected) splitMode = "full" },
+                enabled = !BoostState.connected,
+                label = { Text("Full device", fontSize = 12.sp) },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = Accent.copy(0.25f),
+                    selectedLabelColor = Accent
+                )
+            )
+        }
+        if (splitMode == "games") {
+            Text(
+                if (installedGames.isEmpty()) "No known games installed — install a title or use Full device."
+                else "Split: ${installedGames.size} installed game(s) will use the tunnel.",
+                color = TextS, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)
+            )
         }
         Spacer(Modifier.height(8.dp))
         Button(
             onClick = { if (BoostState.connected) doDisconnect() else doConnect() },
-            modifier = Modifier.fillMaxWidth().height(48.dp),
-            shape = RoundedCornerShape(28.dp),
+            modifier = Modifier.fillMaxWidth().height(38.dp),
+            shape = RoundedCornerShape(12.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
             colors = ButtonDefaults.buttonColors(containerColor = if (BoostState.connected) Red else Accent)
         ) {
             Text(
-                if (BoostState.connected) "Disconnect" else "Connect (TUN)",
-                color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp
+                if (BoostState.connected) "Disconnect"
+                else if (splitMode == "games") "Connect · Games only"
+                else "Connect · Full device",
+                color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp
             )
         }
-        if (connMsg.isNotBlank()) {
-            Text(connMsg, color = if (BoostState.coreRunning) Green else TextS, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
-        }
-        if (status.isNotEmpty()) Text(status, color = TextS, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
-        Spacer(Modifier.height(8.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
-            items(nodes, key = { "${it.index}-${it.host}-${it.port}-${it.protocol}" }) { n ->
-                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(n.protocol, color = Accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            Spacer(Modifier.width(8.dp))
-                            Text(n.name, color = TextP, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                            Text(when (n.reachable) { true -> "OK"; false -> "FAIL"; null -> "—" },
-                                color = when (n.reachable) { true -> Green; false -> Red; null -> TextM },
-                                fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        val phase = BoostState.phase
+        val showStatus = connMsg.isNotBlank() || status.isNotBlank() || BoostState.connected || phase == "connecting" || phase == "binding"
+        androidx.compose.animation.AnimatedVisibility(
+            visible = showStatus,
+            enter = fadeIn(tween(200)) + androidx.compose.animation.expandVertically(tween(200)),
+            exit = fadeOut(tween(150)) + androidx.compose.animation.shrinkVertically(tween(150))
+        ) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Surface),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val dot = when {
+                        phase == "connecting" || phase == "binding" -> Yellow
+                        BoostState.coreRunning -> Green
+                        BoostState.connected -> Accent
+                        phase == "error" -> Red
+                        else -> TextM
+                    }
+                    Box(Modifier.size(10.dp).background(dot, CircleShape))
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            when {
+                                phase == "connecting" -> "Connecting tunnel…"
+                                phase == "binding" -> "Starting engine…"
+                                BoostState.coreRunning && BoostState.splitMode == "games" -> "Connected · Xray · Split"
+                                BoostState.coreRunning -> "Connected · Xray"
+                                BoostState.connected && BoostState.splitMode == "games" -> "Connected · Split"
+                                BoostState.connected -> "Connected · TUN"
+                                phase == "error" -> "Connection error"
+                                else -> "Status"
+                            },
+                            color = TextP, fontWeight = FontWeight.SemiBold, fontSize = 13.sp
+                        )
+                        val sub = listOf(connMsg, status).filter { it.isNotBlank() }.distinct().joinToString(" · ")
+                        if (sub.isNotBlank()) {
+                            Text(sub, color = TextS, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
-                        Text("${n.host}:${n.port}", color = TextS, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                        Text(n.rawPreview, color = TextM, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        if (n.detail.isNotEmpty()) Text(n.detail, color = TextS, fontSize = 11.sp)
-                        Text("TCP ${n.tcpMs?.let { "$it ms" } ?: "—"} · loss ${n.tcpLoss ?: "—"}% · jitter ±${n.tcpJitter ?: "—"}", color = TextP, fontSize = 11.sp)
-                        Text("UDP ${when {
-                            n.udpStatus == "REPLIES" -> "${n.udpMs}ms loss ${n.udpLoss}% ±${n.udpJitter ?: 0}"
-                            n.udpStatus.isNotEmpty() -> n.udpStatus
-                            else -> "—"
-                        }}", color = when (n.udpStatus) {
-                            "REPLIES" -> Green; "NO_REPLY" -> Yellow; "BLOCKED", "FAIL" -> Red; else -> TextM
-                        }, fontSize = 11.sp)
-                        Text("TLS ${n.tlsMs?.let { "$it ms" } ?: "—"} · DNS ${n.resolveMs?.let { "$it ms" } ?: "—"}", color = TextP, fontSize = 11.sp)
-                        Text("TCP443 ${n.tcp443Ms?.let { "$it ms" } ?: "—"} · UDP443 ${n.udp443Status.ifEmpty { "—" }} · UDP53 ${n.udp53Status.ifEmpty { "—" }}", color = TextS, fontSize = 10.sp)
-                        Text("STUN ${n.stunStatus.ifEmpty { "—" }}${n.stunMs?.let { " · $it ms" } ?: ""}  (device UDP baseline)", color = TextS, fontSize = 10.sp)
+                    }
+                    if (BoostState.livePing != null) {
+                        Text(
+                            "${BoostState.livePing}ms",
+                            color = if (BoostState.liveOk == true) Green else if (BoostState.liveOk == false) Red else TextS,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+        }
+        // Launch installed games after connect
+        if (BoostState.connected && installedGames.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Launch game", color = TextP, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+                items(installedGames, key = { it.second }) { (g, pkg) ->
+                    FilterChip(
+                        selected = launchPkg == pkg,
+                        onClick = {
+                            launchPkg = pkg
+                            launchGame(pkg)
+                        },
+                        label = { Text(g.name.take(18), fontSize = 11.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Accent.copy(0.25f),
+                            selectedLabelColor = Accent
+                        )
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        val list = ranked()
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+            if (list.isEmpty()) {
+                item {
+                    Text("Paste many configs → Scan & Rank → pick one → Connect → launch game.", color = TextM, fontSize = 13.sp)
+                }
+            }
+            items(list.size) { i ->
+                val n = list[i]
+                val pred = predictLoss(n)
+                val selected = selectedIdx == i
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (selected) Accent.copy(0.15f) else Surface
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth().clickable { selectedIdx = i }
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("#${i + 1}", color = Accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(n.protocol, color = TextP, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                when (n.reachable) { true -> "OK"; false -> "FAIL"; null -> "—" },
+                                color = when (n.reachable) { true -> Green; false -> Red; null -> TextM },
+                                fontWeight = FontWeight.Bold, fontSize = 12.sp
+                            )
+                        }
+                        Text("${n.host}:${n.port}", color = TextS, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        Text(
+                            "Front ${n.tcpMs ?: "—"}ms · loss ${n.tcpLoss ?: "—"}% · pred ~$pred% · ±${n.tcpJitter ?: "—"}",
+                            color = TextP, fontSize = 11.sp
+                        )
+                        Text(
+                            "Path score · not in-match ping. High loss → pick another node.",
+                            color = TextM, fontSize = 10.sp
+                        )
                         if (n.gameLabel.isNotEmpty()) {
                             Text(n.gameLabel, color = when {
                                 n.gameLabel.startsWith("Excellent") || n.gameLabel.startsWith("Good") -> Green
-                                n.gameLabel.startsWith("OK") -> Yellow
+                                n.gameLabel.startsWith("OK") || n.gameLabel.startsWith("Acceptable") -> Yellow
                                 else -> Red
-                            }, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                            Text(n.gameAdvice, color = TextM, fontSize = 10.sp)
+                            }, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        }
+                        if (n.gameAdvice.isNotEmpty()) {
+                            Text(n.gameAdvice, color = TextS, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
             }
         }
-        Text("Scan continues if you switch tabs · Stop cancels · suite: TCP/UDP/TLS/443/STUN", color = TextM, fontSize = 10.sp, modifier = Modifier.padding(vertical = 6.dp))
     }
+}
+
+/** Predicted extra loss % from jitter + measured loss (heuristic for gaming stability). */
+fun predictLoss(n: V2Node): Int {
+    val base = n.tcpLoss ?: if (n.reachable == true) 0 else 100
+    val jit = (n.tcpJitter ?: 0L).toInt()
+    val extra = when {
+        jit > 80 -> 15
+        jit > 40 -> 8
+        jit > 20 -> 4
+        else -> 0
+    }
+    val udpPen = when (n.udpStatus) {
+        "BLOCKED", "FAIL" -> 10
+        "NO_REPLY" -> 5
+        else -> 0
+    }
+    return (base + extra + udpPen).coerceIn(0, 100)
 }
 
 data class GameInfo(
@@ -1133,296 +1538,608 @@ data class GameInfo(
     val pingNeed: String,
     val dnsHint: String,
     val tip: String,
-    /** Public hosts used for login / API / CDN — not always the match server IP */
-    val hosts: List<String> = emptyList(),
-    val tcpPorts: List<Int> = listOf(443, 80),
-    val udpPorts: List<Int> = listOf(443, 53)
+    val hosts: List<String>,
+    val packageName: String? = null
 )
 
 data class GamePingResult(
     val host: String,
     val resolveMs: Long?,
     val tcpMs: Long?,
-    val tcpLoss: Int?,
-    val udpStatus: String,
-    val udpMs: Long?
+    val udpStatus: String
 )
 
-private val ONLINE_GAMES = listOf(
-    GameInfo("Mobile Legends: Bang Bang", "MOBA", "Critical <60ms", "Electro / Shecan",
-        "Ranked needs low jitter. Hosts are API/CDN — match nodes differ by region.",
-        listOf("www.mobilelegends.com", "api.mobilelegends.com", "mlbb-formal.moba.ml.youngjoygame.com", "akm.ml.youngjoygame.com")),
-    GameInfo("PUBG Mobile / BGMI", "Battle Royale", "Critical <80ms", "Shecan / 403",
-        "UDP-heavy combat. Test hits lobby/API edges, not every battle server.",
-        listOf("www.pubgmobile.com", "api.pubgmobile.com", "prod-live-front.igamecj.com", "cloudctrl.igamecj.com")),
-    GameInfo("Call of Duty: Mobile", "FPS", "Critical <60ms", "Shecan / Electro",
-        "Very sensitive. Activision/Tencent edges vary by account region.",
-        listOf("www.callofduty.com", "codm.activision.com", "code.activision.com")),
-    GameInfo("Free Fire", "Battle Royale", "High <90ms", "403 / Electro",
-        "Garena stack; login and matchmaking domains.",
-        listOf("ff.garena.com", "com.dts.freefireth", "login.garena.com", "auth.garena.com")),
-    GameInfo("Roblox", "UGC / Platform", "Medium", "Shecan / Cloudflare",
-        "Many endpoints; client settings + website are good path samples.",
-        listOf("www.roblox.com", "clientsettingscdn.roblox.com", "gamejoin.roblox.com", "economy.roblox.com")),
-    GameInfo("Genshin Impact", "Action RPG", "Medium", "Shecan",
-        "Hoyoverse SDK/API; combat is partly local.",
-        listOf("hk4e-sdk-os.hoyoverse.com", "sdk-os-static.hoyoverse.com", "api-os-takumi.mihoyo.com", "genshin.hoyoverse.com")),
-    GameInfo("Honkai: Star Rail", "RPG", "Medium", "Shecan",
-        "Same Hoyoverse family as Genshin for account/CDN.",
-        listOf("hkrpg-sdk-os.hoyoverse.com", "sdk-os-static.hoyoverse.com", "hsr.hoyoverse.com")),
-    GameInfo("Wuthering Waves", "Action RPG", "Medium", "Shecan",
-        "Kuro Game / official site path sample.",
-        listOf("wutheringwaves.kurogame.com", "www.kurogame.com")),
-    GameInfo("League of Legends: Wild Rift", "MOBA", "Critical <70ms", "Shecan",
-        "Riot auth/client; often needs anti-sanction DNS in IR.",
-        listOf("riotgames.com", "auth.riotgames.com", "clientconfig.rpg.riotgames.com", "wildrift.leagueoflegends.com")),
-    GameInfo("Clash of Clans", "Strategy", "Low", "Any stable",
-        "Supercell game API — turn-based tolerant.",
-        listOf("game.clashofclans.com", "api.clashofclans.com", "supercell.com")),
-    GameInfo("Clash Royale", "Strategy", "Medium <100ms", "Any stable",
-        "Real-time 1v1; jitter shows as rubber-band.",
-        listOf("game.clashroyale.com", "api.clashroyale.com", "supercell.com")),
-    GameInfo("Brawl Stars", "Action", "High <80ms", "Electro",
-        "Fast sessions; Supercell stack.",
-        listOf("game.brawlstarsgame.com", "api.brawlstars.com", "supercell.com")),
-    GameInfo("eFootball", "Sports", "High <80ms", "Shecan",
-        "Konami online services sample.",
-        listOf("www.efootball.com", "efootball.konami.net")),
-    GameInfo("EA Sports FC Mobile", "Sports", "High <80ms", "Shecan",
-        "EA accounts / FC mobile web edges.",
-        listOf("easports.com", "ea.com", "accounts.ea.com")),
-    GameInfo("Roblox / Fortnite Epic path", "BR / UGC", "High", "Shecan",
-        "Epic + Roblox public edges for comparison.",
-        listOf("www.epicgames.com", "account-public-service-prod.ol.epicgames.com", "www.roblox.com")),
-    GameInfo("Arena Breakout", "Extraction FPS", "Critical <70ms", "Shecan / Electro",
-        "Tencent/Morefun style edges when public.",
-        listOf("www.arenabreakout.com", "arenabreakout.morefun.com")),
-    GameInfo("Standoff 2", "FPS", "Critical <60ms", "Electro / Shecan",
-        "Axlebolt; sensitive competitive FPS.",
-        listOf("standoff2.com", "www.standoff2.com")),
-    GameInfo("Critical Ops", "FPS", "Critical <60ms", "Electro",
-        "Critical Force public site/API sample.",
-        listOf("criticalops.com", "www.criticalops.com")),
-    GameInfo("Asphalt 9", "Racing", "High <70ms", "Electro",
-        "Gameloft services sample.",
-        listOf("www.gameloft.com", "asphaltlegends.com")),
-    GameInfo("Among Us", "Social", "Low", "Any",
-        "Innersloth — latency tolerant.",
-        listOf("www.innersloth.com", "amongus.com")),
-    GameInfo("Stumble Guys", "Party", "Medium", "Any stable",
-        "Scopely / kitka path sample.",
-        listOf("www.stumbleguys.com")),
-    GameInfo("Albion Online", "MMORPG", "High <90ms", "Shecan",
-        "Sandbox full-loot; live.albiononline.com style.",
-        listOf("albiononline.com", "live.albiononline.com", "game.albiononline.com")),
-    GameInfo("Warframe Mobile", "Loot shooter", "Medium", "Shecan",
-        "Digital Extremes content API sample.",
-        listOf("www.warframe.com", "content.warframe.com")),
-    GameInfo("Diablo Immortal", "ARPG", "High <80ms", "Shecan",
-        "Blizzard / NetEase public edges.",
-        listOf("diabloimmortal.blizzard.com", "blizzard.com")),
-    GameInfo("Minecraft Realms / multiplayer", "Sandbox", "Medium", "Any",
-        "Mojang session/auth sample — actual realm IP varies.",
-        listOf("www.minecraft.net", "session.minecraft.net", "api.minecraftservices.com")),
-    GameInfo("Pokémon GO", "AR", "Medium", "Google / stable",
-        "Niantic + Google stack.",
-        listOf("pgorelease.nianticlabs.com", "www.nianticlabs.com", "pagoda.nianticlabs.com")),
-    GameInfo("Chess.com", "Board", "Low–Medium", "Any",
-        "Live blitz needs stable TCP.",
-        listOf("www.chess.com", "api.chess.com")),
-    GameInfo("Lichess", "Board", "Low–Medium", "Any",
-        "Open platform; good baseline.",
-        listOf("lichess.org", "www.lichess.org")),
-    GameInfo("Hearthstone", "Card", "Low", "Shecan",
-        "Blizzard card game — turn-based.",
-        listOf("playhearthstone.com", "blizzard.com")),
-    GameInfo("World of Tanks Blitz", "Vehicles", "High <80ms", "Shecan",
-        "Wargaming mobile path sample.",
-        listOf("wotblitz.com", "tanksblitz.com", "wargaming.net")),
-    GameInfo("Garena Free Fire MAX", "Battle Royale", "High", "403 / Electro",
-        "Same family as Free Fire.",
-        listOf("ff.garena.com", "login.garena.com")),
-    GameInfo("Honor of Kings / AoV path", "MOBA", "Critical <70ms", "Shecan",
-        "Tencent MOBA public marketing domains.",
-        listOf("www.levelinfinite.com", "www.arenaofvalor.com")),
-    GameInfo("Zenless Zone Zero", "Action", "Medium", "Shecan",
-        "Hoyoverse ZZZ SDK sample.",
-        listOf("zzz.hoyoverse.com", "nap-sdk-os.hoyoverse.com")),
-    GameInfo("Cookie Run: Kingdom", "RPG", "Low–Medium", "Any stable",
-        "Devsisters public site.",
-        listOf("www.cookierun-kingdom.com", "game.devsisters.com")),
-    GameInfo("Call of Duty Warzone Mobile", "FPS BR", "Critical <70ms", "Shecan",
-        "Activision Warzone mobile edges.",
-        listOf("www.callofduty.com", "warzone.activision.com")),
-    GameInfo("Delta Force Mobile", "FPS", "Critical <60ms", "Shecan",
-        "Team Jade / Tencent public pages when available.",
-        listOf("www.deltaforcemobile.com")),
-    GameInfo("Blood Strike", "FPS BR", "High", "Shecan",
-        "NetEase light BR sample.",
-        listOf("www.bloodstrike.com")),
-    GameInfo("Farlight 84", "Battle Royale", "High", "Shecan",
-        "Lilith games public edge.",
-        listOf("www.farlight84.com")),
-    GameInfo("Once Human", "Survival", "Medium", "Shecan",
-        "NetEase survival MMO sample.",
-        listOf("www.oncehuman.game", "oncehuman.onmtacc.com")),
-    GameInfo("State of Survival", "Strategy", "Low", "Any",
-        "KingsGroup strategy — mostly async.",
-        listOf("www.stateofsurvival.com")),
-    GameInfo("Whiteout Survival", "Strategy", "Low", "Any",
-        "Async + events.",
-        listOf("www.whiteoutsurvival.com")),
-    GameInfo("FC Mobile / FIFA path", "Sports", "High", "Shecan",
-        "EA sports mobile path.",
-        listOf("www.ea.com", "easports.com")),
-    GameInfo("Rocket League Sideswipe", "Sports", "Critical <60ms", "Electro",
-        "Psyonix / Epic path sample.",
-        listOf("www.rocketleague.com", "www.epicgames.com")),
-    GameInfo("Shadow Fight 4", "Fighting", "High", "Electro",
-        "Nekki public site.",
-        listOf("www.nekki.com", "shadowfightarena.com")),
-    GameInfo("Identity V", "Asym horror", "Medium", "Shecan",
-        "NetEase Identity V.",
-        listOf("idv.163.com", "www.identityv.com")),
-    GameInfo("Dead by Daylight Mobile", "Asym", "High", "Shecan",
-        "Behaviour / NetEase mobile path.",
-        listOf("deadbydaylight.com")),
-    GameInfo("Genshin Impact (Asia SDK)", "Action RPG", "Medium", "Shecan",
-        "Extra Asia SDK host sample for IR players.",
-        listOf("hk4e-sdk-os.hoyoverse.com", "api-os-takumi.hoyoverse.com")),
-    GameInfo("PUBG New State", "Battle Royale", "Critical", "Shecan / 403",
-        "Krafton New State public domains.",
-        listOf("www.pubgnewstate.com", "pubgnewstate.com")),
-    GameInfo("Supercell trilogy baseline", "Strategy / Action", "Medium",
-        "Any stable", "Clash + Brawl shared infrastructure sample.",
-        listOf("supercell.com", "game.clashofclans.com", "game.brawlstarsgame.com")),
-    GameInfo("Hoyoverse baseline", "RPG", "Medium", "Shecan",
-        "Shared Hoyoverse account/CDN path.",
-        listOf("hoyoverse.com", "sdk-os-static.hoyoverse.com", "account.hoyoverse.com")),
-    GameInfo("Garena baseline", "BR / FPS", "High", "403 / Electro",
-        "Garena login stack for FF and related titles.",
-        listOf("login.garena.com", "auth.garena.com", "ff.garena.com")),
-    GameInfo("Riot baseline", "MOBA / FPS", "Critical", "Shecan",
-        "Riot auth — important for WR / Valorant-family.",
-        listOf("auth.riotgames.com", "riotgames.com", "clientconfig.rpg.riotgames.com")),
-    GameInfo("Google / Play Games baseline", "Platform", "Low", "Any",
-        "Control sample for general mobile connectivity.",
-        listOf("play.google.com", "googleapis.com", "gstatic.com")),
-    GameInfo("Cloudflare edge baseline", "CDN", "Low", "Any",
-        "1.1.1.1 / cloudflare.com path quality sample.",
-        listOf("cloudflare.com", "1.1.1.1", "www.cloudflare.com"))
+private val GAME_PACKAGES = mapOf(
+    "com.mobile.legends" to "Mobile Legends: Bang Bang",
+    "com.tencent.ig" to "PUBG Mobile",
+    "com.pubg.imobile" to "BGMI",
+    "com.pubg.newstate" to "PUBG New State",
+    "com.dts.freefireth" to "Free Fire",
+    "com.dts.freefiremax" to "Free Fire MAX",
+    "com.garena.game.kgvn" to "Free Fire",
+    "com.activision.callofduty.shooter" to "Call of Duty: Mobile",
+    "com.roblox.client" to "Roblox",
+    "com.miHoYo.GenshinImpact" to "Genshin Impact",
+    "com.riotgames.league.wildrift" to "Wild Rift",
+    "com.supercell.clashofclans" to "Clash of Clans",
+    "com.supercell.clashroyale" to "Clash Royale",
+    "com.supercell.brawlstars" to "Brawl Stars",
+    "jp.konami.pesam" to "eFootball",
+    "com.ea.gp.fifamobile" to "EA Sports FC Mobile",
+    "com.axlebolt.standoff2" to "Standoff 2",
+    "com.criticalforceentertainment.criticalops" to "Critical Ops",
+    "com.innersloth.spacemafia" to "Among Us",
+    "com.mojang.minecraftpe" to "Minecraft",
+    "com.nianticlabs.pokemongo" to "Pokémon GO",
+    "com.proximabeta.mf.uamo" to "Arena Breakout"
 )
 
-suspend fun testGamePing(game: GameInfo): List<GamePingResult> = withContext(Dispatchers.IO) {
-    val hosts = game.hosts.ifEmpty { return@withContext emptyList() }
-    hosts.take(4).map { host ->
-        val resolve = try {
-            measureTimeMillis { InetAddress.getByName(host) }.coerceIn(1, 999)
-        } catch (_: Exception) { null }
-        val port = game.tcpPorts.firstOrNull() ?: 443
-        val tcp = probeTcp(host, port, 3, 2000)
-        val udpPort = game.udpPorts.firstOrNull() ?: 443
-        val udp = probeUdp(host, udpPort, 3, 800)
-        GamePingResult(host, resolve, tcp.avgMs, tcp.lossPct, udp.status, udp.avgMs)
-    }
-}
-
-fun summarizeGamePing(game: GameInfo, results: List<GamePingResult>): Pair<String, String> {
-    if (results.isEmpty()) return "No hosts" to "No public hosts configured for this title."
-    val tcpSamples = results.mapNotNull { it.tcpMs }
-    val bestTcp = tcpSamples.minOrNull()
-    val avgTcp = if (tcpSamples.isNotEmpty()) tcpSamples.sum() / tcpSamples.size else null
-    val udpBlocked = results.count { it.udpStatus == "BLOCKED" }
-    val udpReply = results.count { it.udpStatus == "REPLIES" }
-    if (bestTcp == null && results.all { it.resolveMs == null })
-        return "Unreachable" to "Cannot resolve/connect to public game hosts from this network."
-    val label = when {
-        bestTcp != null && bestTcp < 60 && udpBlocked == 0 -> "Live path: Excellent"
-        bestTcp != null && bestTcp < 90 && udpBlocked == 0 -> "Live path: Good"
-        bestTcp != null && bestTcp < 130 -> "Live path: Playable"
-        bestTcp != null -> "Live path: High ping"
-        else -> "Live path: Weak"
-    }
-    val advice = buildString {
-        append("Best TCP ${bestTcp?.let { "$it ms" } ?: "—"} · avg ${avgTcp?.let { "$it ms" } ?: "—"} · ")
-        append("UDP replies $udpReply/${results.size} · blocked $udpBlocked. ")
-        append("Need: ${game.pingNeed}. ")
-        when {
-            game.pingNeed.startsWith("Critical") && (bestTcp == null || bestTcp > 80) ->
-                append("Above ideal for competitive play on measured edges.")
-            game.pingNeed.startsWith("Critical") && bestTcp != null && bestTcp < 60 ->
-                append("Measured edges look fit for ranked if match nodes are similar.")
-            else -> append("Use as guidance for login/API path — final match server may differ.")
+fun scanInstalledGames(pm: PackageManager): List<Pair<String, String>> {
+    val out = mutableListOf<Pair<String, String>>()
+    for ((pkg, name) in GAME_PACKAGES) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                pm.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(pkg, 0)
+            }
+            out.add(pkg to name)
+        } catch (_: Exception) {
         }
     }
-    return label to advice
+    return out.sortedBy { it.second }
 }
+
+val ONLINE_GAMES = listOf(
+    // ——— MOBA ———
+    GameInfo("Mobile Legends: Bang Bang", "MOBA", "Critical <60ms", "Electro", "Ranked 5v5", listOf("ml.youngjoygame.com", "api.mobilelegends.com")),
+    GameInfo("Honor of Kings / HoK", "MOBA", "Critical <60ms", "Shecan", "Tencent", listOf("sgame.qq.com")),
+    GameInfo("Arena of Valor", "MOBA", "Critical <70ms", "Shecan", "Garena/Tencent", listOf("aov.garena.com")),
+    GameInfo("League of Legends: Wild Rift", "MOBA", "Critical <80ms", "Shecan", "Riot", listOf("wildrift.leagueoflegends.com", "riotgames.com")),
+    GameInfo("League of Legends (PC)", "MOBA", "Critical <50ms", "Shecan", "Riot", listOf("riotgames.com", "leagueoflegends.com")),
+    GameInfo("Dota 2", "MOBA", "Critical <60ms", "Shecan", "Valve", listOf("dota2.com", "steampowered.com")),
+    GameInfo("Pokemon Unite", "MOBA", "High <90ms", "Shecan", "Tencent", listOf("pokemonunite.jp")),
+    GameInfo("Vainglory", "MOBA", "Critical <80ms", "Cloudflare", "Super Evil Megacorp", listOf("vainglorygame.com")),
+    GameInfo("Onmyoji Arena", "MOBA", "High <90ms", "Shecan", "NetEase", listOf("onmyojigame.com")),
+    GameInfo("SMITE", "MOBA", "Critical <80ms", "Shecan", "Hi-Rez", listOf("smitegame.com")),
+    GameInfo("Heroes of the Storm", "MOBA", "Critical <80ms", "Shecan", "Blizzard", listOf("heroesofthestorm.com")),
+    // ——— Battle Royale ———
+    GameInfo("PUBG Mobile", "BR", "Critical <80ms", "Shecan", "Krafton", listOf("api.pubg.com", "prod-live-front.playbattlegrounds.com")),
+    GameInfo("BGMI", "BR", "Critical <80ms", "Shecan", "India", listOf("api.bgmi.com")),
+    GameInfo("PUBG: New State", "BR", "Critical <80ms", "Shecan", "Krafton", listOf("newstate.pubg.com")),
+    GameInfo("PUBG PC / Steam", "BR", "Critical <60ms", "Shecan", "Krafton", listOf("pubg.com")),
+    GameInfo("Free Fire", "BR", "High <90ms", "Electro", "Garena", listOf("ff.garena.com", "loginbp.common.ggbluefox.com")),
+    GameInfo("Free Fire MAX", "BR", "High <90ms", "Electro", "Garena", listOf("ff.garena.com")),
+    GameInfo("Call of Duty: Mobile", "FPS/BR", "Critical <70ms", "Shecan", "Activision", listOf("codm.activision.com")),
+    GameInfo("Call of Duty: Warzone", "BR", "Critical <60ms", "Shecan", "Activision", listOf("callofduty.com")),
+    GameInfo("Fortnite", "BR", "Critical <70ms", "Shecan", "Epic", listOf("fortnite.com", "epicgames.com")),
+    GameInfo("Apex Legends", "BR", "Critical <70ms", "Shecan", "EA/Respawn", listOf("ea.com", "easports.com")),
+    GameInfo("Apex Legends Mobile", "BR", "Critical <80ms", "Shecan", "EA", listOf("ea.com")),
+    GameInfo("Blood Strike", "BR", "High <90ms", "Shecan", "NetEase", listOf("bloodstrike.com")),
+    GameInfo("Farlight 84", "BR", "High <90ms", "Shecan", "Lilith", listOf("farlight84.com")),
+    GameInfo("Garena Undawn", "BR", "High <100ms", "Shecan", "Garena", listOf("undawn.garena.com")),
+    GameInfo("Knives Out / Identity V BR modes", "BR", "High <100ms", "Shecan", "NetEase", listOf("identityv.game")),
+    GameInfo("Rules of Survival", "BR", "High <100ms", "Shecan", "NetEase", listOf("rulesofsurvivalgame.com")),
+    GameInfo("Knives Out Mobile", "BR", "High <100ms", "Shecan", "NetEase", listOf("knivesout.com")),
+    GameInfo("The Cycle: Frontier", "BR", "Critical <80ms", "Shecan", "Yager", listOf("thecycle.game")),
+    GameInfo("Naraka: Bladepoint", "BR", "Critical <80ms", "Shecan", "NetEase", listOf("narakathegame.com")),
+    GameInfo("Super People", "BR", "Critical <80ms", "Shecan", "Wonder Games", listOf("superpeople.com")),
+    GameInfo("Realm Royale", "BR", "High <100ms", "Shecan", "Hi-Rez", listOf("realmroyale.com")),
+    // ——— Tactical / Extraction ———
+    GameInfo("Delta Force Hawk Ops", "Tactical", "Critical <70ms", "Shecan", "TiMi", listOf("deltaforce.com")),
+    GameInfo("Arena Breakout", "Tactical", "Critical <80ms", "Shecan", "MoreFun", listOf("arenabreakout.com")),
+    GameInfo("Arena Breakout: Infinite", "Tactical", "Critical <80ms", "Shecan", "MoreFun", listOf("arenabreakoutinfinite.com")),
+    GameInfo("Escape from Tarkov", "Tactical", "Critical <60ms", "Shecan", "BSG", listOf("escapefromtarkov.com")),
+    GameInfo("Hunt: Showdown", "Tactical", "Critical <70ms", "Shecan", "Crytek", listOf("huntshowdown.com")),
+    GameInfo("Marauders", "Tactical", "Critical <80ms", "Shecan", "Small Impact", listOf("playmarauders.com")),
+    GameInfo("Dark and Darker", "Tactical", "Critical <80ms", "Shecan", "IRONMACE", listOf("darkanddarker.com")),
+    // ——— FPS Competitive ———
+    GameInfo("Valorant", "FPS", "Critical <50ms", "Shecan", "Riot", listOf("playvalorant.com", "riotgames.com")),
+    GameInfo("CS2 / Counter-Strike 2", "FPS", "Critical <40ms", "Shecan", "Valve", listOf("counter-strike.net", "steampowered.com")),
+    GameInfo("CS:GO", "FPS", "Critical <40ms", "Shecan", "Valve", listOf("counter-strike.net")),
+    GameInfo("Overwatch 2", "FPS", "Critical <60ms", "Shecan", "Blizzard", listOf("overwatch.blizzard.com")),
+    GameInfo("Rainbow Six Siege", "FPS", "Critical <50ms", "Shecan", "Ubisoft", listOf("ubisoft.com", "rainbow6.ubisoft.com")),
+    GameInfo("Team Fortress 2", "FPS", "High <90ms", "Cloudflare", "Valve", listOf("teamfortress.com")),
+    GameInfo("Quake Champions", "FPS", "Critical <50ms", "Shecan", "id/Bethesda", listOf("quake.com")),
+    GameInfo("Splitgate", "FPS", "Critical <70ms", "Shecan", "1047 Games", listOf("splitgate.com")),
+    GameInfo("XDefiant", "FPS", "Critical <70ms", "Shecan", "Ubisoft", listOf("xdefiant.ubisoft.com")),
+    GameInfo("The Finals", "FPS", "Critical <70ms", "Shecan", "Embark", listOf("reachthefinals.com")),
+    GameInfo("Battlefield 2042", "FPS", "Critical <70ms", "Shecan", "EA", listOf("ea.com")),
+    GameInfo("Halo Infinite", "FPS", "Critical <60ms", "Shecan", "Xbox", listOf("halowaypoint.com")),
+    GameInfo("Destiny 2", "FPS/RPG", "Critical <80ms", "Shecan", "Bungie", listOf("bungie.net", "destinythegame.com")),
+    GameInfo("Destiny: Rising", "FPS/RPG", "Critical <80ms", "Shecan", "NetEase", listOf("destiny.com")),
+    GameInfo("Standoff 2", "FPS", "Critical <70ms", "Electro", "Axlebolt", listOf("standoff2.com")),
+    GameInfo("Critical Ops", "FPS", "Critical <70ms", "Shecan", "Critical Force", listOf("criticalops.com")),
+    GameInfo("Modern Warships", "FPS", "High <90ms", "Shecan", "Artstorm", listOf("modernwarships.com")),
+    GameInfo("World War Heroes", "FPS", "High <100ms", "Shecan", "Tap4Fun", listOf("worldwarheroes.com")),
+    GameInfo("Shadowgun War Games", "FPS", "High <90ms", "Shecan", "Madfinger", listOf("shadowgun.com")),
+    GameInfo("Bullet Echo", "FPS", "High <100ms", "Shecan", "Magmatic", listOf("bulletecho.com")),
+    GameInfo("Pixel Gun 3D", "FPS", "High <100ms", "Cloudflare", "Lightmap", listOf("pixelgun3d.com")),
+    GameInfo("Guns of Boom", "FPS", "High <100ms", "Cloudflare", "Game Insight", listOf("gunsofboom.com")),
+    GameInfo("Modern Combat Versus", "FPS", "High <100ms", "Shecan", "Gameloft", listOf("moderncombat.com")),
+    GameInfo("Sniper 3D Assassin", "FPS", "Medium <120ms", "Cloudflare", "Fun Games", listOf("sniper3d.com")),
+    GameInfo("CrossFire", "FPS", "Critical <60ms", "Shecan", "Smilegate", listOf("crossfire.z8games.com")),
+    GameInfo("Point Blank", "FPS", "Critical <70ms", "Shecan", "Zepetto", listOf("pointblank.zepetto.com")),
+    GameInfo("Warface", "FPS", "Critical <80ms", "Shecan", "My.com", listOf("warface.com")),
+    GameInfo("Paladins", "FPS", "Critical <80ms", "Shecan", "Hi-Rez", listOf("paladins.com")),
+    GameInfo("RoboQuest", "FPS", "High <100ms", "Cloudflare", "RyseUp", listOf("roboquestgame.com")),
+    // ——— Sports ———
+    GameInfo("eFootball", "Sports", "High <90ms", "Shecan", "Konami", listOf("efootball.konami.net")),
+    GameInfo("EA Sports FC Mobile", "Sports", "High <90ms", "Shecan", "EA", listOf("easports.com")),
+    GameInfo("EA Sports FC (PC/Console)", "Sports", "High <90ms", "Shecan", "EA", listOf("ea.com")),
+    GameInfo("NBA 2K Mobile", "Sports", "Medium <110ms", "Shecan", "2K", listOf("nba.2k.com")),
+    GameInfo("NBA 2K Online", "Sports", "High <90ms", "Shecan", "2K", listOf("nba.2k.com")),
+    GameInfo("Rocket League", "Sports", "Critical <70ms", "Shecan", "Epic/Psyonix", listOf("rocketleague.com")),
+    GameInfo("Dream League Soccer", "Sports", "Medium <120ms", "Cloudflare", "First Touch", listOf("dreamleaguesoccer.com")),
+    GameInfo("Football Manager Mobile", "Sports", "Low <150ms", "Cloudflare", "SEGA", listOf("footballmanager.com")),
+    GameInfo("F1 24 / F1 Online", "Sports", "Critical <80ms", "Shecan", "EA/Codemasters", listOf("ea.com")),
+    GameInfo("F1 Clash", "Sports", "Medium <120ms", "Cloudflare", "Hutch", listOf("f1clash.com")),
+    GameInfo("MLB The Show / Perfect Inning", "Sports", "Medium <120ms", "Cloudflare", "Com2uS/Sony", listOf("mlbpi.com")),
+    GameInfo("WWE Champions", "Sports", "Medium <130ms", "Cloudflare", "Scopely", listOf("wwechampions.com")),
+    GameInfo("Tennis Clash", "Sports", "High <100ms", "Cloudflare", "Wildlife", listOf("tennisclash.com")),
+    GameInfo("Golf Battle", "Sports", "Medium <120ms", "Cloudflare", "Miniclip", listOf("golfbattle.com")),
+    GameInfo("8 Ball Pool", "Sports", "Medium <120ms", "Cloudflare", "Miniclip", listOf("8ballpool.com")),
+    // ——— Fighting ———
+    GameInfo("Street Fighter 6", "Fighting", "Critical <60ms", "Shecan", "Capcom", listOf("streetfighter.com")),
+    GameInfo("Tekken 8", "Fighting", "Critical <60ms", "Shecan", "Bandai Namco", listOf("tekken.com")),
+    GameInfo("Mortal Kombat 1", "Fighting", "Critical <70ms", "Shecan", "WB/NRS", listOf("mortalkombat.com")),
+    GameInfo("MultiVersus", "Fighting", "Critical <80ms", "Shecan", "WB", listOf("multiversus.com")),
+    GameInfo("Brawlhalla", "Fighting", "High <90ms", "Cloudflare", "Ubisoft", listOf("brawlhalla.com")),
+    GameInfo("Injustice 2 Mobile", "Fighting", "Medium <120ms", "Cloudflare", "WB", listOf("injustice.com")),
+    GameInfo("Shadow Fight 3/4 Arena", "Fighting", "High <100ms", "Cloudflare", "Nekki", listOf("shadowfight.com")),
+    // ——— Racing ———
+    GameInfo("Asphalt 9", "Racing", "High <100ms", "Shecan", "Gameloft", listOf("asphalt9.com")),
+    GameInfo("Asphalt Legends Unite", "Racing", "High <100ms", "Shecan", "Gameloft", listOf("asphalt.com")),
+    GameInfo("Real Racing 3", "Racing", "Medium <120ms", "Cloudflare", "EA", listOf("realracing3.com")),
+    GameInfo("Need for Speed No Limits", "Racing", "Medium <120ms", "Cloudflare", "EA", listOf("ea.com")),
+    GameInfo("Mario Kart Tour", "Racing", "Medium <120ms", "Cloudflare", "Nintendo", listOf("mariokarttour.com")),
+    GameInfo("Forza Horizon / Motorsport Online", "Racing", "Critical <80ms", "Shecan", "Xbox", listOf("forzamotorsport.net")),
+    GameInfo("Gran Turismo Sport/7 Sport Mode", "Racing", "Critical <70ms", "Shecan", "Sony", listOf("gran-turismo.com")),
+    GameInfo("Trackmania", "Racing", "Critical <80ms", "Shecan", "Ubisoft", listOf("trackmania.com")),
+    // ——— Vehicles / Naval / Tank ———
+    GameInfo("World of Tanks", "Vehicles", "Critical <80ms", "Shecan", "Wargaming", listOf("worldoftanks.eu")),
+    GameInfo("World of Tanks Blitz", "Vehicles", "High <90ms", "Shecan", "Wargaming", listOf("wotblitz.com")),
+    GameInfo("World of Warships", "Naval", "High <100ms", "Shecan", "Wargaming", listOf("worldofwarships.com")),
+    GameInfo("World of Warships Blitz", "Naval", "High <100ms", "Shecan", "Wargaming", listOf("wowblitz.com")),
+    GameInfo("War Thunder", "Vehicles", "Critical <80ms", "Shecan", "Gaijin", listOf("warthunder.com")),
+    GameInfo("Force of Warships", "Naval", "High <100ms", "Shecan", "Artstorm", listOf("forceofwarships.com")),
+    GameInfo("Armored Warfare", "Vehicles", "High <100ms", "Shecan", "My.com", listOf("armoredwarfare.com")),
+    // ——— Survival / Sandbox multiplayer ———
+    GameInfo("Minecraft", "Sandbox", "Medium <100ms", "Cloudflare", "Mojang", listOf("minecraft.net", "mojang.com")),
+    GameInfo("Roblox", "Sandbox", "Medium <120ms", "Cloudflare", "Roblox", listOf("www.roblox.com", "clientsettingscdn.roblox.com")),
+    GameInfo("Rust", "Survival", "Critical <80ms", "Shecan", "Facepunch", listOf("rust.facepunch.com")),
+    GameInfo("ARK: Survival Ascended/Evolved", "Survival", "Critical <90ms", "Shecan", "Studio Wildcard", listOf("playark.com")),
+    GameInfo("Valheim", "Survival", "High <100ms", "Cloudflare", "Iron Gate", listOf("valheimgame.com")),
+    GameInfo("Once Human", "Survival", "High <100ms", "Shecan", "NetEase", listOf("oncehuman.game")),
+    GameInfo("DayZ", "Survival", "Critical <90ms", "Shecan", "Bohemia", listOf("dayz.com")),
+    GameInfo("7 Days to Die", "Survival", "High <100ms", "Cloudflare", "TFP", listOf("7daystodie.com")),
+    GameInfo("Terraria", "Sandbox", "Medium <120ms", "Cloudflare", "Re-Logic", listOf("terraria.org")),
+    GameInfo("Don't Starve Together", "Survival", "Medium <120ms", "Cloudflare", "Klei", listOf("dontstarvegame.com")),
+    // ——— Party / Social online ———
+    GameInfo("Among Us", "Party", "Low <150ms", "Cloudflare", "Innersloth", listOf("among.us")),
+    GameInfo("Fall Guys", "Party", "Medium <120ms", "Shecan", "Epic", listOf("fallguys.com")),
+    GameInfo("Stumble Guys", "Party", "Medium <120ms", "Cloudflare", "Scopely", listOf("stumbleguys.com")),
+    GameInfo("Gartic Phone", "Party", "Low <150ms", "Cloudflare", "Gartic", listOf("garticphone.com")),
+    GameInfo("Jackbox Party Pack", "Party", "Low <150ms", "Cloudflare", "Jackbox", listOf("jackbox.tv")),
+    GameInfo("Krunker.io", "FPS", "Critical <80ms", "Cloudflare", "Browser", listOf("krunker.io")),
+    GameInfo("Shell Shockers", "FPS", "High <100ms", "Cloudflare", "Browser", listOf("shellshock.io")),
+    // ——— Card / Board competitive ———
+    GameInfo("Hearthstone", "Card", "Medium <120ms", "Shecan", "Blizzard", listOf("hearthstone.blizzard.com")),
+    GameInfo("Yu-Gi-Oh! Master Duel", "Card", "Medium <120ms", "Shecan", "Konami", listOf("masterduel.com")),
+    GameInfo("Marvel Snap", "Card", "Medium <120ms", "Cloudflare", "Second Dinner", listOf("marvelsnap.com")),
+    GameInfo("Legends of Runeterra", "Card", "Medium <120ms", "Shecan", "Riot", listOf("playruneterra.com")),
+    GameInfo("MTG Arena", "Card", "Medium <120ms", "Shecan", "Wizards", listOf("magic.wizards.com")),
+    GameInfo("Chess.com", "Board", "Low <150ms", "Cloudflare", "Chess.com", listOf("chess.com")),
+    GameInfo("Lichess", "Board", "Low <150ms", "Cloudflare", "Lichess", listOf("lichess.org")),
+    GameInfo("Clash Royale", "Strategy", "Medium <100ms", "Google DNS", "Supercell", listOf("game.clashroyale.com")),
+    // ——— Strategy real-time ———
+    GameInfo("Clash of Clans", "Strategy", "Medium <100ms", "Google DNS", "Supercell", listOf("game.clashofclans.com")),
+    GameInfo("Brawl Stars", "Action", "High <90ms", "Shecan", "Supercell", listOf("game.brawlstarsgame.com")),
+    GameInfo("Boom Beach", "Strategy", "Medium <120ms", "Google DNS", "Supercell", listOf("game.boombeachgame.com")),
+    GameInfo("Hay Day", "Farm", "Low <150ms", "Google DNS", "Supercell", listOf("game.haydaygame.com")),
+    GameInfo("State of Survival", "Strategy", "Medium <130ms", "Shecan", "KingsGroup", listOf("stateofsurvival.com")),
+    GameInfo("Rise of Kingdoms", "Strategy", "Medium <130ms", "Shecan", "Lilith", listOf("riseofkingdoms.com")),
+    GameInfo("Lords Mobile", "Strategy", "Medium <130ms", "Cloudflare", "IGG", listOf("lordsmobile.com")),
+    GameInfo("Last War: Survival", "Strategy", "Medium <130ms", "Shecan", "FirstFun", listOf("lastwar.com")),
+    GameInfo("Whiteout Survival", "Strategy", "Medium <130ms", "Shecan", "Century Games", listOf("whiteoutsurvival.com")),
+    GameInfo("Age of Empires IV Multiplayer", "Strategy", "Critical <80ms", "Shecan", "Xbox", listOf("ageofempires.com")),
+    GameInfo("StarCraft II", "Strategy", "Critical <50ms", "Shecan", "Blizzard", listOf("starcraft2.com")),
+    GameInfo("Warcraft III Reforged", "Strategy", "Critical <60ms", "Shecan", "Blizzard", listOf("warcraft3.com")),
+    GameInfo("Command & Conquer Remastered Online", "Strategy", "Critical <80ms", "Shecan", "EA", listOf("ea.com")),
+    // ——— MMO / Action RPG online ———
+    GameInfo("Genshin Impact", "RPG", "Medium <120ms", "Shecan", "Hoyoverse", listOf("hk4e-api-os.hoyoverse.com")),
+    GameInfo("Honkai: Star Rail", "RPG", "Medium <120ms", "Shecan", "Hoyoverse", listOf("hkrpg-api-os.hoyoverse.com")),
+    GameInfo("Zenless Zone Zero", "Action", "Medium <120ms", "Shecan", "Hoyoverse", listOf("nap-api-os.hoyoverse.com")),
+    GameInfo("Wuthering Waves", "Action", "Medium <120ms", "Shecan", "Kuro", listOf("wutheringwaves.kurogame.com")),
+    GameInfo("Tower of Fantasy", "RPG", "Medium <120ms", "Shecan", "Level Infinite", listOf("toweroffantasy-global.com")),
+    GameInfo("Diablo Immortal", "RPG", "High <100ms", "Shecan", "Blizzard", listOf("diabloimmortal.com")),
+    GameInfo("Diablo IV", "RPG", "High <100ms", "Shecan", "Blizzard", listOf("diablo4.blizzard.com")),
+    GameInfo("Path of Exile", "ARPG", "High <100ms", "Shecan", "GGG", listOf("pathofexile.com")),
+    GameInfo("Path of Exile 2", "ARPG", "High <100ms", "Shecan", "GGG", listOf("pathofexile.com")),
+    GameInfo("Lost Ark", "MMORPG", "Critical <80ms", "Shecan", "Smilegate/Amazon", listOf("playlostark.com")),
+    GameInfo("Final Fantasy XIV", "MMORPG", "High <100ms", "Shecan", "Square Enix", listOf("finalfantasyxiv.com")),
+    GameInfo("World of Warcraft", "MMORPG", "High <100ms", "Shecan", "Blizzard", listOf("worldofwarcraft.com")),
+    GameInfo("Black Desert Online", "MMORPG", "High <100ms", "Shecan", "Pearl Abyss", listOf("blackdesertonline.com")),
+    GameInfo("Black Desert Mobile", "MMORPG", "High <100ms", "Shecan", "Pearl Abyss", listOf("blackdesertm.com")),
+    GameInfo("Albion Online", "MMORPG", "High <100ms", "Shecan", "Sandbox", listOf("albiononline.com")),
+    GameInfo("Old School RuneScape", "MMORPG", "Medium <120ms", "Cloudflare", "Jagex", listOf("oldschool.runescape.com")),
+    GameInfo("RuneScape 3", "MMORPG", "Medium <120ms", "Cloudflare", "Jagex", listOf("runescape.com")),
+    GameInfo("New World", "MMORPG", "High <100ms", "Shecan", "Amazon", listOf("newworld.com")),
+    GameInfo("Throne and Liberty", "MMORPG", "High <100ms", "Shecan", "NCSoft/Amazon", listOf("playthroneandliberty.com")),
+    GameInfo("Blade & Soul", "MMORPG", "Critical <80ms", "Shecan", "NCSoft", listOf("bladeandsoul.com")),
+    GameInfo("Guild Wars 2", "MMORPG", "High <100ms", "Shecan", "ArenaNet", listOf("guildwars2.com")),
+    GameInfo("Elder Scrolls Online", "MMORPG", "High <100ms", "Shecan", "Zenimax", listOf("elderscrollsonline.com")),
+    GameInfo("Warframe", "Action", "High <100ms", "Shecan", "Digital Extremes", listOf("warframe.com")),
+    GameInfo("Warframe Mobile", "Action", "High <100ms", "Shecan", "DE", listOf("warframe.com")),
+    GameInfo("Summoners War", "RPG", "Medium <120ms", "Shecan", "Com2uS", listOf("summonerswar.com")),
+    GameInfo("Epic Seven", "RPG", "Medium <120ms", "Shecan", "Smilegate", listOf("epicseven.com")),
+    GameInfo("Raid: Shadow Legends", "RPG", "Low <150ms", "Cloudflare", "Plarium", listOf("raidshadowlegends.com")),
+    GameInfo("AFK Arena", "RPG", "Low <150ms", "Cloudflare", "Lilith", listOf("afkarena.com")),
+    GameInfo("Fate/Grand Order", "RPG", "Medium <130ms", "Shecan", "Aniplex", listOf("fate-go.us")),
+    GameInfo("Mobile Legends: Adventure", "RPG", "Medium <120ms", "Electro", "moonton", listOf("mladventure.com")),
+    // ——— Asymmetric / Horror online ———
+    GameInfo("Dead by Daylight", "Asym", "High <100ms", "Shecan", "Behaviour", listOf("deadbydaylight.com")),
+    GameInfo("Dead by Daylight Mobile", "Asym", "High <100ms", "Shecan", "Behaviour", listOf("deadbydaylight.com")),
+    GameInfo("Identity V", "Asym", "High <100ms", "Shecan", "NetEase", listOf("identityv.game")),
+    GameInfo("Evil Dead: The Game", "Asym", "High <100ms", "Shecan", "Saber", listOf("evildeadthegame.com")),
+    GameInfo("Predator: Hunting Grounds", "Asym", "High <100ms", "Shecan", "IllFonic", listOf("predatorhuntinggrounds.com")),
+    // ——— AR / Location ———
+    GameInfo("Pokémon GO", "AR", "Medium <120ms", "Google DNS", "Niantic", listOf("pgorelease.nianticlabs.com")),
+    GameInfo("Monster Hunter Now", "AR", "Medium <120ms", "Google DNS", "Niantic", listOf("monsterhunternow.com")),
+    GameInfo("Pikmin Bloom", "AR", "Low <150ms", "Google DNS", "Niantic", listOf("pikminbloom.com")),
+    GameInfo("Ingress", "AR", "Medium <120ms", "Google DNS", "Niantic", listOf("ingress.com")),
+    // ——— Path baselines ———
+    GameInfo("Cloudflare edge", "Baseline", "Low", "1.1.1.1", "Path check", listOf("1.1.1.1", "cloudflare.com")),
+    GameInfo("Google edge", "Baseline", "Low", "8.8.8.8", "Path check", listOf("dns.google", "google.com")),
+    GameInfo("Riot edge", "Baseline", "Low", "Shecan", "Path check", listOf("riotgames.com")),
+    GameInfo("Garena edge", "Baseline", "Low", "Electro", "Path check", listOf("garena.com")),
+    GameInfo("Hoyoverse edge", "Baseline", "Low", "Shecan", "Path check", listOf("hoyoverse.com")),
+    GameInfo("Valve / Steam edge", "Baseline", "Low", "Shecan", "Path check", listOf("steampowered.com", "steamcommunity.com")),
+    GameInfo("Epic Games edge", "Baseline", "Low", "Shecan", "Path check", listOf("epicgames.com")),
+    GameInfo("Activision edge", "Baseline", "Low", "Shecan", "Path check", listOf("activision.com")),
+    GameInfo("Wargaming edge", "Baseline", "Low", "Shecan", "Path check", listOf("wargaming.net"))
+)
+
+suspend fun testGamePing(g: GameInfo): List<GamePingResult> {
+    return g.hosts.map { host ->
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            var resolveMs: Long? = null
+            var tcpMs: Long? = null
+            var udpStatus = "—"
+            try {
+                val t0 = System.currentTimeMillis()
+                val addrs = java.net.InetAddress.getAllByName(host)
+                resolveMs = System.currentTimeMillis() - t0
+                val ip = addrs.firstOrNull()?.hostAddress
+                if (ip != null) {
+                    val t1 = System.currentTimeMillis()
+                    try {
+                        java.net.Socket().use { s ->
+                            s.connect(java.net.InetSocketAddress(ip, 443), 2500)
+                            tcpMs = System.currentTimeMillis() - t1
+                        }
+                    } catch (_: Exception) {
+                        try {
+                            java.net.Socket().use { s ->
+                                s.connect(java.net.InetSocketAddress(ip, 80), 2500)
+                                tcpMs = System.currentTimeMillis() - t1
+                            }
+                        } catch (_: Exception) {
+                            tcpMs = null
+                        }
+                    }
+                    try {
+                        val ds = java.net.DatagramSocket()
+                        ds.soTimeout = 1200
+                        val data = ByteArray(8)
+                        val packet = java.net.DatagramPacket(data, data.size, java.net.InetAddress.getByName(ip), 443)
+                        val u0 = System.currentTimeMillis()
+                        ds.send(packet)
+                        try {
+                            ds.receive(packet)
+                            udpStatus = "REPLIES ${System.currentTimeMillis() - u0}ms"
+                        } catch (_: Exception) {
+                            udpStatus = "NO_REPLY"
+                        }
+                        ds.close()
+                    } catch (_: Exception) {
+                        udpStatus = "FAIL"
+                    }
+                }
+            } catch (_: Exception) {
+                resolveMs = null
+            }
+            GamePingResult(host, resolveMs, tcpMs, udpStatus)
+        }
+    }
+}
+
+fun summarizeGamePing(g: GameInfo, list: List<GamePingResult>): Pair<String, String> {
+    val ok = list.mapNotNull { it.tcpMs }
+    if (ok.isEmpty()) return "Weak path" to "No TCP reach on public hosts"
+    val avg = ok.average()
+    val label = when {
+        avg < 60 -> "Live path: Excellent"
+        avg < 100 -> "Live path: Good"
+        avg < 150 -> "Live path: Playable"
+        else -> "Live path: High ping"
+    }
+    val detail = "avg TCP ${avg.toInt()}ms · hosts ${ok.size}/${list.size} · need ${g.pingNeed}"
+    return label to detail
+}
+
+
+
+data class NearbyEndpoint(
+    val host: String,
+    val games: List<String>,
+    val resolveMs: Long?,
+    val tcpMs: Long?,
+    val score: Long // lower better
+)
+
+/**
+ * Probe known public game endpoints (API/CDN/login — not always the match room IP).
+ * Ranks by TCP latency so user can see nearest reachable gaming edges.
+ * Optional extraHosts: user-supplied IPs/domains (one per line).
+ */
+suspend fun scanNearbyGameServers(
+    extraHosts: List<String> = emptyList(),
+    limit: Int = 24
+): List<NearbyEndpoint> = withContext(Dispatchers.IO) {
+    val hostToGames = linkedMapOf<String, MutableSet<String>>()
+    for (g in ONLINE_GAMES) {
+        for (h in g.hosts) {
+            val key = h.trim().lowercase()
+            if (key.isEmpty()) continue
+            hostToGames.getOrPut(key) { mutableSetOf() }.add(g.name)
+        }
+    }
+    for (h in extraHosts) {
+        val key = h.trim().lowercase()
+        if (key.isEmpty() || key.startsWith("#")) continue
+        hostToGames.getOrPut(key) { mutableSetOf() }.add("Custom")
+    }
+    val hosts = hostToGames.keys.take(80) // cap work
+    val results = mutableListOf<NearbyEndpoint>()
+    // parallel chunks
+    for (chunk in hosts.chunked(8)) {
+        val part = kotlinx.coroutines.coroutineScope {
+            chunk.map { host ->
+                async {
+                    val resolve = try {
+                        val t0 = System.currentTimeMillis()
+                        InetAddress.getByName(host)
+                        (System.currentTimeMillis() - t0).coerceIn(1, 9999)
+                    } catch (_: Exception) { null }
+                    val tcp = tcpConnect(host, 443, 1800) ?: tcpConnect(host, 80, 1500)
+                    val score = when {
+                        tcp != null -> tcp
+                        resolve != null -> resolve + 5000
+                        else -> 99999L
+                    }
+                    NearbyEndpoint(
+                        host = host,
+                        games = hostToGames[host]?.toList()?.take(4) ?: emptyList(),
+                        resolveMs = resolve,
+                        tcpMs = tcp,
+                        score = score
+                    )
+                }
+            }.map { it.await() }
+        }
+        results.addAll(part)
+    }
+    results
+        .filter { it.score < 99999L }
+        .sortedBy { it.score }
+        .take(limit)
+}
+
 
 @Composable
 fun GamesOptimizeTab() {
+    val ctx = LocalContext.current
+    val pm = ctx.packageManager
     var q by remember { mutableStateOf("") }
     var busyId by remember { mutableStateOf<String?>(null) }
     var results by remember { mutableStateOf<Map<String, Pair<List<GamePingResult>, Pair<String, String>>>>(emptyMap()) }
+    var showInstalledOnly by remember { mutableStateOf(false) }
+    var nearbyBusy by remember { mutableStateOf(false) }
+    var nearbyRows by remember { mutableStateOf<List<NearbyEndpoint>>(emptyList()) }
+    var extraIps by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    val filtered = ONLINE_GAMES.filter {
-        q.isBlank() || it.name.contains(q, true) || it.genre.contains(q, true) || it.dnsHint.contains(q, true)
+
+    val pkgFor = remember {
+        mapOf(
+            "Mobile Legends: Bang Bang" to "com.mobile.legends",
+            "PUBG Mobile" to "com.tencent.ig",
+            "BGMI" to "com.pubg.imobile",
+            "Free Fire" to "com.dts.freefireth",
+            "Free Fire MAX" to "com.dts.freefiremax",
+            "Call of Duty: Mobile" to "com.activision.callofduty.shooter",
+            "Genshin Impact" to "com.miHoYo.GenshinImpact",
+            "Honkai: Star Rail" to "com.HoYoverse.hkrpgoversea",
+            "Zenless Zone Zero" to "com.HoYoverse.Nap",
+            "Roblox" to "com.roblox.client",
+            "Minecraft" to "com.mojang.minecraftpe",
+            "Clash of Clans" to "com.supercell.clashofclans",
+            "Clash Royale" to "com.supercell.clashroyale",
+            "Brawl Stars" to "com.supercell.brawlstars",
+            "eFootball" to "jp.konami.pesam",
+            "EA Sports FC Mobile" to "com.ea.gp.fifamobile",
+            "Arena of Valor" to "com.garena.game.kgvn",
+            "League of Legends: Wild Rift" to "com.riotgames.mobile.leagueconnect",
+            "Pokemon Unite" to "com.tencent.pokemonunite",
+            "Standoff 2" to "com.axlebolt.standoff2",
+            "Asphalt 9" to "com.gameloft.android.ANMP.GloftA9HM",
+            "Delta Force Hawk Ops" to "com.garena.game.df",
+            "Arena Breakout" to "com.more.abmobile",
+            "Identity V" to "com.netease.dwrg.google",
+            "Dead by Daylight Mobile" to "com.bhvr.dbd.mobile",
+            "Shadow Fight 4" to "com.nekki.shadowfightarena",
+            "Rocket League Sideswipe" to "com.psyonix.rl_sideswipe",
+            "PUBG New State" to "com.pubg.newstate",
+            "Farlight 84" to "com.miraclegames.farlight84",
+            "Blood Strike" to "com.netease.newsnap"
+        )
     }
+
+    fun isInstalled(name: String, explicit: String?): Boolean {
+        val pkg = explicit ?: pkgFor[name] ?: return false
+        return try { pm.getPackageInfo(pkg, 0); true } catch (_: Exception) { false }
+    }
+
+    val filtered = ONLINE_GAMES.filter {
+        val match = q.isBlank() || it.name.contains(q, true) || it.genre.contains(q, true)
+        val inst = isInstalled(it.name, it.packageName)
+        match && (!showInstalledOnly || inst)
+    }
+
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(8.dp))
-        Text("Game ping", color = TextP, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text("Real path to public game hosts (API/CDN/login) · TCP+UDP", color = TextS, fontSize = 12.sp)
+        Text("Games", color = TextP, fontSize = 24.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.2.sp)
+        Text("Nearby edges · path test · installed", color = TextS, fontSize = 12.sp)
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = q, onValueChange = { q = it },
-            label = { Text("Search game") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Accent, unfocusedBorderColor = Surface2, focusedTextColor = TextP, unfocusedTextColor = TextP, cursorColor = Accent, focusedLabelColor = Accent)
+            placeholder = { Text("Search", color = TextM) },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Accent, unfocusedBorderColor = Surface2,
+                focusedTextColor = TextP, unfocusedTextColor = TextP, cursorColor = Accent
+            )
         )
         Spacer(Modifier.height(8.dp))
-        Card(colors = CardDefaults.cardColors(containerColor = Surface2), shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp)) {
-                Text("What this measures", color = Accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Text("Ping to official public hosts (login, API, CDN). Match/battle servers are often different IPs chosen after lobby — this is the closest honest test without the game client.", color = TextS, fontSize = 11.sp, lineHeight = 15.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(
+                selected = showInstalledOnly,
+                onClick = { showInstalledOnly = !showInstalledOnly },
+                label = { Text("Installed only", fontSize = 12.sp) },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = Accent.copy(0.25f),
+                    selectedLabelColor = Accent
+                )
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("${filtered.size} titles", color = TextM, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        // Nearby gaming endpoints
+        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Nearby gaming servers", color = TextP, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Text(
+                    "Front/edge latency only (API/CDN). Not match-room IP. Optional custom IPs.",
+                    color = TextS, fontSize = 11.sp
+                )
+                OutlinedTextField(
+                    value = extraIps,
+                    onValueChange = { extraIps = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp, max = 72.dp),
+                    placeholder = { Text("Optional IP/host list…", color = TextM, fontSize = 11.sp) },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Accent, unfocusedBorderColor = Surface2,
+                        focusedTextColor = TextP, unfocusedTextColor = TextP, cursorColor = Accent
+                    )
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            if (nearbyBusy) return@Button
+                            nearbyBusy = true
+                            scope.launch {
+                                nearbyRows = scanNearbyGameServers(
+                                    extraHosts = extraIps.lines().map { it.trim() }.filter { it.isNotEmpty() }
+                                )
+                                nearbyBusy = false
+                            }
+                        },
+                        enabled = !nearbyBusy,
+                        modifier = Modifier.height(36.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                    ) {
+                        Text(if (nearbyBusy) "Scanning…" else "Scan nearby", color = Color.White, fontSize = 12.sp)
+                    }
+                }
+                nearbyRows.take(8).forEach { n ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(n.host, color = TextP, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 1)
+                            Text(n.games.joinToString(" · ").ifBlank { "—" }, color = TextM, fontSize = 10.sp, maxLines = 1)
+                        }
+                        Text(
+                            n.tcpMs?.let { "${it}ms" } ?: n.resolveMs?.let { "DNS ${it}ms" } ?: "—",
+                            color = when {
+                                (n.tcpMs ?: 9999) < 60 -> Green
+                                (n.tcpMs ?: 9999) < 120 -> Yellow
+                                else -> TextS
+                            },
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.height(8.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
             items(filtered, key = { it.name }) { g ->
+                val installed = isInstalled(g.name, g.packageName)
+                val pkg = g.packageName ?: pkgFor[g.name]
                 val r = results[g.name]
-                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp)) {
+                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(g.name, color = TextP, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Text("${g.genre} · Need: ${g.pingNeed}", color = when {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(g.name, color = TextP, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                            if (installed) Text("ON DEVICE", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Text("${g.genre} · ${g.pingNeed}", color = when {
                             g.pingNeed.startsWith("Critical") -> Red
                             g.pingNeed.startsWith("High") -> Yellow
                             else -> TextS
                         }, fontSize = 11.sp)
-                        Text("DNS hint: ${g.dnsHint}", color = Accent, fontSize = 11.sp)
-                        Text(g.tip, color = TextM, fontSize = 10.sp)
-                        if (g.hosts.isNotEmpty()) {
-                            Text(g.hosts.take(3).joinToString(" · "), color = TextM, fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        }
-                        Button(
-                            onClick = {
-                                if (busyId != null) return@Button
-                                busyId = g.name
-                                scope.launch {
-                                    val list = testGamePing(g)
-                                    val sum = summarizeGamePing(g, list)
-                                    results = results + (g.name to (list to sum))
-                                    busyId = null
-                                }
-                            },
-                            enabled = busyId == null,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                        ) {
-                            if (busyId == g.name) {
-                                CircularProgressIndicator(Modifier.size(14.dp), Color.White, strokeWidth = 2.dp)
-                                Spacer(Modifier.width(6.dp))
-                                Text("Testing…", color = Color.White, fontSize = 12.sp)
-                            } else Text("Test real path", color = Color.White, fontSize = 12.sp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    if (busyId != null) return@Button
+                                    busyId = g.name
+                                    scope.launch {
+                                        val list = testGamePing(g)
+                                        val sum = summarizeGamePing(g, list)
+                                        results = results + (g.name to (list to sum))
+                                        busyId = null
+                                    }
+                                },
+                                enabled = busyId == null,
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                            ) {
+                                Text(if (busyId == g.name) "…" else "Path test", color = Color.White, fontSize = 11.sp)
+                            }
+                            if (installed && pkg != null) {
+                                OutlinedButton(
+                                    onClick = {
+                                        try {
+                                            pm.getLaunchIntentForPackage(pkg)?.let {
+                                                it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                ctx.startActivity(it)
+                                            }
+                                        } catch (_: Exception) {}
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) { Text("Launch", color = Accent, fontSize = 11.sp) }
+                            }
                         }
                         r?.let { (list, sum) ->
                             Text(sum.first, color = when {
@@ -1431,12 +2148,6 @@ fun GamesOptimizeTab() {
                                 else -> Red
                             }, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             Text(sum.second, color = TextS, fontSize = 10.sp)
-                            list.forEach { row ->
-                                Text(
-                                    "${row.host} · DNS ${row.resolveMs ?: "—"} · TCP ${row.tcpMs ?: "—"}ms · UDP ${row.udpStatus}${row.udpMs?.let { " ${it}ms" } ?: ""}",
-                                    color = TextM, fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis
-                                )
-                            }
                         }
                     }
                 }
@@ -1444,251 +2155,3 @@ fun GamesOptimizeTab() {
         }
     }
 }
-
-
-
-data class DeviceReport(
-    val lines: List<Pair<String, String>>,
-    val advice: List<String>
-)
-
-fun buildDeviceReport(ctx: Context): DeviceReport {
-    val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-    val mi = ActivityManager.MemoryInfo()
-    am.getMemoryInfo(mi)
-    val totalRamGb = mi.totalMem / (1024.0 * 1024.0 * 1024.0)
-    val availRamGb = mi.availMem / (1024.0 * 1024.0 * 1024.0)
-    val dm = ctx.resources.displayMetrics
-    val w = dm.widthPixels
-    val h = dm.heightPixels
-    val dpi = dm.densityDpi
-    val refresh = try {
-        if (Build.VERSION.SDK_INT >= 30) {
-            ctx.display?.mode?.refreshRate ?: 60f
-        } else {
-            @Suppress("DEPRECATION")
-            (ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.refreshRate
-        }
-    } catch (_: Exception) { 60f }
-    val cores = Runtime.getRuntime().availableProcessors()
-    val abis = Build.SUPPORTED_ABIS.joinToString(", ")
-    val storage = try {
-        val stat = StatFs(Environment.getDataDirectory().path)
-        val total = stat.totalBytes / (1024.0 * 1024.0 * 1024.0)
-        val free = stat.availableBytes / (1024.0 * 1024.0 * 1024.0)
-        "%.1f GB free / %.1f GB".format(free, total)
-    } catch (_: Exception) { "—" }
-
-    val lines = listOf(
-        "Manufacturer" to Build.MANUFACTURER,
-        "Model" to Build.MODEL,
-        "Device" to Build.DEVICE,
-        "Board" to Build.BOARD,
-        "Hardware" to Build.HARDWARE,
-        "SOC / brand" to (if (Build.VERSION.SDK_INT >= 31) "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}" else Build.HARDWARE),
-        "Android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
-        "CPU cores" to "$cores",
-        "ABI" to abis,
-        "RAM total" to "%.1f GB".format(totalRamGb),
-        "RAM available" to "%.1f GB".format(availRamGb),
-        "Low memory" to if (mi.lowMemory) "Yes" else "No",
-        "Screen" to "${w}×${h} · ${dpi} dpi",
-        "Refresh rate" to "%.0f Hz".format(refresh),
-        "Storage (data)" to storage,
-        "GPU hint" to Build.HARDWARE
-    )
-
-    // FPS / suitability heuristic vs Games tab titles
-    val maxRefresh = refresh.toInt().coerceIn(30, 144)
-    val targetMaxFps = when {
-        totalRamGb >= 8 && cores >= 8 -> maxRefresh.coerceAtMost(120)
-        totalRamGb >= 6 && cores >= 6 -> maxRefresh.coerceAtMost(90)
-        totalRamGb >= 4 && cores >= 4 -> maxRefresh.coerceAtMost(60)
-        else -> 30
-    }
-    val targetMinFps = when {
-        totalRamGb >= 6 -> 40
-        totalRamGb >= 4 -> 30
-        else -> 25
-    }
-    val resSupport = when {
-        w >= 1440 -> "Up to QHD / high settings on mid-light games"
-        w >= 1080 -> "Full HD comfortable for most mobile titles"
-        w >= 720 -> "HD — lower graphics recommended for heavy games"
-        else -> "Below HD — use lowest graphics / 30 FPS cap"
-    }
-    val cpuGpuOk = when {
-        totalRamGb >= 6 && cores >= 6 -> "CPU/GPU class looks fine for MLBB, Free Fire, COD Mobile at mid–high."
-        totalRamGb >= 4 && cores >= 4 -> "OK for medium games (MLBB, Free Fire). Heavy titles: lower graphics."
-        else -> "Limited — stick to light/medium games and low settings."
-    }
-    val ramNote = "%.1f GB RAM · keep ≥1.5 GB free while gaming.".format(totalRamGb)
-    val batteryNote = "For long sessions (PUBG / COD / MLBB ranked): enable battery performance mode, lower brightness, avoid charging+play heat."
-
-    val heavy = ONLINE_GAMES.filter { it.pingNeed.startsWith("Critical") }.take(6).joinToString { it.name }
-    val advice = listOf(
-        "Suggested FPS range: $targetMinFps–$targetMaxFps (screen ${"%.0f".format(refresh)} Hz)",
-        "Resolution: $resSupport (${w}×${h})",
-        cpuGpuOk,
-        ramNote,
-        batteryNote,
-        "Critical-ping games in list: $heavy"
-    )
-    return DeviceReport(lines, advice)
-}
-
-@Composable
-fun DeviceTab() {
-    val ctx = LocalContext.current
-    var report by remember { mutableStateOf<DeviceReport?>(null) }
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        Spacer(Modifier.height(10.dp))
-        Text("Device", color = TextP, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text("Hardware profile · gaming readiness", color = TextS, fontSize = 12.sp)
-        Spacer(Modifier.height(12.dp))
-        Button(
-            onClick = { report = buildDeviceReport(ctx) },
-            modifier = Modifier.fillMaxWidth().height(48.dp),
-            shape = RoundedCornerShape(28.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Accent)
-        ) {
-            Text("Get", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-        }
-        Spacer(Modifier.height(12.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
-            if (report == null) {
-                item {
-                    Text("Tap Get to read CPU, RAM, screen, storage and gaming advice.", color = TextM, fontSize = 13.sp)
-                }
-            }
-            report?.let { r ->
-                item {
-                    Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Hardware", color = Accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            r.lines.forEach { (k, v) ->
-                                Row(Modifier.fillMaxWidth()) {
-                                    Text(k, color = TextM, fontSize = 12.sp, modifier = Modifier.width(120.dp))
-                                    Text(v, color = TextP, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                                }
-                            }
-                        }
-                    }
-                }
-                item {
-                    Card(colors = CardDefaults.cardColors(containerColor = Surface2), shape = RoundedCornerShape(20.dp)) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Gaming readiness", color = Accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            r.advice.forEach { line ->
-                                Text("• $line", color = TextP, fontSize = 12.sp)
-                            }
-                            Text("Game list source: Games tab catalog", color = TextM, fontSize = 10.sp)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-// Config parsers, restored from the previous complete drop: this build
-// calls them from parseOneConfig but shipped without their definitions.
-private fun parseVless(link: String, i: Int): V2Node {
-    val body = link.substringAfter("://").substringBefore("#")
-    val name = link.substringAfter("#", "vless-$i").ifBlank { "vless-$i" }
-    val uuid = body.substringBefore("@")
-    val rest = body.substringAfter("@", "")
-    val host = rest.substringBefore(":").substringBefore("?").removePrefix("[").removeSuffix("]")
-    val afterHost = rest.substringAfter(":", "")
-    val port = afterHost.substringBefore("?").toIntOrNull() ?: 443
-    val params = q(afterHost.substringAfter("?", ""))
-    val security = params["security"] ?: "none"
-    val network = params["type"] ?: params["network"] ?: "tcp"
-    return V2Node(i, "VLESS", host.ifBlank { "?" }, port, name, security, network, link.take(80))
-}
-
-private fun parseVmess(link: String, i: Int): V2Node {
-    val raw = link.substringAfter("://").substringBefore("#")
-    val json = try {
-        String(Base64.getDecoder().decode(raw.replace('-', '+').replace('_', '/')))
-    } catch (_: Exception) {
-        try { String(Base64.getUrlDecoder().decode(raw)) } catch (_: Exception) { raw }
-    }
-    fun field(k: String) = Regex(""""$k"\s*:\s*"([^"]*)"""").find(json)?.groupValues?.get(1) ?: ""
-    fun fieldInt(k: String, d: Int) = Regex(""""$k"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: d
-    val host = field("add").ifBlank { field("host") }.ifBlank { "?" }
-    val port = fieldInt("port", 443)
-    val name = link.substringAfter("#", field("ps").ifBlank { "vmess-$i" })
-    val security = field("tls").ifBlank { field("security") }.ifBlank { "none" }
-    val network = field("net").ifBlank { field("type") }.ifBlank { "tcp" }
-    return V2Node(i, "VMess", host, port, name, security, network, link.take(80))
-}
-
-private fun parseTrojan(link: String, i: Int): V2Node {
-    val body = link.substringAfter("://").substringBefore("#")
-    val name = link.substringAfter("#", "trojan-$i").ifBlank { "trojan-$i" }
-    val rest = body.substringAfter("@", body)
-    val host = rest.substringBefore(":").substringBefore("?").removePrefix("[").removeSuffix("]")
-    val afterHost = rest.substringAfter(":", "")
-    val port = afterHost.substringBefore("?").toIntOrNull() ?: 443
-    val params = q(afterHost.substringAfter("?", ""))
-    val security = params["security"] ?: "tls"
-    val network = params["type"] ?: "tcp"
-    return V2Node(i, "Trojan", host.ifBlank { "?" }, port, name, security, network, link.take(80))
-}
-
-private fun parseSs(link: String, i: Int): V2Node {
-    val body = link.substringAfter("://").substringBefore("#")
-    val name = link.substringAfter("#", "ss-$i").ifBlank { "ss-$i" }
-    val decoded = try {
-        if ("@" in body) body else String(Base64.getDecoder().decode(body.replace('-', '+').replace('_', '/')))
-    } catch (_: Exception) { body }
-    val rest = decoded.substringAfter("@", decoded)
-    val host = rest.substringBefore(":").substringBefore("/").removePrefix("[").removeSuffix("]")
-    val port = rest.substringAfter(":").substringBefore("/").substringBefore("#").toIntOrNull() ?: 443
-    return V2Node(i, "Shadowsocks", host.ifBlank { "?" }, port, name, "ss", "udp/tcp", link.take(80))
-}
-
-private fun parseHy2(link: String, i: Int): V2Node {
-    val body = link.substringAfter("://").substringBefore("#")
-    val name = link.substringAfter("#", "hy2-$i").ifBlank { "hy2-$i" }
-    val rest = body.substringAfter("@", body)
-    val host = rest.substringBefore(":").substringBefore("?").removePrefix("[").removeSuffix("]")
-    val port = rest.substringAfter(":").substringBefore("?").toIntOrNull() ?: 443
-    return V2Node(i, "Hysteria2", host.ifBlank { "?" }, port, name, "hy2", "udp", link.take(80))
-}
-
-private fun parseTuic(link: String, i: Int): V2Node {
-    val body = link.substringAfter("://").substringBefore("#")
-    val name = link.substringAfter("#", "tuic-$i").ifBlank { "tuic-$i" }
-    val rest = body.substringAfter("@", body)
-    val host = rest.substringBefore(":").substringBefore("?").removePrefix("[").removeSuffix("]")
-    val port = rest.substringAfter(":").substringBefore("?").toIntOrNull() ?: 443
-    return V2Node(i, "TUIC", host.ifBlank { "?" }, port, name, "tuic", "udp", link.take(80))
-}
-
-private fun parseJsonNode(json: String, i: Int): V2Node {
-    fun f(k: String) = Regex(""""$k"\s*:\s*"([^"]+)"""").find(json)?.groupValues?.get(1)
-    fun n(k: String) = Regex(""""$k"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull()
-    val host = f("address") ?: f("server") ?: f("hostname") ?: f("host") ?: "?"
-    val port = n("port") ?: n("server_port") ?: 443
-    val proto = when {
-        json.contains("vless", true) -> "VLESS"
-        json.contains("vmess", true) -> "VMess"
-        json.contains("trojan", true) -> "Trojan"
-        json.contains("shadowsocks", true) || json.contains("\"ss\"", true) -> "Shadowsocks"
-        json.contains("hysteria2", true) || json.contains("hy2", true) -> "Hysteria2"
-        json.contains("tuic", true) -> "TUIC"
-        json.contains("wireguard", true) -> "WireGuard"
-        else -> "JSON"
-    }
-    return V2Node(i, proto, host, port, "json-$i", f("security") ?: "—", f("network") ?: f("type") ?: "—", json.take(60))
-}
-
-
-// Config parsers, restored from the previous complete drop: this build
-// calls them from parseOneConfig but shipped without their definitions.
-private fun q(s: String) = s.split("&").mapNotNull {
-    val i = it.indexOf("="); if (i > 0) it.substring(0, i) to it.substring(i + 1) else null
-}.toMap()
