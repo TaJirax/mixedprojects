@@ -64,6 +64,12 @@ case "$ABI" in
     *) echo "Unsupported ABI $ABI" >&2; exit 1 ;;
 esac
 
+# Android requires position-independent executables. FFmpeg's 32-bit NASM
+# objects still contain R_386_32 absolute relocations, which modern NDK lld
+# correctly refuses. Keep the C/SSE intrinsics, but use NASM only on x86_64.
+EXTRA_CONFIG=()
+[ "$ABI" = x86 ] && EXTRA_CONFIG+=(--disable-x86asm)
+
 # MSYS rewrites anything that looks like a Unix path when it crosses into a
 # native Windows .exe, which mangles every -I and --sysroot flag configure
 # passes to clang. This is the documented off switch.
@@ -202,7 +208,8 @@ echo "==> configuring for $ABI (API $API) with $(basename "$NDK_ROOT")"
     --enable-libmp3lame \
     --extra-cflags="-O2 -fPIC -I$DEPS/include" \
     --extra-ldflags="-L$DEPS/lib" \
-    --extra-ldexeflags="-pie"
+    --extra-ldexeflags="-pie" \
+    "${EXTRA_CONFIG[@]}"
 
 # Archiving a library means naming ~875 object files on one command line, which
 # is about 35 KB — past the 32 KB a Windows process may be created with. The
