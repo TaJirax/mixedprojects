@@ -1112,7 +1112,7 @@ html.android .nav button .dot { display: none; }
   /* 8% of the screen above the first element, then the controls run from
      there. dvh rather than a percentage of the pane: the pane's own height
      changes when the keyboard opens, and the gap should not move with it. */
-  .page { padding: 8dvh 14px 12px; }
+  .page { padding: 4dvh 14px 12px; }
   .page-head {
     display: grid;
     grid-template-columns: 44px minmax(0, 1fr);
@@ -1237,7 +1237,9 @@ html.android .nav button .dot { display: none; }
     justify-content: flex-start;
   }
   .runbar {
-    flex: 0 0 clamp(162px, 28.08dvh, 216px);
+    /* Raised 2.5% of the screen: the panel keeps its own
+       proportions and simply starts higher up. */
+    flex: 0 0 calc(clamp(162px, 28.08dvh, 216px) + 2.5dvh);
     min-height: 0;
     padding: 0 14px calc(8px + env(safe-area-inset-bottom));
     border-top: 1px solid var(--edge-2);
@@ -1301,24 +1303,47 @@ html.android .nav button .dot { display: none; }
     overflow-y: auto;
   }
   .sheet-grip { display: none; }
+  /* Sits in the head rather than floating above it: a control with nothing
+     around it is the part that read as unfinished. */
   .sheet-close {
-    position: absolute;
-    top: calc(10px + env(safe-area-inset-top));
-    right: 12px;
-    z-index: 1;
-    width: 42px;
-    height: 42px;
+    flex: none;
+    display: grid;
+    place-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
     border: 1px solid var(--edge-2);
     border-radius: 50%;
-    background: var(--glass-2);
-    color: var(--ink);
-    font-size: 24px;
+    background: var(--glass);
+    color: var(--ink-2);
+    font-size: 19px;
     line-height: 1;
     cursor: pointer;
+    transition: background .16s, color .16s;
   }
+  .sheet-close:active { background: var(--glass-2); color: var(--ink); }
+  .sheet-close:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
   .sheet-content {
     width: min(100%, 520px);
     margin: auto;
+  }
+  /* The sheet had a close button floating in empty space and nothing else to
+     say what it was. A named head with a rule running to the edge gives the
+     panel a top, and borrows the eyebrow voice the rest of the app labels
+     with instead of inventing a third one. */
+  .sheet-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    /* 9px, not 12: at 360x640 the head is what tipped the sheet into
+       scrolling, by two pixels. */
+    padding: 0 2px 9px;
+  }
+  .sheet-rule {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg,
+      color-mix(in srgb, var(--spotify) 42%, transparent), transparent 82%);
   }
   /* The picker fills about two thirds of the screen: enough that the tiles are
      the page rather than a strip in the middle of it, with the rest left as
@@ -1371,60 +1396,81 @@ html.android .nav button .dot { display: none; }
         color-mix(in srgb, var(--tint) 42%, var(--pane-solid)) 0%,
         color-mix(in srgb, var(--tint) 24%, var(--pane-solid)) 52%,
         color-mix(in srgb, var(--tint) 11%, var(--pane-solid)) 100%);
-    /* The lit top edge is the same trick the glass panes use, so the tiles
-       read as part of the same material rather than as coloured cards. */
-    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--tint) 34%, transparent);
+    /* Three layers of edge, which is what separates a card from a rectangle:
+       a lit top edge, a hairline of the tile's own colour holding its shape
+       against the sheet, and a cast shadow so it sits on the sheet rather
+       than in it. */
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--tint) 40%, transparent),
+      inset 0 0 0 1px color-mix(in srgb, var(--tint) 14%, transparent),
+      0 10px 22px -12px rgb(0 0 0 / .85);
     color: var(--ink-2);
     text-align: center;
     cursor: pointer;
     transition: transform .18s ease, border-color .18s ease,
                 box-shadow .18s ease, background .18s ease;
   }
-  /* The veil follows the label. It sits low because the label sits low, and
-     it is a soft pool rather than the full-height wash this replaced — that
-     one darkened the whole tile to protect one corner of it. */
+  /* A footing under the label, not a pool over the tile. The soft radial it
+     replaces muddied the colour across the whole face; this is confined to
+     the bottom third, so the tint above it stays clean. */
   .tile::after {
     content: "";
     position: absolute;
     inset: 0;
     z-index: 1;
     pointer-events: none;
-    background: radial-gradient(108% 86% at 50% 92%,
-      color-mix(in srgb, var(--pane-solid) 56%, transparent) 0%,
-      color-mix(in srgb, var(--pane-solid) 26%, transparent) 58%,
-      transparent 100%);
+    background: linear-gradient(to top,
+      color-mix(in srgb, var(--pane-solid) 78%, transparent) 0%,
+      color-mix(in srgb, var(--pane-solid) 40%, transparent) 22%,
+      transparent 58%);
   }
+  /* The mark is composition, not a watermark.
+     Centred, faded and blurred by a drop-shadow, it read as a stock template.
+     Anchored high and bled off the top-right instead, drawn crisply and
+     masked so it dissolves before it reaches the label, it reads as a mark
+     that was placed — and the label sits on clean ground either way. */
   .tile .section-icon {
     position: absolute;
-    inset: 0;
+    inset: auto -14% auto auto;
+    top: -18%;
     z-index: 0;
-    width: 100%;
-    height: 100%;
+    width: 78%;
+    height: auto;
+    aspect-ratio: 1;
     border: 0;
     border-radius: 0;
     --section-tint: var(--tint);
     color: var(--tint);
-    background: radial-gradient(circle at 52% 42%,
-      color-mix(in srgb, var(--tint) 24%, transparent),
-      transparent 72%);
+    background: none;
     box-shadow: none;
-    opacity: .26;
+    opacity: .30;
     pointer-events: none;
-    transform: scale(1.08);
+    transform: none;
+    -webkit-mask-image: linear-gradient(200deg, #000 34%, transparent 82%);
+    mask-image: linear-gradient(200deg, #000 34%, transparent 82%);
   }
   .tile .section-icon svg {
-    width: 88%;
-    height: 88%;
-    filter: drop-shadow(0 0 12px color-mix(in srgb, var(--tint) 45%, transparent));
+    width: 100%;
+    height: 100%;
+    filter: none;               /* crisp edges; the blur is what looked cheap */
   }
+  /* A wide tile has room for a bigger mark; a third-width one would be
+     swallowed by it. */
+  .sheet-grid .tile:nth-child(6) .section-icon,
+  .sheet-grid .tile:nth-child(9) .section-icon,
+  .sheet-grid .tile.utility .section-icon { width: 46%; top: -12%; }
+  .sheet-grid .tile:nth-child(1) .section-icon,
+  .sheet-grid .tile:nth-child(2) .section-icon { width: 58%; top: -14%; }
+
   .tile b {
     position: relative;
     z-index: 2;
     font-family: var(--font-display);
-    font-size: 13px; font-weight: 600; line-height: 1.25;
+    font-size: 12.5px; font-weight: 600; line-height: 1.22;
+    letter-spacing: -.005em;
     color: var(--ink);
     overflow-wrap: anywhere;
-    text-shadow: 0 2px 8px var(--pane-solid);
+    text-shadow: 0 1px 3px color-mix(in srgb, var(--pane-solid) 85%, transparent);
   }
   /* The room you are standing in: same light, turned up, plus a cast glow so
      it lifts off the sheet instead of only being a brighter rectangle. */
@@ -1439,9 +1485,13 @@ html.android .nav button .dot { display: none; }
         color-mix(in srgb, var(--tint) 34%, var(--pane-solid)) 52%,
         color-mix(in srgb, var(--tint) 16%, var(--pane-solid)) 100%);
     box-shadow:
-      inset 0 1px 0 color-mix(in srgb, var(--tint) 56%, transparent),
-      0 6px 20px color-mix(in srgb, var(--tint) 26%, transparent);
+      inset 0 1px 0 color-mix(in srgb, var(--tint) 62%, transparent),
+      inset 0 0 0 1px color-mix(in srgb, var(--tint) 40%, transparent),
+      0 0 0 1px color-mix(in srgb, var(--tint) 30%, transparent),
+      0 10px 26px -10px color-mix(in srgb, var(--tint) 40%, transparent);
   }
+  /* The current room reads brighter, so its mark can carry more too. */
+  .tile[aria-current="true"] .section-icon { opacity: .42; }
   .tile[aria-current="true"] .section-icon { opacity: .38; transform: scale(1.16); }
   .tile:active { transform: scale(.97); }
   .tile.utility { grid-column: span 3; }
@@ -2153,8 +2203,12 @@ html.android .nav button .dot { display: none; }
   <button class="sheet-scrim" id="sheet-scrim" tabindex="-1" aria-label="Close"></button>
   <div class="sheet-body" role="dialog" aria-modal="true" aria-label="Choose a section">
     <div class="sheet-grip" aria-hidden="true"></div>
-    <button class="sheet-close" id="sheet-close" aria-label="Close section menu">×</button>
     <div class="sheet-content">
+      <div class="sheet-head">
+        <span class="eyebrow">Sources</span>
+        <span class="sheet-rule" aria-hidden="true"></span>
+        <button class="sheet-close" id="sheet-close" aria-label="Close section menu">×</button>
+      </div>
       <div class="sheet-grid" id="sheet-grid"></div>
       <div class="sheet-foot" id="sheet-foot"></div>
     </div>
