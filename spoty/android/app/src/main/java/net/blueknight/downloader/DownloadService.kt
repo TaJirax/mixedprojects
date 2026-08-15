@@ -107,13 +107,13 @@ class DownloadService : Service() {
             .build()
     }
 
-    /** Copy files created by this job to the user's persisted SAF folder. */
+    /** Copy files created by this job into BlueKnight Downloader in the picked tree. */
     private fun exportCompletedFiles() {
         val saved = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(EXPORT_TREE, null) ?: return
         val root = outputRoot()
         if (!root.isDirectory) return
-        val destination = DocumentFile.fromTreeUri(this, Uri.parse(saved)) ?: return
+        val destination = ensureExportFolder(this, Uri.parse(saved)) ?: return
 
         outputSnapshot().forEach { (relative, stamp) ->
             if (baseline[relative] == stamp) return@forEach
@@ -158,6 +158,17 @@ class DownloadService : Service() {
         const val ACTION_STOP = "net.blueknight.downloader.STOP"
         const val PREFS = "blueknight_android"
         const val EXPORT_TREE = "export_tree"
+        const val EXPORT_FOLDER = "BlueKnight Downloader"
+
+        /** Create or find the public root while preserving the selected tree permission. */
+        fun ensureExportFolder(context: Context, treeUri: Uri): DocumentFile? {
+            val tree = DocumentFile.fromTreeUri(context, treeUri) ?: return null
+            if (tree.name.equals(EXPORT_FOLDER, ignoreCase = true)) return tree
+            return tree.listFiles().firstOrNull {
+                it.isDirectory && it.name.equals(EXPORT_FOLDER, ignoreCase = true)
+            }
+                ?: tree.createDirectory(EXPORT_FOLDER)
+        }
 
         /** Called when a job starts. Harmless if one is already running. */
         fun start(context: Context) {

@@ -151,9 +151,10 @@ def android_set_folder(tree_uri):
     files are handed to afterwards.
     """
     _app.save_folder.set(str(blueknight_paths.download_root()))
-    _app.ui("folder", _app.save_folder.get())
-    _app.notify("New downloads will also be copied to the folder you chose.", "ok")
-    return {"folder": _app.save_folder.get()}
+    public_name = "BlueKnight Downloader"
+    _app.ui("folder", public_name)
+    _app.notify(f"Downloads will be sorted inside {public_name}.", "ok")
+    return {"folder": public_name}
 
 
 def android_picked_file(path):

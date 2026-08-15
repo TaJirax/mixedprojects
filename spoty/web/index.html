@@ -447,6 +447,19 @@ body::before {
   transition: background .16s, box-shadow .16s;
 }
 .nav button.on .dot { background: var(--spotify); box-shadow: 0 0 8px var(--spotify); }
+.section-icon {
+  width: 30px; height: 30px; flex: none;
+  display: grid; place-items: center;
+  border: 1px solid color-mix(in srgb, var(--section-tint) 28%, var(--edge-2));
+  border-radius: 10px;
+  color: var(--section-tint);
+  background: linear-gradient(145deg,
+    color-mix(in srgb, var(--section-tint) 17%, var(--pane-solid)),
+    color-mix(in srgb, var(--section-tint) 5%, transparent));
+  transition: border-color .2s, background .2s, box-shadow .2s, transform .2s;
+}
+.section-icon svg { width: 19px; height: 19px; display: block; }
+.nav button .section-icon { display: none; }
 
 .side-foot {
   flex: none;
@@ -588,6 +601,7 @@ h1 {
 }
 .lede { color: var(--ink-2); font-size: 13px; margin-top: 5px; max-width: 62ch; }
 .page-head { flex: none; padding-bottom: 20px; }
+.page-head > .section-icon { display: none; }
 
 /* ============================================================ controls ==== */
 .btn {
@@ -958,9 +972,16 @@ body.busy .status-word { color: var(--spotify); }
 
 @media (max-width: 760px) {
   html, body { height: 100dvh; }
+  :root { --control-h: 44px; --compact-h: 32px; }
   body {
     font-size: 15px;                 /* 13.5px is a desktop reading distance */
     -webkit-tap-highlight-color: transparent;
+  }
+  /* Keep the artwork at its natural aspect ratio. On a tall phone, `cover`
+     zooms the nearly square image until only an oversized center slice shows. */
+  body::before {
+    background-size: 100% auto;
+    background-position: center top;
   }
   /* The knight covers proportionally more of a phone than of a 1210px window,
      and the activity log is monospaced 11.5px sitting on top of it. Easing the
@@ -1003,7 +1024,8 @@ body.busy .status-word { color: var(--spotify); }
     flex-direction: column;
     align-items: flex-start;
     gap: 1px;
-    padding: 6px 10px;
+    min-height: 46px;
+    padding: 5px 9px;
     border: 1px solid var(--edge-2);
     border-radius: var(--r-md);
     background: var(--glass);
@@ -1026,20 +1048,21 @@ body.busy .status-word { color: var(--spotify); }
     max-width: 100%;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  /* The dot is the room you are standing in, and it changes with the accent. */
-  .mbar-name::before {
-    content: ""; flex: none;
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--spotify);
-    box-shadow: 0 0 9px var(--spotify);
-    transition: background .3s ease, box-shadow .3s ease;
+  .mbar-icon {
+    width: 24px; height: 24px; flex: none;
+    display: grid; place-items: center;
+    border-radius: 8px;
+    color: var(--section-tint, var(--spotify));
+    background: color-mix(in srgb, var(--section-tint, var(--spotify)) 15%, transparent);
   }
+  .mbar-icon svg { width: 17px; height: 17px; }
+  #mbar-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .mbar-eq { display: none; }
   body.busy .mbar-eq { display: block; flex: none; }
 
   .mbar-btn {
     flex: none;
-    width: 42px; height: 42px;
+    width: 44px; height: 44px;
     display: grid; place-content: center; gap: 4px;
     border: 1px solid var(--edge-2); border-radius: var(--r-md);
     background: var(--glass); cursor: pointer;
@@ -1050,18 +1073,36 @@ body.busy .status-word { color: var(--spotify); }
 
   /* --------------------------------------------------------- the page --- */
   .main { border-radius: var(--r-lg); }
-  .page { padding: 16px 14px 12px; }
-  .page-head { padding-bottom: 12px; }
+  .page { padding: 14px 14px 12px; }
+  .page-head {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    column-gap: 11px;
+    align-items: center;
+    padding-bottom: 14px;
+  }
+  .page-head > .section-icon {
+    display: grid;
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    width: 42px; height: 42px;
+    border-radius: 13px;
+  }
+  .page-head > .section-icon svg { width: 24px; height: 24px; }
+  .page-head > .eyebrow,
+  .page-head > h1,
+  .page-head > .lede { grid-column: 2; min-width: 0; }
   /* The bar already names the source in the same words, one line above. A
      second, larger copy of it is the first thing to cut when the screen is
      360px wide and the input field is what people came for. */
   .page[data-page] > .page-head > h1 { display: none; }
-  .lede { font-size: 13px; }
+  .lede { font-size: 12.5px; line-height: 1.42; }
   .scroll { padding-right: 6px; }
 
   /* Every control a thumb has to hit gets a 44px target. */
-  .btn, .segment button, .chip-btn, .format-picker button,
+  .btn, .segment button, .format-picker button,
   .converter-mode-switch button { min-height: 44px; }
+  .chip-btn { min-height: var(--compact-h); }
   input, select { min-height: 46px; font-size: 16px; }  /* 16px: iOS/Android will not zoom */
   .btn.primary { flex: 1; justify-content: center; font-size: 15px; }
 
@@ -1090,21 +1131,67 @@ body.busy .status-word { color: var(--spotify); }
     padding: 11px 2px;
   }
   .field .help, .field > * { grid-column: 1 / -1; }
+  .field > .btn { width: 100%; }
+  .segment {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .segment button { width: 100%; padding-inline: 8px; }
+  .segment button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .format-picker { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .format-picker button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .page .row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+    width: 100%;
+  }
+  .page .row > .btn { width: 100%; }
+  .page .row > .btn:last-child:nth-child(odd),
+  .page .row > [data-signin],
+  .page .row > .signin-note { grid-column: 1 / -1; }
   .converter-grid { grid-template-columns: 1fr; }
   .dimension-pair { grid-template-columns: 1fr 1fr; }
+  .converter-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .converter-actions .primary { min-width: 0; width: 100%; }
+  .document-converter { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .document-converter .btn { width: 100%; }
 
-  .status-block { flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px 0 10px; }
-  .status-word { font-size: 30px; }
+  .status-block { align-items: center; gap: 10px; padding: 8px 0 7px; }
+  .status-word { flex: none; font-size: 24px; }
+  .status-meta {
+    min-width: 0;
+    padding-bottom: 0;
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
-  /* The controls take exactly the height they need at the top of the screen,
-     and the activity log absorbs whatever is left — otherwise the page
-     stretches and leaves a band of empty glass between the buttons and the
-     status. */
-  .main[data-runbar="on"] .page.on { flex: 0 0 auto; }
-  .runbar { flex: 1 1 auto; padding: 0 14px 14px; }
-  .run-stats { font-size: 10.5px; }
-  .console { font-size: 11.5px; }
+  /* Downloads keep most of the screen. Activity stays in a compact lower
+     panel, with the page and log each scrolling only when their content needs it. */
+  .main[data-runbar="on"] .page.on {
+    flex: 1 1 auto;
+    max-height: none;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .runbar {
+    flex: 0 0 clamp(150px, 26dvh, 200px);
+    min-height: 0;
+    padding: 0 14px 12px;
+    border-top: 1px solid var(--edge-2);
+  }
+  .bar { height: 4px; }
+  .run-path { margin-top: 5px; font-size: 9.5px; }
+  .run-stats { gap: 5px 12px; margin-top: 6px; font-size: 9.5px; }
+  .console-head { padding: 7px 0 5px; }
+  .console {
+    min-height: 42px;
+    padding: 8px 10px;
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
 
   .toast-stack {
     right: 10px; left: 10px;
@@ -1113,9 +1200,8 @@ body.busy .status-word { color: var(--spotify); }
   .gate-card { width: auto; margin: 16px; padding: 26px 20px; }
   .gate-card img { width: 72px; height: 72px; }
 
-  /* --------------------------------------------------- the source sheet --
-     Nine sources, so a 3x3 grid lands exactly with no orphan tile, and the
-     whole picker fits above the fold on a phone. */
+  /* --------------------------------------------------- section picker ---
+     Auto-fit keeps the source and utility tiles balanced across phone widths. */
   .sheet {
     position: fixed; inset: 0; z-index: 70;
     display: grid; align-items: end;
@@ -1144,15 +1230,16 @@ body.busy .status-word { color: var(--spotify); }
   }
   .sheet-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 8px;
   }
   .tile {
+    grid-column: span 2;
     display: flex;
     flex-direction: column;
-    justify-content: flex-end;
+    justify-content: space-between;
     gap: 6px;
-    min-height: 84px;
+    min-height: 82px;
     padding: 10px 9px;
     border: 1px solid var(--edge-2);
     border-radius: var(--r-md);
@@ -1165,12 +1252,11 @@ body.busy .status-word { color: var(--spotify); }
     text-align: left;
     cursor: pointer;
   }
-  .tile::before {
-    content: "";
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--tint);
-    box-shadow: 0 0 10px var(--tint);
+  .tile .section-icon {
+    width: 32px; height: 32px;
+    --section-tint: var(--tint);
   }
+  .tile .section-icon svg { width: 20px; height: 20px; }
   .tile b {
     font-family: var(--font-display);
     font-size: 12.5px; font-weight: 600; line-height: 1.25;
@@ -1183,12 +1269,24 @@ body.busy .status-word { color: var(--spotify); }
       color-mix(in srgb, var(--tint) 30%, var(--pane-solid)),
       var(--pane-solid) 68%);
   }
+  .tile.utility { grid-column: span 3; min-height: 82px; }
   .tile:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
 
   /* The sidebar's utility buttons, moved here rather than rebuilt. */
   .sheet-foot .side-foot { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
   .sheet-foot .eq-wrap { display: none; }
-  .sheet-foot .ghost { min-height: 46px; }
+  .sheet-foot .ghost { min-height: var(--control-h); }
+}
+
+@media (max-width: 390px) {
+  .shell { padding-inline: 7px; }
+  .mbar { gap: 7px; padding-inline: 3px; }
+  .mbar-mark { width: 28px; height: 28px; }
+  .page { padding-inline: 11px; }
+  .page-head { grid-template-columns: 40px minmax(0, 1fr); column-gap: 9px; }
+  .page-head > .section-icon { width: 38px; height: 38px; border-radius: 12px; }
+  .paste-row, .field, .page .row { gap: 8px; }
+  .tile { min-height: 78px; padding: 9px 8px; }
 }
 
 @keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
@@ -1233,7 +1331,7 @@ body.busy .status-word { color: var(--spotify); }
     <img class="mbar-mark" src="logo.png" alt="">
     <button class="mbar-source" id="mbar-source" aria-haspopup="dialog" aria-expanded="false">
       <span class="mbar-kicker">Source</span>
-      <span class="mbar-name" id="mbar-name">Spotify</span>
+      <span class="mbar-name"><span class="mbar-icon" id="mbar-icon" aria-hidden="true"></span><span id="mbar-label">Spotify</span></span>
     </button>
     <div class="mbar-eq" aria-hidden="true">
       <div class="eq"><i></i><i></i><i></i><i></i><i></i><i></i></div>
@@ -1619,7 +1717,7 @@ body.busy .status-word { color: var(--spotify); }
           <input type="text" id="folder" spellcheck="false">
           <button class="btn" id="browse">Browse</button>
         </div>
-        <p class="hint">Files are named <b>Artist - Title</b>. The folder is created if it does not exist.</p>
+        <p class="hint" id="folder-note">Files are named <b>Artist - Title</b>. The folder is created if it does not exist.</p>
         <div class="row" style="padding:8px 2px">
           <button class="btn" id="open-folder">Open folder</button>
           <button class="btn" id="convert">Convert MP3 â†’ FLAC</button>
@@ -1808,12 +1906,11 @@ body.busy .status-word { color: var(--spotify); }
   </main>
 </div>
 
-<!-- The source picker. Nine tiles, each in its own source's colour, because
-     picking a source retints the entire app — this is the only place all nine
-     of those rooms can be seen at once. -->
+<!-- The phone section picker shows every source and utility page with its own
+     mark, so Connection and Settings remain reachable without the sidebar. -->
 <div class="sheet" id="sheet" hidden>
   <button class="sheet-scrim" id="sheet-scrim" tabindex="-1" aria-label="Close"></button>
-  <div class="sheet-body" role="dialog" aria-modal="true" aria-label="Choose a source">
+  <div class="sheet-body" role="dialog" aria-modal="true" aria-label="Choose a section">
     <div class="sheet-grip" aria-hidden="true"></div>
     <div class="sheet-grid" id="sheet-grid"></div>
     <div class="sheet-foot" id="sheet-foot"></div>
@@ -1865,6 +1962,26 @@ const PAGES = [
   ["connection", "Connection"],
   ["settings", "Download settings"],
 ];
+const SECTION_ICONS = {
+  download: '<path d="M5 9.2c4.8-1.4 9.8-.9 13.8 1.3M6 12.8c4-1.1 8.2-.7 11.6 1.1M7 16.1c3-.7 6.1-.4 8.8.8"/>',
+  youtube: '<rect x="3" y="6" width="18" height="12" rx="4"/><path d="m10 9 5 3-5 3Z" fill="var(--pane-solid)" stroke="none"/>',
+  ytmusic: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="5.2"/><path d="m10.5 9 4.8 3-4.8 3Z" fill="currentColor" stroke="none"/>',
+  tiktok: '<path d="M14 4v9.2a4 4 0 1 1-3-3.9M14 4c.5 2.2 1.8 3.6 4 4"/>',
+  instagram: '<rect x="4" y="4" width="16" height="16" rx="5"/><circle cx="12" cy="12" r="3.6"/><circle cx="17.4" cy="6.8" r=".8" fill="currentColor" stroke="none"/>',
+  soundcloud: '<path d="M9 16H6.8a2.8 2.8 0 1 1 1.1-5.4A5.2 5.2 0 0 1 18 12a2.2 2.2 0 1 1 0 4h-2M6 13v3M9 10v6M12 8v8M15 10v6"/>',
+  x: '<path d="M5 4.5 18.8 19.5M18.5 4.5 5.2 19.5"/>',
+  general: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3Z"/>',
+  pdf: '<path d="M7 3.5h7l4 4V20H7zM14 3.5V8h4M9.5 12h6M9.5 15h6"/>',
+  connection: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.3 10.8 7.4-3.6M8.3 13.2l7.4 3.6"/>',
+  settings: '<path d="M4 7h7M15 7h5M4 12h3M11 12h9M4 17h9M17 17h3"/><circle cx="13" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="17" r="2"/>',
+};
+function sectionSvg(id) {
+  const paths = SECTION_ICONS[id] || SECTION_ICONS.general;
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+}
+function sectionIcon(id) {
+  return `<span class="section-icon" aria-hidden="true">${sectionSvg(id)}</span>`;
+}
 /* Only the source pages retint. Settings pages keep whichever source is active,
    so opening settings never looks like you left the source you were using. */
 const MODES = {
@@ -1877,6 +1994,21 @@ const LABELS = {
   instagram: "Instagram", soundcloud: "SoundCloud", x: "X",
   general: "Video", pdf: "Documents & Ebooks",
 };
+const UTILITY_TINTS = { connection: "var(--knight-2)", settings: "var(--amber)" };
+function sectionTint(id) {
+  return MODES[id] ? `var(--src-${MODES[id]})` : (UTILITY_TINTS[id] || "var(--knight-2)");
+}
+
+function decoratePages() {
+  document.querySelectorAll(".page[data-page]").forEach(page => {
+    const id = page.dataset.page;
+    page.style.setProperty("--section-tint", sectionTint(id));
+    const head = page.querySelector(".page-head");
+    if (head && !head.querySelector(".section-icon")) {
+      head.insertAdjacentHTML("afterbegin", sectionIcon(id));
+    }
+  });
+}
 
 function buildNav() {
   const nav = $("nav");
@@ -1884,10 +2016,17 @@ function buildNav() {
     const b = document.createElement("button");
     b.className = i === 0 ? "on" : "";
     b.dataset.target = id;
-    b.innerHTML = '<span class="dot"></span>' + label;
+    b.style.setProperty("--section-tint", sectionTint(id));
+    b.innerHTML = '<span class="dot"></span>' + (PHONE.matches ? sectionIcon(id) : "");
+    b.appendChild(document.createTextNode(label));
     b.onclick = () => show(id);
     nav.appendChild(b);
   });
+  if (PHONE.matches) {
+    decoratePages();
+    $("mbar-icon").style.setProperty("--section-tint", sectionTint("download"));
+    $("mbar-icon").innerHTML = sectionSvg("download");
+  }
 }
 
 /* ------------------------------------------------------------ phone shell ---
@@ -1902,11 +2041,12 @@ const PHONE = matchMedia("(max-width: 760px)");
 
 function buildSheet() {
   const grid = $("sheet-grid");
-  PAGES.filter(([id]) => MODES[id]).forEach(([id, label]) => {
+  PAGES.forEach(([id, label]) => {
     const tile = document.createElement("button");
-    tile.className = "tile";
+    tile.className = MODES[id] ? "tile" : "tile utility";
     tile.dataset.target = id;
-    tile.style.setProperty("--tint", `var(--src-${MODES[id]})`);
+    tile.style.setProperty("--tint", sectionTint(id));
+    tile.insertAdjacentHTML("afterbegin", sectionIcon(id));
     const name = document.createElement("b");
     name.textContent = label;
     tile.appendChild(name);
@@ -1918,8 +2058,9 @@ function buildSheet() {
 }
 
 function openSheet() {
+  const current = document.querySelector(".page.on")?.dataset.page;
   document.querySelectorAll("#sheet-grid .tile").forEach(t =>
-    t.setAttribute("aria-current", String(MODES[t.dataset.target] === state.source)));
+    t.setAttribute("aria-current", String(t.dataset.target === current)));
   $("sheet").hidden = false;
   $("mbar-source").setAttribute("aria-expanded", "true");
 }
@@ -1951,7 +2092,11 @@ function show(id) {
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.dataset.page === id));
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.target === id));
   const label = (PAGES.find(([page]) => page === id) || [, ""])[1];
-  if ($("mbar-name") && label) $("mbar-name").textContent = label;
+  if ($("mbar-label") && label) $("mbar-label").textContent = label;
+  if ($("mbar-icon")) {
+    $("mbar-icon").style.setProperty("--section-tint", sectionTint(id));
+    $("mbar-icon").innerHTML = sectionSvg(id);
+  }
   $("main").dataset.runbar = MODES[id] ? "on" : "off";
   // A finished job belongs to the page it ran on, not the one being opened.
   if (!state.busy) resetRun();
@@ -2481,6 +2626,12 @@ function boot() {
   boot.done = true;
   buildNav();
   setupPhone();
+  if (window.AndroidBridge) {
+    document.documentElement.classList.add("android");
+    $("folder").readOnly = true;
+    $("browse").textContent = "Choose parent folder";
+    $("folder-note").innerHTML = "Android saves into <b>BlueKnight Downloader</b>, then sorts files into the same source folders as desktop.";
+  }
   wire();
   paintConverter();
   // Every process launch starts dark. The theme button can switch the current
@@ -2498,7 +2649,7 @@ function boot() {
     setSegment("format", s.format);
     setSegment("quality", s.quality);
     setSegment("proxy-type", s.proxy_type);
-    $("folder").value = s.folder;
+    $("folder").value = window.AndroidBridge ? "BlueKnight Downloader" : s.folder;
     $("proxy-url").value = s.proxy_url;
     $("youtube-po-token").value = state.youtube_po_token;
     $("proxy-toggle").setAttribute("aria-checked", String(s.proxy_enabled));

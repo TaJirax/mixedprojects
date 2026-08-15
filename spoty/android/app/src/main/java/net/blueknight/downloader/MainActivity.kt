@@ -49,9 +49,15 @@ class MainActivity : AppCompatActivity() {
             contentResolver.takePersistableUriPermission(
                 uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or
                         Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            val output = DownloadService.ensureExportFolder(this, uri)
+            if (output == null) {
+                call("android_import_failed", JSONArray().put(
+                    "BlueKnight Downloader could not be created in that folder."))
+                return@registerForActivityResult
+            }
             getSharedPreferences(DownloadService.PREFS, MODE_PRIVATE).edit()
                 .putString(DownloadService.EXPORT_TREE, uri.toString()).apply()
-            call("android_set_folder", JSONArray().put(uri.toString()))
+            call("android_set_folder", JSONArray().put(output.uri.toString()))
         }
     }
 
@@ -280,7 +286,9 @@ class MainActivity : AppCompatActivity() {
             .getString(DownloadService.EXPORT_TREE, null)
         if (saved != null) {
             runCatching {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(saved)).apply {
+                val treeUri = Uri.parse(saved)
+                val outputUri = DownloadService.ensureExportFolder(this, treeUri)?.uri ?: treeUri
+                startActivity(Intent(Intent.ACTION_VIEW, outputUri).apply {
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
                             Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                 })
