@@ -148,9 +148,12 @@ if [ ! -f "$DEPS/lib/libmp3lame.a" ]; then
     [ -f config.h ] || { echo "LAME configure produced no config.h" >&2; exit 1; }
 
     mkdir -p "$DEPS/lib" "$DEPS/include/lame" obj
-    for source in libmp3lame/*.c; do
+    # x86 configure enables LAME's SSE intrinsics, whose implementation lives
+    # in vector/. Omitting it creates an archive successfully but leaves an
+    # unresolved init_xrpow_core_sse, so FFmpeg rejects libmp3lame at configure.
+    for source in libmp3lame/*.c libmp3lame/vector/*.c; do
         "$CC_BIN" -O2 -fPIC -DHAVE_CONFIG_H \
-            -I. -Iinclude -Ilibmp3lame \
+            -I. -Iinclude -Ilibmp3lame -Ilibmp3lame/vector \
             -c "$source" -o "obj/$(basename "${source%.c}").o"
     done
     "$TOOLCHAIN/bin/llvm-ar${EXE_SUFFIX}" rcs "$DEPS/lib/libmp3lame.a" obj/*.o
