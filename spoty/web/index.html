@@ -512,6 +512,13 @@ body.busy .eq-label { color: var(--spotify); }
   font-family: var(--font-text); font-size: 12.5px;
   cursor: pointer; transition: background .16s, color .16s;
 }
+
+/* The theme control shows the destination, not the current state: a sun means
+   pressing this gives you the light theme. Only one of the two is ever drawn. */
+.theme-icon { display: inline-flex; flex: none; }
+.theme-icon svg { width: 15px; height: 15px; }
+html[data-theme="dark"] .icon-moon,
+html[data-theme="light"] .icon-sun { display: none; }
 .ghost:hover { background: var(--glass-2); color: var(--ink); }
 
 /* A lit glass lens, not a tinted rectangle. The gradient lives in the rim
@@ -1080,26 +1087,38 @@ html.android .nav button .dot { display: none; }
   .mbar-eq { display: none; }
   body.busy .mbar-eq { display: block; flex: none; }
 
-  .mbar-btn {
+  .mbar-btn,
+  .mbar #theme-btn {
     flex: none;
     width: 44px; height: 44px;
     display: grid; place-content: center; gap: 4px;
     border: 1px solid var(--edge-2); border-radius: var(--r-md);
     background: var(--glass); cursor: pointer;
+    padding: 0;
   }
+  /* In the bar the theme control is icon-only; its words survive as the
+     accessible name rather than being dropped. */
+  .mbar #theme-btn > #theme-label { display: none; }
+  .mbar #theme-btn { color: var(--ink-2); }
+  .mbar #theme-btn:active { background: var(--glass-2); color: var(--ink); }
+  .mbar #theme-btn:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
+  .mbar .theme-icon svg { width: 18px; height: 18px; }
   .mbar-btn span { display: block; width: 15px; height: 1.5px; background: var(--ink-2); }
   .mbar-btn:active { background: var(--glass-2); }
   .mbar-btn:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
 
   /* --------------------------------------------------------- the page --- */
   .main { border-radius: var(--r-lg); }
-  .page { padding: 9px 14px 10px; }
+  /* The extra bottom padding is an optical correction, not a gap: a group
+     centred by measurement sits low to the eye, so it is nudged up by biasing
+     the free space. Only ever seen when the content is shorter than the area. */
+  .page { padding: 20px 14px 52px; }
   .page-head {
     display: grid;
     grid-template-columns: 44px minmax(0, 1fr);
     column-gap: 11px;
     align-items: center;
-    padding-bottom: 10px;
+    padding-bottom: 14px;
   }
   .page-head > .section-icon {
     display: grid;
@@ -1134,7 +1153,7 @@ html.android .nav button .dot { display: none; }
   .paste-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 10px;
+    gap: 12px;
   }
   .paste-row input {
     grid-column: 1 / -1;
@@ -1185,8 +1204,8 @@ html.android .nav button .dot { display: none; }
     flex: none;
     width: min(100%, 520px);
     align-self: center;
-    margin: 8px auto 2px;
-    padding: 8px 10px;
+    margin: 16px auto 2px;
+    padding: 10px 12px;
     border: 1px solid var(--edge-2);
     border-radius: var(--r-md);
     background: linear-gradient(160deg, var(--glass-2), var(--glass));
@@ -1213,6 +1232,12 @@ html.android .nav button .dot { display: none; }
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
+    /* Sit the control group in the middle of its area with air above it,
+       rather than pinned under the bar with all the slack below.
+       "safe" matters: on a tall page — YouTube, the converter — plain centring
+       would push the first row off the top of the scroll container where it
+       could not be reached. */
+    justify-content: safe center;
   }
   .runbar {
     flex: 0 0 clamp(162px, 28.08dvh, 216px);
@@ -1264,7 +1289,15 @@ html.android .nav button .dot { display: none; }
              calc(18px + env(safe-area-inset-bottom));
     border: 0;
     border-radius: 0;
-    background: var(--pane-solid);
+    /* A flat fill under nine lit tiles reads as a hole. The faint knight-blue
+       lift at the top gives the panel its own light, matching the app bar it
+       slides up over. */
+    background:
+      radial-gradient(120% 52% at 50% 0%,
+        color-mix(in srgb, var(--knight) 13%, transparent), transparent 72%),
+      linear-gradient(180deg,
+        color-mix(in srgb, var(--knight) 5%, var(--pane-solid)) 0%,
+        var(--pane-solid) 44%);
     box-shadow: var(--shadow);
     animation: sheet-up .26s cubic-bezier(.22, 1, .36, 1);
     display: flex;
@@ -1309,14 +1342,26 @@ html.android .nav button .dot { display: none; }
     border: 1px solid var(--edge-2);
     border-radius: var(--r-md);
     /* Each source mark becomes the tile's artwork. A dark lower wash keeps the
-       label crisp without reducing the logo to a small badge. */
-    background: linear-gradient(157deg,
-      color-mix(in srgb, var(--tint) 22%, var(--pane-solid)),
-      color-mix(in srgb, var(--tint) 6%, var(--pane-solid)) 72%);
+       label crisp without reducing the logo to a small badge.
+       Two layers rather than one flat diagonal: a radial that puts the light
+       where the mark sits, over a three-stop fall to the pane colour. The
+       middle stop is what stops a long ramp from banding on an OLED panel. */
+    background:
+      radial-gradient(86% 72% at 27% 6%,
+        color-mix(in srgb, var(--tint) 40%, transparent) 0%,
+        transparent 68%),
+      linear-gradient(157deg,
+        color-mix(in srgb, var(--tint) 24%, var(--pane-solid)) 0%,
+        color-mix(in srgb, var(--tint) 11%, var(--pane-solid)) 48%,
+        color-mix(in srgb, var(--tint) 3%, var(--pane-solid)) 100%);
+    /* The lit top edge is the same trick the glass panes use, so the tiles
+       read as part of the same material rather than as coloured cards. */
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--tint) 28%, transparent);
     color: var(--ink-2);
     text-align: left;
     cursor: pointer;
-    transition: transform .18s ease, border-color .18s ease, background .18s ease;
+    transition: transform .18s ease, border-color .18s ease,
+                box-shadow .18s ease, background .18s ease;
   }
   .tile::after {
     content: "";
@@ -1361,11 +1406,21 @@ html.android .nav button .dot { display: none; }
     overflow-wrap: anywhere;
     text-shadow: 0 2px 8px var(--pane-solid);
   }
+  /* The room you are standing in: same light, turned up, plus a cast glow so
+     it lifts off the sheet instead of only being a brighter rectangle. */
   .tile[aria-current="true"] {
     border-color: var(--tint);
-    background: linear-gradient(157deg,
-      color-mix(in srgb, var(--tint) 36%, var(--pane-solid)),
-      color-mix(in srgb, var(--tint) 10%, var(--pane-solid)) 70%);
+    background:
+      radial-gradient(86% 72% at 27% 6%,
+        color-mix(in srgb, var(--tint) 56%, transparent) 0%,
+        transparent 66%),
+      linear-gradient(157deg,
+        color-mix(in srgb, var(--tint) 38%, var(--pane-solid)) 0%,
+        color-mix(in srgb, var(--tint) 17%, var(--pane-solid)) 50%,
+        color-mix(in srgb, var(--tint) 5%, var(--pane-solid)) 100%);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--tint) 46%, transparent),
+      0 6px 20px color-mix(in srgb, var(--tint) 20%, transparent);
   }
   .tile[aria-current="true"] .section-icon { opacity: .38; transform: scale(1.16); }
   .tile:active { transform: scale(.97); }
@@ -1476,7 +1531,7 @@ html.android .nav button .dot { display: none; }
   <!-- Phone only; the desktop keeps its sidebar. A phone has room for one
        navigation control, and in this app that is the source: everything else
        on screen belongs to whichever source is open. -->
-  <header class="mbar">
+  <header class="mbar" id="mbar">
     <img class="mbar-mark" src="logo.png" alt="">
     <button class="mbar-source" id="mbar-source" aria-haspopup="dialog" aria-expanded="false">
       <span class="mbar-kicker">Source</span>
@@ -1509,7 +1564,18 @@ html.android .nav button .dot { display: none; }
       </div>
       <button class="ghost update" id="update-btn"><span class="spin"></span><span id="update-label">Update all components</span></button>
       <button class="ghost telegram" id="telegram-btn">Telegram · @BlueKnight_Net</button>
-      <button class="ghost" id="theme-btn"></button>
+      <button class="ghost" id="theme-btn">
+        <span class="theme-icon" aria-hidden="true">
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <circle cx="12" cy="12" r="4.2"/>
+            <path d="M12 2.6v2.2M12 19.2v2.2M21.4 12h-2.2M4.8 12H2.6M18.6 5.4l-1.6 1.6M7 17l-1.6 1.6M18.6 18.6L17 17M7 7L5.4 5.4"/>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a6.8 6.8 0 0 0 10.8 10.8z"/>
+          </svg>
+        </span>
+        <span id="theme-label"></span>
+      </button>
     </div>
   </aside>
 
@@ -2255,10 +2321,17 @@ function closeSheet() {
 function setupPhone() {
   syncPhoneProgress();
   const foot = document.querySelector(".side-foot");
+  const theme = $("theme-btn");
   if (!PHONE.matches) {
     if (foot) document.querySelector(".side").appendChild(foot);
+    // Last child of the sidebar footer is where it started.
+    if (foot && theme) foot.appendChild(theme);
     return;
   }
+  // Theme is a property of the app, not of the section you are picking, so on
+  // a phone it lives in the bar and is deliberately kept out of the sheet the
+  // rest of .side-foot moves into.
+  $("mbar").insertBefore(theme, $("mbar-more"));
   if (!setupPhone.done) {
     setupPhone.done = true;
     buildSheet();
@@ -2327,7 +2400,12 @@ function paintSignin() {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  $("theme-btn").textContent = theme === "dark" ? "Light theme" : "Dark theme";
+  // The button is named for what it does, not for what is currently on — and
+  // in the app bar it is icon-only, so the name has to survive as a label.
+  const going = theme === "dark" ? "light" : "dark";
+  $("theme-label").textContent = going === "light" ? "Light theme" : "Dark theme";
+  $("theme-btn").setAttribute("aria-label", `Switch to ${going} theme`);
+  $("theme-btn").title = `Switch to ${going} theme`;
 }
 
 const AUDIO_CONVERTER_FORMATS = new Set(["mp3", "flac", "wav", "m4a", "ogg", "aac"]);
@@ -2767,9 +2845,17 @@ function wire() {
 
   $("console-clear").onclick = () => { $("console").innerHTML = ""; };
   $("console-copy").onclick = () => {
-    navigator.clipboard.writeText($("console").innerText).then(
-      () => toast("Activity copied.", "ok"),
-      () => toast("Could not copy.", "err"));
+    const text = $("console").innerText;
+    // navigator.clipboard is not usable in the Android WebView — the page is
+    // loaded over file://, and writeText is refused there — so the app's own
+    // clipboard answers instead. Without this the button threw on the missing
+    // API and did nothing at all, not even report a failure.
+    const viaBridge = () => Promise.resolve(api().copy_text(text));
+    const written = (navigator.clipboard && navigator.clipboard.writeText)
+      ? navigator.clipboard.writeText(text).catch(viaBridge)
+      : viaBridge();
+    written.then(() => toast("Activity copied.", "ok"),
+                 () => toast("Could not copy.", "err"));
   };
 
   segment("format", v => { state.format = v; api().set_option("format", v); refreshStats(); });

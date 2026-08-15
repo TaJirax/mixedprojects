@@ -143,29 +143,44 @@ jobs:
 
       # Each architecture has its own cache and isolated compiler work tree.
       # Reusing either across ABIs can silently put ARM objects in an x86 APK.
-      - name: Cache FFmpeg for ${{ matrix.abi }}
-        id: ffmpeg-cache
+      - name: Cache native tools for ${{ matrix.abi }}
+        id: natives-cache
         uses: actions/cache@v4
         with:
           path: spoty/android/app/src/main/jniLibs/${{ matrix.abi }}
-          key: ffmpeg-android-${{ matrix.abi }}-${{ hashFiles('spoty/android/build_ffmpeg_android.sh') }}
+          key: natives-android-${{ matrix.abi }}-${{ hashFiles('spoty/android/build_ffmpeg_android.sh', 'spoty/android/build_quickjs_android.sh') }}
 
       - name: Build FFmpeg and LAME for ${{ matrix.abi }}
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        if: steps.natives-cache.outputs.cache-hit != 'true'
         env:
           ABI: ${{ matrix.abi }}
         working-directory: spoty/android
         run: bash ./build_ffmpeg_android.sh
+
+      # yt-dlp solves YouTube's signature challenge with a JavaScript engine and
+      # defaults to Deno, which has no Android build. Without an engine the
+      # media URL is unsigned and every YouTube download returns HTTP 403.
+      - name: Build QuickJS for ${{ matrix.abi }}
+        if: steps.natives-cache.outputs.cache-hit != 'true'
+        env:
+          ABI: ${{ matrix.abi }}
+        working-directory: spoty/android
+        run: bash ./build_quickjs_android.sh
 
       - name: Verify native executables
         env:
           ABI: ${{ matrix.abi }}
         working-directory: spoty/android
         run: |
-          test -s "app/src/main/jniLibs/$ABI/libffmpeg.so"
-          test -s "app/src/main/jniLibs/$ABI/libffprobe.so"
-          file "app/src/main/jniLibs/$ABI/libffmpeg.so"
-          file "app/src/main/jniLibs/$ABI/libffprobe.so"
+          for tool in libffmpeg libffprobe libquickjs; do
+            test -s "app/src/main/jniLibs/$ABI/$tool.so" \
+              || { echo "missing $tool.so for $ABI"; exit 1; }
+            file "app/src/main/jniLibs/$ABI/$tool.so"
+          done
+          # FFmpeg has no MP3 encoder of its own, and MP3 320 is the app's
+          # headline format — a build without LAME is broken, not smaller.
+          grep -q libmp3lame "app/src/main/jniLibs/$ABI/libffmpeg.so" \
+            || { echo "FFmpeg for $ABI was built without libmp3lame"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:

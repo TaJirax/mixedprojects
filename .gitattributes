@@ -1,2 +1,5 @@
 *.jar binary
 gradlew text eol=lf
+# A shell script checked out with CRLF fails on Linux CI with
+# "bad interpreter: /usr/bin/env bash^M". Pin them, like gradlew.
+*.sh text eol=lf

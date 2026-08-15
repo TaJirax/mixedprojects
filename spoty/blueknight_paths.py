@@ -20,8 +20,12 @@ from pathlib import Path
 # with a home directory it is not allowed to write to.
 # ---------------------------------------------------------------------------
 IS_ANDROID = bool(os.environ.get("ANDROID_ROOT") and os.environ.get("ANDROID_DATA"))
-IS_WINDOWS = sys.platform == "win32"
-IS_MACOS = sys.platform == "darwin"
+# Android wins over whatever sys.platform says. On a device it reports "linux"
+# so this is moot, but it keeps the flags mutually exclusive — which is what
+# lets a desktop simulate the phone by setting the two Android variables, and
+# stops EXE from becoming ".exe" when it does.
+IS_WINDOWS = sys.platform == "win32" and not IS_ANDROID
+IS_MACOS = sys.platform == "darwin" and not IS_ANDROID
 IS_LINUX = not (IS_WINDOWS or IS_MACOS or IS_ANDROID)
 OS_TAG = ("android" if IS_ANDROID else "win" if IS_WINDOWS
           else "mac" if IS_MACOS else "linux")

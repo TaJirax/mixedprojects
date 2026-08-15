@@ -1,11 +1,15 @@
 package net.blueknight.downloader
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.provider.OpenableColumns
 import android.view.View
 import android.webkit.CookieManager
@@ -21,6 +25,8 @@ import com.chaquo.python.Python
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * The window.
@@ -226,6 +232,14 @@ class MainActivity : AppCompatActivity() {
                     }
                     return ""
                 }
+                // The clipboard is an Activity service on Android. The engine's
+                // desktop implementation shells out to pbpaste/xclip, which do
+                // not exist here, so both directions are answered on this side.
+                "clipboard" -> return JSONObject.quote(readClipboard())
+                "copy_text" -> {
+                    writeClipboard(JSONArray(argsJson).optString(0))
+                    return ""
+                }
             }
             // Anything that begins work has to outlive the Activity being
             // backgrounded, and every such call is named start_*.
@@ -263,6 +277,23 @@ class MainActivity : AppCompatActivity() {
 
     private fun finishLogin() {
         val kind = loginKind ?: return
+        bridge.callAttr("save_cookies", kind, harvestCookies(kind))
+
+        loginView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it); it.destroy() }
+        loginView = null
+        loginKind = null
+    }
+
+    /**
+     * Read the live session for a source out of the system CookieManager.
+     *
+     * Called two ways: once when a sign-in finishes, and again — headless, with
+     * no window open — whenever the engine needs to refresh a stored session
+     * mid-download. A desktop re-reads a browser profile for this; the phone's
+     * equivalent is right here, and it is why a rotated YouTube cookie does not
+     * have to look like never having signed in.
+     */
+    fun harvestCookies(kind: String): String {
         val manager = CookieManager.getInstance()
         manager.flush()
 
@@ -274,11 +305,43 @@ class MainActivity : AppCompatActivity() {
             val domain = domains.callAttr("__getitem__", i).toString()
             manager.getCookie(domain)?.let { jar.put(JSONArray().put(domain).put(it)) }
         }
-        bridge.callAttr("save_cookies", kind, jar.toString())
+        return jar.toString()
+    }
 
-        loginView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it); it.destroy() }
-        loginView = null
-        loginKind = null
+    // ----------------------------------------------------------------------
+    // Clipboard.
+    //
+    // ClipboardManager is documented as a main-thread service, and a bridge
+    // call arrives on one of the WebView's own threads, so the work is posted
+    // and waited for. The guard matters: were this ever called from the main
+    // thread, posting and then waiting on it would deadlock the app.
+    // ----------------------------------------------------------------------
+    private fun onMainThread(work: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) { work(); return }
+        val done = CountDownLatch(1)
+        runOnUiThread { try { work() } finally { done.countDown() } }
+        done.await(2, TimeUnit.SECONDS)
+    }
+
+    private fun readClipboard(): String {
+        var text = ""
+        onMainThread {
+            val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = manager.primaryClip
+            if (clip != null && clip.itemCount > 0) {
+                // coerceToText, not .text: a link shared as a styled span or a
+                // URI item still has to come back as the string the field wants.
+                text = clip.getItemAt(0).coerceToText(this).toString().trim()
+            }
+        }
+        return text
+    }
+
+    private fun writeClipboard(text: String) {
+        onMainThread {
+            val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            manager.setPrimaryClip(ClipData.newPlainText("Blue Knight", text))
+        }
     }
 
     private fun openDownloadsFolder() {

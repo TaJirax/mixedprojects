@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "6.8.7"
+APP_VERSION = "6.9.0"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -328,6 +328,12 @@ PYTHON_COMPONENTS = {
 # pikepdf wraps qpdf, a C++ library with no Android build. pypdf does the same
 # reading and rewriting in pure Python, so it stands in there; the desktops keep
 # pikepdf, which is faster and stricter on damaged files.
+# Installed by the Android shell at boot: given a source, re-reads its live
+# session from the system CookieManager and rewrites the jar, returning
+# (cookies written, whether a session cookie was among them). Left None on the
+# desktops, which re-read a real browser profile instead.
+SESSION_REFRESHER = None
+
 PDF_LIBRARY = "pypdf" if IS_ANDROID else "pikepdf"
 PYTHON_COMPONENTS[PDF_LIBRARY] = {
     "label": PDF_LIBRARY, "module": PDF_LIBRARY,
@@ -787,6 +793,31 @@ def read_clipboard():
     return ""
 
 
+# Writing takes a different program from reading on every desktop. Android has
+# neither and answers in the shell, which owns the ClipboardManager.
+CLIPBOARD_WRITERS = {
+    "win": (["clip"],),
+    "mac": (["pbcopy"],),
+    "linux": (["wl-copy"], ["xclip", "-selection", "clipboard"],
+              ["xsel", "--clipboard", "--input"]),
+    "android": (),
+}
+
+
+def write_clipboard(text):
+    """Put text on the clipboard. True when a program accepted it."""
+    for command in CLIPBOARD_WRITERS[OS_TAG]:
+        try:
+            child = pyshell.popen(command, stdin=subprocess.PIPE,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            child.communicate(text, timeout=6)
+            if child.returncode == 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 class Var:
     """Minimal observable value, standing in for the old Tk variables."""
 
@@ -800,6 +831,34 @@ class Var:
         self._value = value
 
 
+def android_shim(target, name):
+    """Give a packaged Android executable back its real name.
+
+    Two rules collide on Android. The system only unpacks a bundled binary, and
+    only marks it executable, when it sits in the native library directory
+    under a lib*.so name. yt-dlp, meanwhile, identifies a program by its file
+    name — it will never accept "libffmpeg.so" as ffmpeg, so merging a video
+    with its audio track and writing an MP3 would both fail with the tool
+    apparently missing.
+
+    A symlink satisfies both: the link carries the name the tool is looked up
+    by, and the target stays the file the kernel is willing to execute. The
+    link cannot be a copy, because app storage is mounted no-exec from API 29.
+    """
+    link = app_data_dir() / "bin" / name
+    try:
+        if link.is_symlink() and link.resolve() == Path(target).resolve():
+            return link
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.unlink(missing_ok=True)
+        link.symlink_to(target)
+        return link
+    except OSError:
+        # No symlink support: the raw path still runs, it just cannot be found
+        # by name — which the caller reports rather than failing silently.
+        return Path(target)
+
+
 def bundled_tool(name):
     """Find a packaged tool in both PyInstaller one-file and one-folder layouts."""
     # Android unpacks a bundled executable only from the native library
@@ -808,10 +867,12 @@ def bundled_tool(name):
     tools_override = os.environ.get("BLUEKNIGHT_TOOLS")
     if tools_override:
         stem = Path(name).stem
-        for candidate in (Path(tools_override) / f"lib{stem}.so",
-                          Path(tools_override) / name):
-            if candidate.is_file():
-                return str(candidate)
+        packaged = Path(tools_override) / f"lib{stem}.so"
+        if packaged.is_file():
+            return str(android_shim(packaged, stem))
+        direct = Path(tools_override) / name
+        if direct.is_file():
+            return str(direct)
 
     roots = []
     bundle_root = getattr(sys, "_MEIPASS", None)
@@ -2025,6 +2086,30 @@ class SpotifyDownloader:
         finally:
             archive_path.unlink(missing_ok=True)
 
+    def js_runtime(self):
+        """The JavaScript engine yt-dlp gets, as (name, path).
+
+        This is not optional for YouTube. Its media URLs are signed by a
+        JavaScript challenge, and without an engine to run it yt-dlp falls back
+        to its own interpreter, which current player versions defeat — the
+        unsigned URL then comes back as HTTP 403 Forbidden. That is exactly the
+        Android-only failure, because Deno publishes no Android build and the
+        flag was simply never passed there.
+
+        QuickJS is the answer on the phone: one small C interpreter that
+        cross-compiles with the NDK, and one yt-dlp supports by name.
+        """
+        if self.deno_cmd and Path(self.deno_cmd).is_file():
+            return "deno", self.deno_cmd
+        node = shutil.which("node")
+        if node:
+            return "node", node
+        quickjs = (bundled_tool(f"quickjs{EXE}") or bundled_tool(f"qjs{EXE}")
+                   or shutil.which("qjs"))
+        if quickjs:
+            return "quickjs", quickjs
+        return None, None
+
     def find_spotdl(self):
         return self.find_tool("spotdl")
 
@@ -3139,10 +3224,12 @@ class SpotifyDownloader:
         # Some extractors and generic pages also ship JavaScript challenges.
         # Supplying Deno is harmless when unused and lets yt-dlp invoke it when
         # an extractor supports EJS or another external challenge script.
-        runtime = (self.deno_cmd if self.deno_cmd and Path(self.deno_cmd).is_file()
-                   else shutil.which("node"))
+        runtime_name, runtime = self.js_runtime()
         if runtime:
-            runtime_name = "deno" if Path(runtime).stem.lower() == "deno" else "node"
+            # yt-dlp enables only Deno by default, so a lower-priority engine is
+            # ignored unless the defaults are cleared first.
+            if runtime_name != "deno":
+                cmd += ["--no-js-runtimes"]
             cmd += ["--js-runtimes", f"{runtime_name}:{runtime}"]
 
         # Impersonation is deliberately a challenge-only General fallback.
@@ -3461,6 +3548,29 @@ class SpotifyDownloader:
         """
         if kind not in SIGNIN_PAGES or self._login_window is not None:
             return False
+
+        if IS_ANDROID:
+            # A phone has no browser profile to re-read. The live session is in
+            # the system CookieManager — the same place the in-app sign-in put
+            # it — and only the shell can reach that, so it installs the hook.
+            # Without this the stored login is never refreshed, and a rotated
+            # YouTube cookie looks exactly like never having signed in at all.
+            if SESSION_REFRESHER is None:
+                return False
+            try:
+                count, signed_in = SESSION_REFRESHER(kind)
+            except Exception as exc:
+                self.log(f"Could not refresh the {kind.title()} session: {str(exc)[:150]}",
+                         "warning")
+                return False
+            if not signed_in:
+                return False
+            if announce:
+                self.log(f"Refreshed the {kind.title()} session ({count} cookies).",
+                         "success")
+            self.ui("cookie_status", self.cookie_status())
+            return True
+
         window = None
         try:
             window = webview.create_window(
@@ -4417,6 +4527,10 @@ class Api:
 
     def clipboard(self):
         return read_clipboard()
+
+    def copy_text(self, text):
+        """Fallback for pages whose browser refuses navigator.clipboard."""
+        return write_clipboard(str(text or ""))
 
     def about(self):
         self._app.notify(

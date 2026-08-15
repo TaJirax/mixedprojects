@@ -18,6 +18,7 @@ ladder — is the same code path the Windows build runs.
 
 import contextlib
 import json
+import time
 from pathlib import Path
 
 import blueknight_paths
@@ -42,6 +43,10 @@ def boot(activity):
         return
     _app = engine.SpotifyDownloader()
     _api = engine.Api(_app)
+    # The engine refreshes a stale login by re-reading the browser profile it
+    # signed in through. On a phone that profile is the system CookieManager,
+    # which only the shell can reach, so the way in is handed over here.
+    engine.SESSION_REFRESHER = refresh_session
     # The desktop Api reaches for a pywebview window to open dialogs with.
     # Those methods are intercepted in Kotlin before they ever get here, so the
     # attribute stays None and any missed path fails loudly rather than silently.
@@ -87,8 +92,13 @@ def browser_ua():
     return engine.BROWSER_UA
 
 
-def save_cookies(kind, jar_json):
-    """Write the shell's harvested cookies as the Netscape jar yt-dlp reads."""
+def _write_jar(kind, jar_json):
+    """Turn the shell's harvested cookies into the Netscape jar yt-dlp reads.
+
+    Returns (jar path, cookies written, whether a session cookie was among
+    them). Shared by the sign-in flow and the silent mid-download refresh, so
+    the two can never disagree about what a saved session looks like.
+    """
     site = engine.cookie_site(kind)
     harvested = json.loads(jar_json or "[]")
     expiry = int(time.time()) + _JAR_LIFETIME
@@ -115,7 +125,34 @@ def save_cookies(kind, jar_json):
 
     jar = cookie_dir(kind) / f"{site}_cookies.txt"
     jar.parent.mkdir(parents=True, exist_ok=True)
-    jar.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Only replace a working jar once there is something to replace it with; a
+    # refresh that reads nothing must not delete the session it was checking.
+    if written:
+        jar.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    session_names = set(engine.SITE_SESSION_COOKIES.get(site, ()))
+    signed_in = any(name in session_names for _, name in seen)
+    return jar, written, signed_in
+
+
+def refresh_session(kind):
+    """Re-read a live session from CookieManager, mid-download and unattended.
+
+    Installed as the engine's SESSION_REFRESHER. The engine calls this when a
+    stored login stops working, which on YouTube happens routinely because it
+    rotates cookies on any open tab.
+    """
+    if _activity is None:
+        return 0, False
+    jar, written, signed_in = _write_jar(kind, _activity.harvestCookies(kind))
+    if written and signed_in:
+        record_jar(kind, jar, "refresh")
+    return written, signed_in
+
+
+def save_cookies(kind, jar_json):
+    """Write the shell's harvested cookies after an interactive sign-in."""
+    jar, written, signed_in = _write_jar(kind, jar_json)
 
     _app._login_kind = None
     _app.ui("signin", None)
@@ -125,8 +162,6 @@ def save_cookies(kind, jar_json):
         _app.notify("No cookies were found. Finish signing in, then try again.", "err")
         return {"cookies": 0}
 
-    session_names = set(engine.SITE_SESSION_COOKIES.get(site, ()))
-    signed_in = any(name in session_names for _, name in seen)
     entry = record_jar(kind, jar, "sign-in")
     _app.log(f"Signed in to {kind.title()}: {written} cookies saved to "
              f"{jar.parent.name}/{jar.name}.", "success")
@@ -182,9 +217,10 @@ def android_import_failed(message):
     _app.notify(str(message or "The selected item could not be opened."), "err")
 
 
-def clipboard():
-    """Android has no clipboard command; the shell reads it and the page pastes."""
-    return ""
+def js_runtime_hint():
+    """Report which JavaScript engine yt-dlp will get, for the components panel."""
+    name, path = (_app.js_runtime() if _app else (None, None))
+    return {"name": name, "path": path}
 
 
 def is_working():
@@ -209,5 +245,5 @@ _LOCAL = {
     "android_picked_media": android_picked_media,
     "android_picked_image_folder": android_picked_image_folder,
     "android_import_failed": android_import_failed,
-    "clipboard": clipboard,
+    "js_runtime_hint": js_runtime_hint,
 }
