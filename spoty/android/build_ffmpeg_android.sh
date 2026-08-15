@@ -23,7 +23,7 @@ JNI_DIR="$HERE/app/src/main/jniLibs/$ABI"
 # single space anywhere in the build tree breaks it with errors as unhelpful
 # as "ambiguous redirect". The checkout is allowed to live wherever it likes;
 # the build tree is put somewhere without spaces regardless.
-WORK="${WORK:-$HOME/.blueknight-ffmpeg-build}"
+WORK="${WORK:-$HOME/.blueknight-ffmpeg-build/$ABI}"
 case "$WORK" in
     *\ *) echo "ERROR: the build path must not contain spaces: $WORK" >&2; exit 1 ;;
 esac
@@ -59,6 +59,7 @@ WORK="$(winpath "$WORK")"
 case "$ABI" in
     arm64-v8a)   ARCH=aarch64; TRIPLE=aarch64-linux-android ;;
     armeabi-v7a) ARCH=arm;     TRIPLE=armv7a-linux-androideabi ;;
+    x86)         ARCH=x86;     TRIPLE=i686-linux-android ;;
     x86_64)      ARCH=x86_64;  TRIPLE=x86_64-linux-android ;;
     *) echo "Unsupported ABI $ABI" >&2; exit 1 ;;
 esac

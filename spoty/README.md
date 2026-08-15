@@ -254,15 +254,19 @@ cd spoty/android
 ./gradlew lintRelease testReleaseUnitTest assembleRelease
 ```
 
-The Android build embeds the same Python engine and web interface, an arm64
-Python runtime, and locally built FFmpeg/FFprobe executables. Its system pickers
+The universal Android build embeds the same Python engine and web interface,
+Python runtimes and locally built FFmpeg/FFprobe executables for `arm64-v8a`,
+`armeabi-v7a`, `x86` and `x86_64`. Smaller single-ABI APKs can be built with
+`./gradlew -PtargetAbi=arm64-v8a assembleRelease` (replace the ABI as needed).
+Its system pickers
 import media and documents without broad storage permission; completed files are
 also copied to the folder selected in the app. Modern DOCX/XLSX/PPTX,
 OpenDocument, EPUB/FB2, text, image and PDF conversions run on-device. Legacy
 binary Office and Kindle formats still require LibreOffice or Calibre on desktop.
 
-CI builds Windows x64, Linux x64, macOS ARM64 and Android ARM64 on every
-downloader change. A tag named `downloader-v6.8.2` publishes all four artifacts.
+CI builds Windows x64, Linux x64, macOS ARM64, one universal Android APK and
+four single-ABI Android APKs on every downloader change. A tag named
+`downloader-v6.8.3` publishes all eight artifacts.
 Dedicated Android signing
 uses `ANDROID_KEYSTORE_BASE64`, `ANDROID_STORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
 `ANDROID_KEY_PASSWORD` repository secrets. When those are absent, this repository
@@ -276,7 +280,7 @@ certificate instead of receiving a new CI debug key on every build.
 | `blueknight_paths.py` | download folders, cookie discovery, the jar registry |
 | `instagram.py`, `youtubedl.py`, `tiktok.py` | standalone CLI versions |
 | `build_portable.ps1` | one-file build |
-| `android/` | Kotlin/Chaquopy Android shell and arm64 release build |
+| `android/` | Kotlin/Chaquopy Android shell and four-ABI release builds |
 
 `blueknight_paths.py` runs its own checks with `python blueknight_paths.py`.
 

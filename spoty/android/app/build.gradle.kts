@@ -9,6 +9,16 @@ plugins {
 val appRoot = rootProject.projectDir.parentFile   // the spoty/ folder
 val signingPropsFile = rootProject.file("keystore.properties")
 val repositoryKeystore = rootProject.file("../../keystore/whitebooster.jks")
+val supportedAbis = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+val requestedAbi = providers.gradleProperty("targetAbi").orNull ?: "universal"
+val packagedAbis = if (requestedAbi == "universal") {
+    supportedAbis
+} else {
+    require(requestedAbi in supportedAbis) {
+        "Unsupported targetAbi '$requestedAbi'. Use universal or one of ${supportedAbis.joinToString()}."
+    }
+    listOf(requestedAbi)
+}
 
 // The engine is not forked for Android: the same files that the Windows,
 // Linux and macOS builds run are copied in as the Python source set, so a fix
@@ -41,12 +51,14 @@ android {
         applicationId = "net.blueknight.downloader"
         minSdk = 24          // Android 7.0: the oldest API the WebView bridge needs
         targetSdk = 34
-        versionCode = 60802
-        versionName = "6.8.2"
+        versionCode = 60803
+        versionName = "6.8.3"
 
-        // One ABI. Every extra one adds a full Python runtime and a second
-        // FFmpeg to the APK, and arm64 is every Android device sold since 2017.
-        ndk { abiFilters += listOf("arm64-v8a") }
+        // A normal build is universal. CI also passes -PtargetAbi=<ABI> to
+        // produce smaller architecture-specific APKs from the same sources.
+        // Python 3.11 is deliberate: it is the newest Chaquopy runtime which
+        // still supports the two 32-bit Android ABIs.
+        ndk { abiFilters += packagedAbis }
     }
 
     signingConfigs {

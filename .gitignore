@@ -36,6 +36,7 @@ spoty/android/app/src/main/python/spotify_downloader.py
 spoty/android/app/src/main/python/blueknight_paths.py
 spoty/android/app/src/main/python/pyshell.py
 spoty/android/app/src/main/python/__pycache__/
+spoty/android/__pycache__/
 spoty/android/.ffmpeg-build/
 spoty/android/out/
 # Signing material must never be committed.

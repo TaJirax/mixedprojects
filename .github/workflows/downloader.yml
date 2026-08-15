@@ -125,8 +125,54 @@ jobs:
   # publishes an FFmpeg executable for Android any more, and yt-dlp needs a
   # real binary to launch, not a library binding.
   # --------------------------------------------------------------------------
-  android:
+  android-native:
     needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86, x86_64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Each architecture has its own cache and isolated compiler work tree.
+      # Reusing either across ABIs can silently put ARM objects in an x86 APK.
+      - name: Cache FFmpeg for ${{ matrix.abi }}
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: spoty/android/app/src/main/jniLibs/${{ matrix.abi }}
+          key: ffmpeg-android-${{ matrix.abi }}-${{ hashFiles('spoty/android/build_ffmpeg_android.sh') }}
+
+      - name: Build FFmpeg and LAME for ${{ matrix.abi }}
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        env:
+          ABI: ${{ matrix.abi }}
+        working-directory: spoty/android
+        run: bash ./build_ffmpeg_android.sh
+
+      - name: Verify native executables
+        env:
+          ABI: ${{ matrix.abi }}
+        working-directory: spoty/android
+        run: |
+          test -s "app/src/main/jniLibs/$ABI/libffmpeg.so"
+          test -s "app/src/main/jniLibs/$ABI/libffprobe.so"
+          file "app/src/main/jniLibs/$ABI/libffmpeg.so"
+          file "app/src/main/jniLibs/$ABI/libffprobe.so"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blueknight-native-${{ matrix.abi }}
+          path: spoty/android/app/src/main/jniLibs/${{ matrix.abi }}/*
+          if-no-files-found: error
+
+  android:
+    needs: [check, android-native]
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [universal, arm64-v8a, armeabi-v7a, x86, x86_64]
     runs-on: ubuntu-24.04
     env:
       # A step's `if` cannot read the secrets context, so the one thing that
@@ -144,26 +190,22 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
 
-      # A full FFmpeg build is ~20 minutes; it only changes when the script or
-      # the pinned version does, so it is keyed on both and otherwise restored.
-      - name: Cache the FFmpeg build
-        id: ffmpeg-cache
-        uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: spoty/android/app/src/main/jniLibs
-          key: ffmpeg-android-${{ runner.os }}-${{ hashFiles('spoty/android/build_ffmpeg_android.sh') }}
-
-      - name: Build FFmpeg and LAME for arm64
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        working-directory: spoty/android
-        run: bash ./build_ffmpeg_android.sh
-
-      - name: Verify the FFmpeg binaries exist
-        working-directory: spoty/android
-        run: |
-          test -s app/src/main/jniLibs/arm64-v8a/libffmpeg.so
-          test -s app/src/main/jniLibs/arm64-v8a/libffprobe.so
-          file app/src/main/jniLibs/arm64-v8a/libffmpeg.so
+          name: blueknight-native-arm64-v8a
+          path: spoty/android/app/src/main/jniLibs/arm64-v8a
+      - uses: actions/download-artifact@v4
+        with:
+          name: blueknight-native-armeabi-v7a
+          path: spoty/android/app/src/main/jniLibs/armeabi-v7a
+      - uses: actions/download-artifact@v4
+        with:
+          name: blueknight-native-x86
+          path: spoty/android/app/src/main/jniLibs/x86
+      - uses: actions/download-artifact@v4
+        with:
+          name: blueknight-native-x86_64
+          path: spoty/android/app/src/main/jniLibs/x86_64
 
       # Signing is optional so that a fork, or a pull request from one, still
       # produces an installable APK. Without the secrets the release build is
@@ -178,8 +220,6 @@ jobs:
         working-directory: spoty/android
         run: |
           echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
-          # Written through the environment rather than interpolated into the
-          # script, so a password containing shell metacharacters cannot run.
           {
             echo "storeFile=release.keystore"
             echo "storePassword=$STORE_PASSWORD"
@@ -198,33 +238,32 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # Windows checkouts do not retain the Unix executable bit in this repo.
       - name: Make the Gradle wrapper executable
         working-directory: spoty/android
         run: chmod +x gradlew
 
-      - name: Lint and assemble the APK
+      - name: Lint and run Android unit tests
+        if: matrix.target == 'universal'
         working-directory: spoty/android
-        run: ./gradlew lintRelease testReleaseUnitTest assembleRelease --no-daemon --stacktrace
+        run: ./gradlew lintRelease testReleaseUnitTest --no-daemon --stacktrace
 
-      - name: Verify packaged Android components
+      - name: Assemble the ${{ matrix.target }} APK
         working-directory: spoty/android
-        run: |
-          unzip -l app/build/outputs/apk/release/*.apk | grep -q 'lib/arm64-v8a/libffmpeg.so'
-          unzip -l app/build/outputs/apk/release/*.apk | grep -q 'lib/arm64-v8a/libffprobe.so'
-          unzip -l app/build/outputs/apk/release/*.apk | grep -q 'assets/chaquopy/app.imy'
-          unzip -l app/build/outputs/apk/release/*.apk | grep -q 'assets/web/index.html'
+        run: ./gradlew -PtargetAbi=${{ matrix.target }} assembleRelease --no-daemon --stacktrace
 
-      - name: Name the APK after its version
+      - name: Name and verify the APK
         working-directory: spoty/android
         run: |
           mkdir -p out
           cp app/build/outputs/apk/release/*.apk \
-             "out/BlueKnightDownloader-android-arm64.apk"
+             "out/BlueKnightDownloader-android-${{ matrix.target }}.apk"
+          python verify_apk.py \
+             "out/BlueKnightDownloader-android-${{ matrix.target }}.apk" \
+             "${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: blueknight-android-arm64
+          name: blueknight-android-${{ matrix.target }}
           path: spoty/android/out/*.apk
           if-no-files-found: error
 
