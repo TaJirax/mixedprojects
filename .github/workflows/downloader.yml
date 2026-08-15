@@ -135,6 +135,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install the x86 assembler
+        if: startsWith(matrix.abi, 'x86')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm
+
       # Each architecture has its own cache and isolated compiler work tree.
       # Reusing either across ABIs can silently put ARM objects in an x86 APK.
       - name: Cache FFmpeg for ${{ matrix.abi }}
