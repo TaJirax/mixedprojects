@@ -51,7 +51,7 @@
   --src-soundcloud: #ff7a1a;
   --src-x:          #dfe6ee;
   --src-general:    #5aa0ff;
-  --src-pdf:        #ffb454;
+  --src-pdf:        #a970ff;
   --src-telegram:   #2aabee;
 
   --r-lg: 18px;
@@ -1404,10 +1404,11 @@ html.android .nav button .dot { display: none; }
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    /* The icon takes the space above; the label keeps the bottom. */
-    justify-content: space-between;
+    /* Mark and label are one object, centred as a pair, so the name reads as
+       belonging to the icon above it rather than as a caption on the tile. */
+    justify-content: center;
     align-items: center;
-    gap: 4px;
+    gap: 7px;
     min-height: 0;
     padding: 9px 8px 10px;
     border: 1px solid color-mix(in srgb, var(--tint) 26%, var(--edge-2));
@@ -1463,18 +1464,17 @@ html.android .nav button .dot { display: none; }
       rgb(255 255 255 / .30) 0%, rgb(255 255 255 / .08) 40%, transparent 64%);
     transform: rotate(-4deg);
   }
-  /* Just enough footing to seat the label. It used to run a fifth of the way
-     up and that dark band, not the gradient, is what made these read muddy;
-     with the mark lifted clear of the text the label needs far less help. */
+  /* A pool under the label, following it to the middle of the tile. A bottom
+     band would now be shading empty glass and leaving the text unhelped. */
   .tile::after {
     content: "";
     position: absolute;
     inset: 0;
     z-index: 1;
     pointer-events: none;
-    background: linear-gradient(to top,
-      color-mix(in srgb, var(--pane-solid) 40%, transparent) 0%,
-      transparent 32%);
+    background: radial-gradient(72% 40% at 50% 68%,
+      color-mix(in srgb, var(--pane-solid) 44%, transparent) 0%,
+      transparent 78%);
   }
   /* The mark is the subject now, not texture — an icon you are meant to read
      rather than a watermark you are meant to ignore. It is the same chip the
@@ -1483,7 +1483,6 @@ html.android .nav button .dot { display: none; }
   .tile .section-icon {
     position: relative;
     z-index: 2;
-    margin: auto 0;
     width: clamp(28px, 5.1dvh, 40px);
     height: clamp(28px, 5.1dvh, 40px);
     --section-tint: var(--tint);
