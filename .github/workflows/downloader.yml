@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   # --------------------------------------------------------------------------
-  # The engine's own checks, once, before five runners spend time packaging it.
+  # The engine's own checks, once, before the platform runners package it.
   # --------------------------------------------------------------------------
   check:
     runs-on: ubuntu-latest
@@ -49,8 +49,6 @@ jobs:
         include:
           - { os: windows-latest,   target: windows-x64 }
           - { os: ubuntu-24.04,     target: linux-x64 }
-          - { os: ubuntu-24.04-arm, target: linux-arm64 }
-          - { os: macos-15-intel,   target: macos-x64 }    # Intel
           - { os: macos-14,         target: macos-arm64 }  # Apple Silicon
     runs-on: ${{ matrix.os }}
     steps:
@@ -59,8 +57,16 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
 
+      - name: Install Python dependencies
+        working-directory: spoty
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
       # pywebview draws through WebKitGTK on Linux and fails at import without
       # it. On Windows it uses WebView2 and on macOS WKWebView, both built in.
+      # Install the Python dependencies first: after PYTHONPATH is exported,
+      # pip would otherwise see Ubuntu's protected system copy of itself.
       - name: Install WebKitGTK
         if: startsWith(matrix.os, 'ubuntu')
         run: |
@@ -72,12 +78,6 @@ jobs:
           # see Ubuntu's ABI-compatible python3-gi package. Expose that package
           # both to the build-time probe and to PyInstaller's import analysis.
           echo "PYTHONPATH=/usr/lib/python3/dist-packages" >> "$GITHUB_ENV"
-
-      - name: Install Python dependencies
-        working-directory: spoty
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
 
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'

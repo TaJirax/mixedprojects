@@ -261,8 +261,9 @@ also copied to the folder selected in the app. Modern DOCX/XLSX/PPTX,
 OpenDocument, EPUB/FB2, text, image and PDF conversions run on-device. Legacy
 binary Office and Kindle formats still require LibreOffice or Calibre on desktop.
 
-CI builds Windows, Linux, macOS and Android on every downloader change. A tag
-named `downloader-v6.8.2` publishes all six artifacts. Dedicated Android signing
+CI builds Windows x64, Linux x64, macOS ARM64 and Android ARM64 on every
+downloader change. A tag named `downloader-v6.8.2` publishes all four artifacts.
+Dedicated Android signing
 uses `ANDROID_KEYSTORE_BASE64`, `ANDROID_STORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
 `ANDROID_KEY_PASSWORD` repository secrets. When those are absent, this repository
 reuses its existing WhiteBooster release signer so APK upgrades keep a stable
