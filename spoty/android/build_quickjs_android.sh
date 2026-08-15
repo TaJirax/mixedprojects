@@ -69,11 +69,20 @@ cmake -S "$SRC" -B "$WORK/build" \
     -DBUILD_SHARED_LIBS=OFF
 
 echo "==> compiling"
-cmake --build "$WORK/build" --target qjs --config Release -j"$(nproc 2>/dev/null || echo 4)"
+# The CLI target is qjs_exe; the target simply called "qjs" is the static
+# library, and building that produces libqjs.a and no interpreter at all.
+cmake --build "$WORK/build" --target qjs_exe --config Release -j"$(nproc 2>/dev/null || echo 4)"
 
-BINARY="$(find "$WORK/build" -name "qjs" -type f -perm -u+x | head -1)"
-[ -n "$BINARY" ] || BINARY="$(find "$WORK/build" -name "qjs" -type f | head -1)"
-[ -n "$BINARY" ] || { echo "qjs was not produced" >&2; exit 1; }
+# An archive is not an interpreter. Insist on a real executable image, or the
+# APK ships a file yt-dlp cannot run and YouTube fails exactly as before.
+BINARY=""
+while IFS= read -r found; do
+    case "$found" in *.a|*.so) continue ;; esac
+    if head -c 4 "$found" | grep -q "ELF"; then BINARY="$found"; break; fi
+done <<EOF
+$(find "$WORK/build" -name "qjs" -type f)
+EOF
+[ -n "$BINARY" ] || { echo "no qjs executable was produced" >&2; exit 1; }
 
 # lib*.so is the only shape Android will unpack and leave executable.
 install -m 0755 "$BINARY" "$JNI_DIR/libquickjs.so"
