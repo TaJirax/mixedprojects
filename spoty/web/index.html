@@ -1109,10 +1109,9 @@ html.android .nav button .dot { display: none; }
 
   /* --------------------------------------------------------- the page --- */
   .main { border-radius: var(--r-lg); }
-  /* The extra bottom padding is an optical correction, not a gap: a group
-     centred by measurement sits low to the eye, so it is nudged up by biasing
-     the free space. Only ever seen when the content is shorter than the area. */
-  .page { padding: 20px 14px 52px; }
+  /* Enough room that the first line is not flush under the bar, and no more.
+     The controls stay at the top where a thumb expects them. */
+  .page { padding: 13px 14px 12px; }
   .page-head {
     display: grid;
     grid-template-columns: 44px minmax(0, 1fr);
@@ -1232,12 +1231,9 @@ html.android .nav button .dot { display: none; }
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    /* Sit the control group in the middle of its area with air above it,
-       rather than pinned under the bar with all the slack below.
-       "safe" matters: on a tall page — YouTube, the converter — plain centring
-       would push the first row off the top of the scroll container where it
-       could not be reached. */
-    justify-content: safe center;
+    /* Top-aligned. Centring the group left a band of empty glass above the
+       eyebrow that read as a mistake rather than as breathing room. */
+    justify-content: flex-start;
   }
   .runbar {
     flex: 0 0 clamp(162px, 28.08dvh, 216px);
@@ -1335,44 +1331,47 @@ html.android .nav button .dot { display: none; }
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    justify-content: flex-end;
+    justify-content: center;
+    align-items: center;
     gap: 6px;
     min-height: 82px;
     padding: 11px 10px;
     border: 1px solid var(--edge-2);
     border-radius: var(--r-md);
-    /* Each source mark becomes the tile's artwork. A dark lower wash keeps the
-       label crisp without reducing the logo to a small badge.
-       Two layers rather than one flat diagonal: a radial that puts the light
-       where the mark sits, over a three-stop fall to the pane colour. The
-       middle stop is what stops a long ramp from banding on an OLED panel. */
+    /* Each source mark becomes the tile's artwork, and the tile is lit by its
+       own colour: a radial where the mark sits, over a three-stop fall to the
+       pane. The middle stop is what stops a long ramp banding on an OLED. */
     background:
-      radial-gradient(86% 72% at 27% 6%,
-        color-mix(in srgb, var(--tint) 40%, transparent) 0%,
-        transparent 68%),
+      radial-gradient(92% 78% at 30% 4%,
+        color-mix(in srgb, var(--tint) 62%, transparent) 0%,
+        transparent 72%),
       linear-gradient(157deg,
-        color-mix(in srgb, var(--tint) 24%, var(--pane-solid)) 0%,
-        color-mix(in srgb, var(--tint) 11%, var(--pane-solid)) 48%,
-        color-mix(in srgb, var(--tint) 3%, var(--pane-solid)) 100%);
+        color-mix(in srgb, var(--tint) 42%, var(--pane-solid)) 0%,
+        color-mix(in srgb, var(--tint) 24%, var(--pane-solid)) 52%,
+        color-mix(in srgb, var(--tint) 11%, var(--pane-solid)) 100%);
     /* The lit top edge is the same trick the glass panes use, so the tiles
        read as part of the same material rather than as coloured cards. */
-    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--tint) 28%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--tint) 34%, transparent);
     color: var(--ink-2);
-    text-align: left;
+    text-align: center;
     cursor: pointer;
     transition: transform .18s ease, border-color .18s ease,
                 box-shadow .18s ease, background .18s ease;
   }
+  /* An even veil, not the bottom-weighted scrim this replaced — that one was
+     doing most of the darkening. It only has to hold the label's contrast now
+     that the label sits in the middle, so it is weakest at the lit corner and
+     settles over the centre. */
   .tile::after {
     content: "";
     position: absolute;
     inset: 0;
     z-index: 1;
     pointer-events: none;
-    background: linear-gradient(180deg,
-      transparent 16%,
-      color-mix(in srgb, var(--pane-solid) 32%, transparent) 52%,
-      color-mix(in srgb, var(--pane-solid) 92%, transparent) 100%);
+    background: radial-gradient(96% 84% at 50% 56%,
+      color-mix(in srgb, var(--pane-solid) 46%, transparent) 0%,
+      color-mix(in srgb, var(--pane-solid) 22%, transparent) 68%,
+      transparent 100%);
   }
   .tile .section-icon {
     position: absolute;
@@ -1411,16 +1410,16 @@ html.android .nav button .dot { display: none; }
   .tile[aria-current="true"] {
     border-color: var(--tint);
     background:
-      radial-gradient(86% 72% at 27% 6%,
-        color-mix(in srgb, var(--tint) 56%, transparent) 0%,
-        transparent 66%),
+      radial-gradient(92% 78% at 30% 4%,
+        color-mix(in srgb, var(--tint) 78%, transparent) 0%,
+        transparent 70%),
       linear-gradient(157deg,
-        color-mix(in srgb, var(--tint) 38%, var(--pane-solid)) 0%,
-        color-mix(in srgb, var(--tint) 17%, var(--pane-solid)) 50%,
-        color-mix(in srgb, var(--tint) 5%, var(--pane-solid)) 100%);
+        color-mix(in srgb, var(--tint) 58%, var(--pane-solid)) 0%,
+        color-mix(in srgb, var(--tint) 34%, var(--pane-solid)) 52%,
+        color-mix(in srgb, var(--tint) 16%, var(--pane-solid)) 100%);
     box-shadow:
-      inset 0 1px 0 color-mix(in srgb, var(--tint) 46%, transparent),
-      0 6px 20px color-mix(in srgb, var(--tint) 20%, transparent);
+      inset 0 1px 0 color-mix(in srgb, var(--tint) 56%, transparent),
+      0 6px 20px color-mix(in srgb, var(--tint) 26%, transparent);
   }
   .tile[aria-current="true"] .section-icon { opacity: .38; transform: scale(1.16); }
   .tile:active { transform: scale(.97); }
