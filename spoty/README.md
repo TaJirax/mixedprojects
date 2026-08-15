@@ -266,7 +266,7 @@ binary Office and Kindle formats still require LibreOffice or Calibre on desktop
 
 CI builds Windows x64, Linux x64, macOS ARM64, one universal Android APK and
 four single-ABI Android APKs on every downloader change. A tag named
-`downloader-v6.8.5` publishes all eight artifacts.
+`downloader-v6.8.6` publishes all eight artifacts.
 Dedicated Android signing
 uses `ANDROID_KEYSTORE_BASE64`, `ANDROID_STORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
 `ANDROID_KEY_PASSWORD` repository secrets. When those are absent, this repository

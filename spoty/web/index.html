@@ -968,7 +968,10 @@ body.busy .status-word { color: var(--spotify); }
    open. The sidebar's own controls are not duplicated — they are moved into
    the source sheet at startup, so every button keeps its existing wiring. */
 .mbar { display: none; }
+.phone-progress { display: none; }
 .sheet[hidden] { display: none; }
+html.android .nav button .section-icon { display: grid; }
+html.android .nav button .dot { display: none; }
 
 @media (max-width: 760px) {
   html, body { height: 100dvh; }
@@ -981,7 +984,8 @@ body.busy .status-word { color: var(--spotify); }
      edge-to-edge without stretching it on tall Android displays. */
   body::before {
     background-size: cover;
-    background-position: center center;
+    /* Bias toward the woman knight while retaining part of her companion. */
+    background-position: 60% center;
   }
   /* The knight covers proportionally more of a phone than of a 1210px window,
      and the activity log is monospaced 11.5px sitting on top of it. Easing the
@@ -1001,7 +1005,7 @@ body.busy .status-word { color: var(--spotify); }
   }
   .titlebar { display: none; }        /* Android draws the window controls */
   .side { display: none; }
-  .main, .page, .runbar, .paste-row, .status-block, .row { min-width: 0; }
+  .main, .page, .phone-progress, .runbar, .paste-row, .status-block, .row { min-width: 0; }
   .run-stats { flex-wrap: wrap; gap: 8px 16px; }
   .row { flex-wrap: wrap; }
 
@@ -1157,7 +1161,21 @@ body.busy .status-word { color: var(--spotify); }
   .document-converter { grid-template-columns: 1fr 1fr; gap: 8px; }
   .document-converter .btn { width: 100%; }
 
-  .status-block { align-items: center; gap: 10px; padding: 2px 0 5px; }
+  /* Live progress belongs at the upper edge of the working area on phones.
+     Activity remains a separate, larger lower panel. */
+  .main[data-runbar="on"] .phone-progress {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    padding: 7px 14px 8px;
+    border-bottom: 1px solid var(--edge-2);
+    background: linear-gradient(180deg, var(--glass-2), transparent);
+  }
+  .phone-progress .status-block {
+    align-items: center;
+    gap: 10px;
+    padding: 0 0 5px;
+  }
   .status-word { flex: none; font-size: 24px; }
   .status-meta {
     min-width: 0;
@@ -1182,7 +1200,7 @@ body.busy .status-word { color: var(--spotify); }
     padding: 0 14px 12px;
     border-top: 1px solid var(--edge-2);
   }
-  .bar { height: 4px; }
+  .phone-progress .bar { height: 5px; }
   .run-path { margin-top: 5px; font-size: 9.5px; }
   .run-stats { gap: 5px 12px; margin-top: 6px; font-size: 9.5px; }
   .console-head { padding: 7px 0 5px; }
@@ -1278,6 +1296,55 @@ body.busy .status-word { color: var(--spotify); }
   .sheet-foot .ghost { min-height: var(--control-h); }
 }
 
+/* Android tablets use the same full-height canvas without inheriting the
+   desktop window's fixed titlebar proportions. The desktop app cannot enter
+   this range, and the Android class keeps these rules platform-specific. */
+@media (min-width: 761px) and (max-width: 1004px) {
+  html.android, html.android body { height: 100dvh; }
+  html.android body::before {
+    background-size: cover;
+    background-position: 60% center;
+  }
+  html.android .shell {
+    width: 100vw;
+    height: 100dvh;
+    grid-template-columns: clamp(200px, 26vw, 238px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "side main";
+    gap: 12px;
+    padding: 12px;
+  }
+  html.android .titlebar { display: none; }
+  html.android .side { padding: 16px 12px 12px; }
+  html.android .page { padding: 20px 20px 16px; }
+  html.android .runbar { padding: 0 20px 18px; }
+}
+
+/* Very large Android displays stop growing at a comfortable landscape width.
+   This prevents controls and artwork from looking horizontally stretched on
+   desktop-mode tablets, foldables and external Android displays. */
+@media (min-width: 1005px) {
+  html.android, html.android body {
+    width: 100%;
+    height: 100dvh;
+  }
+  html.android body::before {
+    background-size: cover;
+    background-position: 60% center;
+  }
+  html.android .shell {
+    width: min(100vw, 1440px);
+    height: min(100dvh, 960px);
+    margin: auto;
+    grid-template-columns: clamp(224px, 20vw, 280px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "side main";
+    gap: clamp(14px, 1.5vw, 22px);
+    padding: clamp(14px, 1.5vw, 22px);
+  }
+  html.android .titlebar { display: none; }
+}
+
 @media (max-width: 390px) {
   .shell { padding-inline: 7px; }
   .mbar { gap: 7px; padding-inline: 3px; }
@@ -1365,6 +1432,10 @@ body.busy .status-word { color: var(--spotify); }
   </aside>
 
   <main class="pane main" id="main" data-runbar="on">
+    <!-- Phone-only upper progress region. JavaScript moves the existing shared
+         progress nodes here, preserving their ids and desktop wiring. -->
+    <div class="phone-progress" id="phone-progress"></div>
+
     <!-- ------------------------------------------------------- download -->
     <section class="page on" data-page="download">
       <div class="page-head">
@@ -2012,17 +2083,19 @@ function decoratePages() {
 
 function buildNav() {
   const nav = $("nav");
+  const androidLayout = document.documentElement.classList.contains("android");
   PAGES.forEach(([id, label], i) => {
     const b = document.createElement("button");
     b.className = i === 0 ? "on" : "";
     b.dataset.target = id;
     b.style.setProperty("--section-tint", sectionTint(id));
-    b.innerHTML = '<span class="dot"></span>' + (PHONE.matches ? sectionIcon(id) : "");
+    b.innerHTML = '<span class="dot"></span>' +
+      ((PHONE.matches || androidLayout) ? sectionIcon(id) : "");
     b.appendChild(document.createTextNode(label));
     b.onclick = () => show(id);
     nav.appendChild(b);
   });
-  if (PHONE.matches) {
+  if (PHONE.matches || androidLayout) {
     decoratePages();
     $("mbar-icon").style.setProperty("--section-tint", sectionTint("download"));
     $("mbar-icon").innerHTML = sectionSvg("download");
@@ -2057,6 +2130,23 @@ function buildSheet() {
   if (foot) $("sheet-foot").appendChild(foot);
 }
 
+function syncPhoneProgress() {
+  const progress = $("phone-progress");
+  const runbar = $("runbar");
+  const activity = runbar.querySelector(".console-head");
+  const parts = [
+    document.querySelector(".status-block"),
+    runbar.querySelector(".bar") || progress.querySelector(".bar"),
+    $("run-path"),
+    document.querySelector(".run-stats"),
+  ].filter(Boolean);
+  if (PHONE.matches) {
+    parts.forEach(part => progress.appendChild(part));
+  } else {
+    parts.forEach(part => runbar.insertBefore(part, activity));
+  }
+}
+
 function openSheet() {
   const current = document.querySelector(".page.on")?.dataset.page;
   document.querySelectorAll("#sheet-grid .tile").forEach(t =>
@@ -2071,12 +2161,27 @@ function closeSheet() {
 }
 
 function setupPhone() {
-  if (!PHONE.matches) return;
-  buildSheet();
+  syncPhoneProgress();
+  const foot = document.querySelector(".side-foot");
+  if (!PHONE.matches) {
+    if (foot) document.querySelector(".side").appendChild(foot);
+    return;
+  }
+  if (!setupPhone.done) {
+    setupPhone.done = true;
+    buildSheet();
+    decoratePages();
+    $("mbar-icon").style.setProperty("--section-tint", sectionTint("download"));
+    $("mbar-icon").innerHTML = sectionSvg("download");
+  } else if (foot) {
+    $("sheet-foot").appendChild(foot);
+  }
   $("mbar-source").onclick = openSheet;
   $("sheet-scrim").onclick = closeSheet;
   $("mbar-more").onclick = () => { closeSheet(); show("settings"); };
 }
+if (PHONE.addEventListener) PHONE.addEventListener("change", setupPhone);
+else PHONE.addListener(setupPhone);
 
 /* A link shared into the app from anywhere else lands in the open source's
    field, ready to download — the shell calls this. */
@@ -2624,10 +2729,14 @@ function wire() {
 function boot() {
   if (boot.done) return;
   boot.done = true;
+  if (window.AndroidBridge) {
+    /* Apply Android-only tablet and large-display ratios before building the
+       navigation, avoiding a desktop-shaped first frame on wide devices. */
+    document.documentElement.classList.add("android");
+  }
   buildNav();
   setupPhone();
   if (window.AndroidBridge) {
-    document.documentElement.classList.add("android");
     $("folder").readOnly = true;
     $("browse").textContent = "Choose parent folder";
     $("folder-note").innerHTML = "Android saves into <b>BlueKnight Downloader</b>, then sorts files into the same source folders as desktop.";
