@@ -969,7 +969,23 @@ body.busy .status-word { color: var(--spotify); }
    the source sheet at startup, so every button keeps its existing wiring. */
 .mbar { display: none; }
 .phone-progress { display: none; }
+.run-telegram { display: none; }
 .sheet[hidden] { display: none; }
+html.android .run-telegram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-height: 28px;
+  margin-top: 6px;
+  border-radius: var(--r-sm);
+  color: var(--knight-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-decoration: none;
+}
+html.android .run-telegram:active { background: var(--glass-2); color: var(--ink); }
 html.android .nav button .section-icon { display: grid; }
 html.android .nav button .dot { display: none; }
 
@@ -1077,13 +1093,13 @@ html.android .nav button .dot { display: none; }
 
   /* --------------------------------------------------------- the page --- */
   .main { border-radius: var(--r-lg); }
-  .page { padding: 14px 14px 12px; }
+  .page { padding: 9px 14px 10px; }
   .page-head {
     display: grid;
     grid-template-columns: 44px minmax(0, 1fr);
     column-gap: 11px;
     align-items: center;
-    padding-bottom: 14px;
+    padding-bottom: 10px;
   }
   .page-head > .section-icon {
     display: grid;
@@ -1161,15 +1177,19 @@ html.android .nav button .dot { display: none; }
   .document-converter { grid-template-columns: 1fr 1fr; gap: 8px; }
   .document-converter .btn { width: 100%; }
 
-  /* Live progress belongs at the upper edge of the working area on phones.
-     Activity remains a separate, larger lower panel. */
+  /* The shared progress card is moved directly below the active page's action
+     row, so Download/Stop and progress read as one centered control group. */
   .main[data-runbar="on"] .phone-progress {
     display: flex;
     flex-direction: column;
     flex: none;
-    padding: 7px 14px 8px;
-    border-bottom: 1px solid var(--edge-2);
-    background: linear-gradient(180deg, var(--glass-2), transparent);
+    width: min(100%, 520px);
+    align-self: center;
+    margin: 8px auto 2px;
+    padding: 8px 10px;
+    border: 1px solid var(--edge-2);
+    border-radius: var(--r-md);
+    background: linear-gradient(160deg, var(--glass-2), var(--glass));
   }
   .phone-progress .status-block {
     align-items: center;
@@ -1197,18 +1217,23 @@ html.android .nav button .dot { display: none; }
   .runbar {
     flex: 0 0 clamp(162px, 28.08dvh, 216px);
     min-height: 0;
-    padding: 0 14px 12px;
+    padding: 0 14px calc(8px + env(safe-area-inset-bottom));
     border-top: 1px solid var(--edge-2);
   }
   .phone-progress .bar { height: 5px; }
   .run-path { margin-top: 5px; font-size: 9.5px; }
   .run-stats { gap: 5px 12px; margin-top: 6px; font-size: 9.5px; }
-  .console-head { padding: 7px 0 5px; }
+  .console-head { padding: 4px 0; }
   .console {
-    min-height: 42px;
+    min-height: 36px;
     padding: 8px 10px;
     font-size: 10.5px;
     line-height: 1.45;
+  }
+  .run-telegram {
+    min-height: 24px;
+    margin-top: 5px;
+    font-size: 9.5px;
   }
 
   .toast-stack {
@@ -1219,10 +1244,11 @@ html.android .nav button .dot { display: none; }
   .gate-card img { width: 72px; height: 72px; }
 
   /* --------------------------------------------------- section picker ---
-     Auto-fit keeps the source and utility tiles balanced across phone widths. */
+     The picker reaches every edge, while its tile group stays vertically and
+     horizontally centered instead of growing upward from the bottom. */
   .sheet {
     position: fixed; inset: 0; z-index: 70;
-    display: grid; align-items: end;
+    display: grid;
   }
   .sheet-scrim {
     position: absolute; inset: 0;
@@ -1232,19 +1258,37 @@ html.android .nav button .dot { display: none; }
   }
   .sheet-body {
     position: relative;
-    padding: 10px 14px calc(18px + env(safe-area-inset-bottom));
-    border-radius: var(--r-lg) var(--r-lg) 0 0;
-    border: 1px solid var(--edge);
-    border-bottom: 0;
+    width: 100%;
+    min-height: 100dvh;
+    padding: calc(24px + env(safe-area-inset-top)) 14px
+             calc(18px + env(safe-area-inset-bottom));
+    border: 0;
+    border-radius: 0;
     background: var(--pane-solid);
     box-shadow: var(--shadow);
     animation: sheet-up .26s cubic-bezier(.22, 1, .36, 1);
-    max-height: 88dvh;
+    display: flex;
     overflow-y: auto;
   }
-  .sheet-grip {
-    width: 38px; height: 4px; border-radius: 2px;
-    background: var(--edge); margin: 2px auto 16px;
+  .sheet-grip { display: none; }
+  .sheet-close {
+    position: absolute;
+    top: calc(10px + env(safe-area-inset-top));
+    right: 12px;
+    z-index: 1;
+    width: 42px;
+    height: 42px;
+    border: 1px solid var(--edge-2);
+    border-radius: 50%;
+    background: var(--glass-2);
+    color: var(--ink);
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .sheet-content {
+    width: min(100%, 520px);
+    margin: auto;
   }
   .sheet-grid {
     display: grid;
@@ -1253,45 +1297,83 @@ html.android .nav button .dot { display: none; }
   }
   .tile {
     grid-column: span 2;
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 6px;
     min-height: 82px;
-    padding: 10px 9px;
+    padding: 11px 10px;
     border: 1px solid var(--edge-2);
     border-radius: var(--r-md);
-    /* The tile carries its own source's colour, not the active accent: this
-       grid is the one view where all nine rooms are seen together. */
+    /* Each source mark becomes the tile's artwork. A dark lower wash keeps the
+       label crisp without reducing the logo to a small badge. */
     background: linear-gradient(157deg,
-      color-mix(in srgb, var(--tint) 17%, var(--pane-solid)),
-      var(--pane-solid) 72%);
+      color-mix(in srgb, var(--tint) 22%, var(--pane-solid)),
+      color-mix(in srgb, var(--tint) 6%, var(--pane-solid)) 72%);
     color: var(--ink-2);
     text-align: left;
     cursor: pointer;
+    transition: transform .18s ease, border-color .18s ease, background .18s ease;
+  }
+  .tile::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(180deg,
+      transparent 16%,
+      color-mix(in srgb, var(--pane-solid) 32%, transparent) 52%,
+      color-mix(in srgb, var(--pane-solid) 92%, transparent) 100%);
   }
   .tile .section-icon {
-    width: 32px; height: 32px;
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
     --section-tint: var(--tint);
+    color: var(--tint);
+    background: radial-gradient(circle at 52% 42%,
+      color-mix(in srgb, var(--tint) 24%, transparent),
+      transparent 72%);
+    box-shadow: none;
+    opacity: .26;
+    pointer-events: none;
+    transform: scale(1.08);
   }
-  .tile .section-icon svg { width: 20px; height: 20px; }
+  .tile .section-icon svg {
+    width: 88%;
+    height: 88%;
+    filter: drop-shadow(0 0 12px color-mix(in srgb, var(--tint) 45%, transparent));
+  }
   .tile b {
+    position: relative;
+    z-index: 2;
     font-family: var(--font-display);
-    font-size: 12.5px; font-weight: 600; line-height: 1.25;
+    font-size: 13px; font-weight: 600; line-height: 1.25;
     color: var(--ink);
     overflow-wrap: anywhere;
+    text-shadow: 0 2px 8px var(--pane-solid);
   }
   .tile[aria-current="true"] {
     border-color: var(--tint);
     background: linear-gradient(157deg,
-      color-mix(in srgb, var(--tint) 30%, var(--pane-solid)),
-      var(--pane-solid) 68%);
+      color-mix(in srgb, var(--tint) 36%, var(--pane-solid)),
+      color-mix(in srgb, var(--tint) 10%, var(--pane-solid)) 70%);
   }
+  .tile[aria-current="true"] .section-icon { opacity: .38; transform: scale(1.16); }
+  .tile:active { transform: scale(.97); }
   .tile.utility { grid-column: span 3; min-height: 82px; }
   .tile:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
 
   /* The sidebar's utility buttons, moved here rather than rebuilt. */
-  .sheet-foot .side-foot { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+  .sheet-foot .side-foot { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
   .sheet-foot .eq-wrap { display: none; }
   .sheet-foot .ghost { min-height: var(--control-h); }
 }
@@ -1973,6 +2055,8 @@ html.android .nav button .dot { display: none; }
         <button class="chip-btn" id="console-clear">Clear</button>
       </div>
       <div class="console" id="console" tabindex="0"></div>
+      <a class="run-telegram" href="https://t.me/BlueKnight_Net"
+         target="_blank" rel="noopener">Blue Knight Telegram · @BlueKnight_Net</a>
     </div>
   </main>
 </div>
@@ -1983,8 +2067,11 @@ html.android .nav button .dot { display: none; }
   <button class="sheet-scrim" id="sheet-scrim" tabindex="-1" aria-label="Close"></button>
   <div class="sheet-body" role="dialog" aria-modal="true" aria-label="Choose a section">
     <div class="sheet-grip" aria-hidden="true"></div>
-    <div class="sheet-grid" id="sheet-grid"></div>
-    <div class="sheet-foot" id="sheet-foot"></div>
+    <button class="sheet-close" id="sheet-close" aria-label="Close section menu">×</button>
+    <div class="sheet-content">
+      <div class="sheet-grid" id="sheet-grid"></div>
+      <div class="sheet-foot" id="sheet-foot"></div>
+    </div>
   </div>
 </div>
 
@@ -2132,6 +2219,7 @@ function buildSheet() {
 
 function syncPhoneProgress() {
   const progress = $("phone-progress");
+  const main = $("main");
   const runbar = $("runbar");
   const activity = runbar.querySelector(".console-head");
   const parts = [
@@ -2142,8 +2230,12 @@ function syncPhoneProgress() {
   ].filter(Boolean);
   if (PHONE.matches) {
     parts.forEach(part => progress.appendChild(part));
+    const actions = document.querySelector(".page.on .paste-row");
+    if (actions) actions.insertAdjacentElement("afterend", progress);
   } else {
     parts.forEach(part => runbar.insertBefore(part, activity));
+    const firstPage = main.querySelector(".page");
+    main.insertBefore(progress, firstPage);
   }
 }
 
@@ -2178,6 +2270,7 @@ function setupPhone() {
   }
   $("mbar-source").onclick = openSheet;
   $("sheet-scrim").onclick = closeSheet;
+  $("sheet-close").onclick = closeSheet;
   $("mbar-more").onclick = () => { closeSheet(); show("settings"); };
 }
 if (PHONE.addEventListener) PHONE.addEventListener("change", setupPhone);
@@ -2203,6 +2296,7 @@ function show(id) {
     $("mbar-icon").innerHTML = sectionSvg(id);
   }
   $("main").dataset.runbar = MODES[id] ? "on" : "off";
+  if (PHONE.matches) syncPhoneProgress();
   // A finished job belongs to the page it ran on, not the one being opened.
   if (!state.busy) resetRun();
   if (MODES[id] && !state.busy) {
