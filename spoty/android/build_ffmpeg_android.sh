@@ -64,11 +64,12 @@ case "$ABI" in
     *) echo "Unsupported ABI $ABI" >&2; exit 1 ;;
 esac
 
-# Android requires position-independent executables. FFmpeg's 32-bit NASM
-# objects still contain R_386_32 absolute relocations, which modern NDK lld
-# correctly refuses. Keep the C/SSE intrinsics, but use NASM only on x86_64.
+# Android requires position-independent executables. FFmpeg's legacy 32-bit
+# NASM and inline-MMX paths contain R_386_32 absolute relocations, which modern
+# NDK lld correctly refuses. Use the portable C path for this emulator ABI;
+# ARM and x86_64 retain their optimized assembly implementations.
 EXTRA_CONFIG=()
-[ "$ABI" = x86 ] && EXTRA_CONFIG+=(--disable-x86asm)
+[ "$ABI" = x86 ] && EXTRA_CONFIG+=(--disable-asm)
 
 # MSYS rewrites anything that looks like a Unix path when it crosses into a
 # native Windows .exe, which mangles every -I and --sysroot flag configure
