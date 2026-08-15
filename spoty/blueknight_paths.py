@@ -4,10 +4,32 @@ the standalone scripts."""
 import contextlib
 import json
 import os
+import platform
 import re
 import sys
 import time
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Which machine is this.
+#
+# Decided once, here, so the rest of the app can be written without an `if
+# sys.platform` in every function. Android reports itself as Linux, so it is
+# identified by the two environment variables the Android runtime always sets;
+# the check has to come first or Android would be treated as a desktop Linux
+# with a home directory it is not allowed to write to.
+# ---------------------------------------------------------------------------
+IS_ANDROID = bool(os.environ.get("ANDROID_ROOT") and os.environ.get("ANDROID_DATA"))
+IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
+IS_LINUX = not (IS_WINDOWS or IS_MACOS or IS_ANDROID)
+OS_TAG = ("android" if IS_ANDROID else "win" if IS_WINDOWS
+          else "mac" if IS_MACOS else "linux")
+# Only Windows puts a suffix on an executable. Every bundled tool name is built
+# from this, so `yt-dlp.exe` and `yt-dlp` are the same line of code.
+EXE = ".exe" if IS_WINDOWS else ""
+ARCH = "arm64" if (platform.machine() or "").lower() in {
+    "arm64", "aarch64", "armv8l"} else "x64"
 
 ROOT_NAME = "BlueKnightdownloader"
 SOURCES = {
@@ -20,6 +42,7 @@ SOURCES = {
     "x": "X",
     "general": "Video",
     "pdf": "Documents & Ebooks",
+    "converted": "Converted",
 }
 
 # yt-dlp browser name -> the profile directory that only exists once it is installed.
@@ -75,10 +98,44 @@ _BROWSER_LABELS = {"opera gx": "Opera GX", "opera crypto": "Opera Crypto",
 
 
 def app_dir():
-    """The folder the app actually lives in, frozen or not."""
+    """The folder the app actually lives in, frozen or not.
+
+    Android has no folder the app both lives in and may write to, so its shell
+    passes one in. On macOS the executable sits three levels down inside the
+    .app bundle, which is read-only and not where a user would look for their
+    downloads; "next to the app" there means next to the bundle.
+    """
+    override = os.environ.get("BLUEKNIGHT_HOME")
+    if override:
+        return Path(override)
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        here = Path(sys.executable).resolve().parent
+        if IS_MACOS and here.match("*.app/Contents/MacOS"):
+            return here.parents[2]
+        return here
     return Path(__file__).resolve().parent
+
+
+def app_data_dir(name="SpotifyDownloader"):
+    """Per-user writable state: downloaded tools, FFmpeg, the browser profile.
+
+    Kept apart from app_dir() because a portable app folder can sit on a
+    read-only volume, and because each desktop has its own convention for it.
+    """
+    override = os.environ.get("BLUEKNIGHT_DATA")
+    if override:
+        return Path(override)
+    if IS_ANDROID:
+        return app_dir() / "data"
+    if IS_WINDOWS:
+        base = Path(os.environ.get("LOCALAPPDATA")
+                    or Path.home() / "AppData" / "Local")
+    elif IS_MACOS:
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME")
+                    or Path.home() / ".local" / "share")
+    return base / name
 
 
 def download_root(base=None):
@@ -108,13 +165,17 @@ COOKIE_DIR_NAME = "cookies"
 # YouTube Music has no folder of its own here: music.youtube.com IS youtube.com,
 # so it shares that session rather than asking for a second login.
 SITE_DOMAINS = {"youtube": "youtube.com", "instagram": "instagram.com",
-                "tiktok": "tiktok.com", "spotify": "spotify.com", "x": "x.com"}
+                "tiktok": "tiktok.com", "spotify": "spotify.com",
+                "soundcloud": "soundcloud.com", "x": "x.com"}
 # The cookie that means "signed in". Anything less is just a visitor.
 SITE_SESSION_COOKIES = {
     "youtube": ("SID", "__Secure-3PSID", "SAPISID", "__Secure-1PSID"),
     "instagram": ("sessionid",),
     "tiktok": ("sessionid", "sessionid_ss"),
     "spotify": ("sp_dc", "sp_key"),
+    # yt-dlp's SoundCloud extractor verifies this browser token with
+    # api-auth.soundcloud.com and then requests account-entitled formats.
+    "soundcloud": ("oauth_token",),
     "x": ("auth_token",),
 }
 REGISTRY_NAME = "registry.json"
@@ -176,8 +237,9 @@ def site_for_domain(domain):
 
 
 def jar_summary(path, site=None):
-    """What is in a jar: (cookie count, has a session cookie, earliest expiry)."""
+    """What is in a jar: count, session presence, and session expiry."""
     names, count, expiry = set(), 0, None
+    wanted = SITE_SESSION_COOKIES.get(site or "", ())
     try:
         for line in Path(path).read_text("utf-8", "replace").splitlines():
             if not line.strip() or line.lstrip().startswith("#"):
@@ -189,11 +251,13 @@ def jar_summary(path, site=None):
             names.add(parts[5])
             with contextlib.suppress(ValueError):
                 stamp = int(parts[4])
-                if stamp > 0 and (expiry is None or stamp < expiry):
+                # Short-lived analytics cookies must not make a valid login
+                # disappear from the registry. Only the authentication cookie
+                # controls the stored session's lifetime.
+                if parts[5] in wanted and stamp > 0 and (expiry is None or stamp < expiry):
                     expiry = stamp
     except OSError:
         return 0, False, None
-    wanted = SITE_SESSION_COOKIES.get(site or "", ())
     return count, any(name in names for name in wanted), expiry
 
 

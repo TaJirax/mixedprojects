@@ -1,0 +1,212 @@
+"""What the Android shell talks to.
+
+The engine and its Api class are shared with the desktop builds unchanged.
+Three things they do cannot work here, and each is answered rather than
+removed:
+
+  * A file dialog is an Activity result, not a blocking call, so browse() and
+    the converter pickers are handled in Kotlin and their answers arrive here
+    afterwards. The page already expects those to report through the poll
+    queue, so nothing about the interface changes.
+  * A sign-in window is the shell's own WebView, and the session is read from
+    Android's CookieManager instead of an installed browser's profile.
+  * The clipboard has no command-line reader on Android.
+
+Everything else — every download, every conversion, the proxy, the engine
+ladder — is the same code path the Windows build runs.
+"""
+
+import contextlib
+import json
+from pathlib import Path
+
+import blueknight_paths
+import spotify_downloader as engine
+from blueknight_paths import cookie_dir, record_jar
+
+_app = None
+_api = None
+_activity = None
+
+# A cookie taken from CookieManager arrives as "name=value; name=value" with no
+# metadata, so the jar is written with the defaults yt-dlp accepts: host-wide,
+# secure, and valid for the same six months the desktop jar uses.
+_JAR_LIFETIME = 60 * 60 * 24 * 180
+
+
+def boot(activity):
+    """Start the engine once. Called from MainActivity.onCreate."""
+    global _app, _api, _activity
+    _activity = activity
+    if _api is not None:
+        return
+    _app = engine.SpotifyDownloader()
+    _api = engine.Api(_app)
+    # The desktop Api reaches for a pywebview window to open dialogs with.
+    # Those methods are intercepted in Kotlin before they ever get here, so the
+    # attribute stays None and any missed path fails loudly rather than silently.
+    _api._window = None
+
+
+def call(method, args_json):
+    """Answer one page call. Returns JSON, or an empty string for no result."""
+    args = json.loads(args_json or "[]")
+    handler = _LOCAL.get(method)
+    if handler is None:
+        handler = getattr(_api, method, None)
+    if handler is None:
+        return json.dumps({"error": f"unknown method {method}"})
+    try:
+        result = handler(*args)
+    except Exception as failure:      # a bridge call must never kill the page
+        with contextlib.suppress(Exception):
+            _app.log(f"{method} failed: {failure}", "error")
+        return json.dumps({"error": str(failure)[:300]})
+    return "" if result is None else json.dumps(result)
+
+
+# ---------------------------------------------------------------------------
+# What the shell needs to know to host a login
+# ---------------------------------------------------------------------------
+def signin_url(kind):
+    pages = engine.SIGNIN_PAGES.get(kind)
+    return pages[0] if pages else None
+
+
+def signin_domains(kind):
+    """The pages a session for this source is spread across.
+
+    A YouTube login puts half its cookies on google.com, so reading one host
+    would save a jar that looks complete and is not.
+    """
+    pages = engine.SIGNIN_PAGES.get(kind)
+    return list(pages[1]) if pages else []
+
+
+def browser_ua():
+    return engine.BROWSER_UA
+
+
+def save_cookies(kind, jar_json):
+    """Write the shell's harvested cookies as the Netscape jar yt-dlp reads."""
+    site = engine.cookie_site(kind)
+    harvested = json.loads(jar_json or "[]")
+    expiry = int(time.time()) + _JAR_LIFETIME
+
+    lines = ["# Netscape HTTP Cookie File",
+             "# Written by Blue Knight Downloader. Editing this is not needed.", ""]
+    written = 0
+    seen = set()
+    for url, header in harvested:
+        host = (url.split("//", 1)[-1].split("/", 1)[0]).strip()
+        if not host or not header:
+            continue
+        # A cookie set for www.youtube.com is sent to youtube.com too, and the
+        # leading dot is what tells yt-dlp's jar reader that.
+        domain = host if host.count(".") < 2 else "." + host.split(".", 1)[1]
+        for pair in header.split(";"):
+            name, _, value = pair.strip().partition("=")
+            if not name or (domain, name) in seen:
+                continue
+            seen.add((domain, name))
+            lines.append("\t".join([domain, "TRUE", "/", "TRUE",
+                                    str(expiry), name, value]))
+            written += 1
+
+    jar = cookie_dir(kind) / f"{site}_cookies.txt"
+    jar.parent.mkdir(parents=True, exist_ok=True)
+    jar.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    _app._login_kind = None
+    _app.ui("signin", None)
+    if not written:
+        _app.log(f"No cookies came back from {kind.title()}. Was the sign-in finished?",
+                 "warning")
+        _app.notify("No cookies were found. Finish signing in, then try again.", "err")
+        return {"cookies": 0}
+
+    session_names = set(engine.SITE_SESSION_COOKIES.get(site, ()))
+    signed_in = any(name in session_names for _, name in seen)
+    entry = record_jar(kind, jar, "sign-in")
+    _app.log(f"Signed in to {kind.title()}: {written} cookies saved to "
+             f"{jar.parent.name}/{jar.name}.", "success")
+    _app.ui("cookie_status", _app.cookie_status())
+    if not signed_in:
+        _app.notify(f"Saved {written} cookies, but no {kind.title()} session cookie. "
+                    f"Complete the login, then press Finish sign-in again.", "err")
+    else:
+        _app.notify(f"Signed in to {kind.title()}. {entry['cookies']} cookies kept.", "ok")
+    return {"cookies": written, "signed_in": signed_in}
+
+
+# ---------------------------------------------------------------------------
+# Activity results, arriving after the page has already moved on
+# ---------------------------------------------------------------------------
+def android_set_folder(tree_uri):
+    """Remember a folder the user picked with the system picker.
+
+    A tree URI is not a filesystem path and the engine writes with open(), so
+    the download itself keeps going to the app's own external folder, which
+    needs no permission on any API level. The picked tree is where finished
+    files are handed to afterwards.
+    """
+    _app.save_folder.set(str(blueknight_paths.download_root()))
+    _app.ui("folder", _app.save_folder.get())
+    _app.notify("New downloads will also be copied to the folder you chose.", "ok")
+    return {"folder": _app.save_folder.get()}
+
+
+def android_picked_file(path):
+    """Start document conversion after Kotlin materialises the content URI."""
+    local = Path(path)
+    _app.start_document_conversion(str(local))
+    return {"path": str(local)}
+
+
+def android_picked_media(path, options):
+    """Start media conversion with the options already selected in the page."""
+    local = Path(path)
+    _app.start_media_conversion(str(local), options)
+    return {"path": str(local)}
+
+
+def android_picked_image_folder(path):
+    """Start the ordered-image conversion on the imported SAF tree."""
+    local = Path(path)
+    _app.start_image_folder_conversion(str(local))
+    return {"path": str(local)}
+
+
+def android_import_failed(message):
+    _app.notify(str(message or "The selected item could not be opened."), "err")
+
+
+def clipboard():
+    """Android has no clipboard command; the shell reads it and the page pastes."""
+    return ""
+
+
+def is_working():
+    """Whether anything is in flight, so the service knows to keep the app alive.
+
+    Setup counts: fetching a tool over a slow connection is exactly when being
+    killed for being in the background is most likely and most annoying.
+    """
+    if _app is None:
+        return False
+    return bool(_app.is_downloading or _app.is_converting
+                or _app.updating or _app.setup_running)
+
+
+_LOCAL = {
+    "signin_url": signin_url,
+    "signin_domains": signin_domains,
+    "browser_ua": browser_ua,
+    "save_cookies": save_cookies,
+    "android_set_folder": android_set_folder,
+    "android_picked_file": android_picked_file,
+    "android_picked_media": android_picked_media,
+    "android_picked_image_folder": android_picked_image_folder,
+    "android_import_failed": android_import_failed,
+    "clipboard": clipboard,
+}

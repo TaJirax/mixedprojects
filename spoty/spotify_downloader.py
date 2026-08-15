@@ -19,11 +19,13 @@ import threading
 import subprocess
 import webbrowser
 import zipfile
+import ssl
 import urllib.request
 import urllib.error
 import socket
 import socketserver
 import select
+import tarfile
 import tempfile
 import ipaddress
 import io
@@ -33,59 +35,121 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from blueknight_paths import (
-    COOKIE_FAILURE, SITE_SESSION_COOKIES, SOURCES, candidate_label, cookie_candidates, cookie_dir,
-    download_dir, download_root, host_matches, jar_line_matches_domain, locked_by_browser,
-    read_registry, record_jar, registry_entry, ytdlp_cookie_args)
+    ARCH, COOKIE_FAILURE, EXE, IS_ANDROID, IS_LINUX, IS_MACOS, IS_WINDOWS, OS_TAG,
+    SITE_SESSION_COOKIES, SOURCES, app_data_dir, candidate_label, cookie_candidates,
+    cookie_dir, download_dir, download_root, host_matches, jar_line_matches_domain,
+    locked_by_browser, read_registry, record_jar, registry_entry, ytdlp_cookie_args)
+import pyshell
 
-import webview
+# The window toolkit. Android supplies its own WebView and never imports this.
+if not IS_ANDROID:
+    import webview
+else:
+    webview = None
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "6.8"
+APP_VERSION = "6.8.2"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
+# Every tool publishes one release asset per platform under a name of its own
+# choosing. The names are collected here, keyed the same way, so that adding a
+# platform is a table entry rather than a branch in the download code.
 SPOTDL_VERSION = "4.5.2"
-SPOTDL_DOWNLOAD_URLS = (
-    f"https://github.com/spotDL/spotify-downloader/releases/download/v{SPOTDL_VERSION}/spotdl-{SPOTDL_VERSION}-win32.exe",
-    f"https://sourceforge.net/projects/spotdl.mirror/files/v{SPOTDL_VERSION}/spotdl-{SPOTDL_VERSION}-win32.exe/download",
-)
-FFMPEG_DOWNLOAD_URLS = (
-    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-)
-
+SPOTDL_ASSETS = {"win": "spotdl-{v}-win32.exe", "mac": "spotdl-{v}-darwin",
+                 "linux": "spotdl-{v}-linux", "android": None}
 YTDLP_VERSION = "2026.07.04"
-# Independent hosts, tried in order. SourceForge is the escape hatch for
-# networks that block GitHub release downloads.
-YTDLP_DOWNLOAD_URLS = (
-    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
-    f"https://github.com/yt-dlp/yt-dlp/releases/download/{YTDLP_VERSION}/yt-dlp.exe",
-    f"https://sourceforge.net/projects/yt-dlp.mirror/files/{YTDLP_VERSION}/yt-dlp.exe/download",
-)
-DENO_DOWNLOAD_URLS = (
-    "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip",
-    "https://dl.deno.land/release-latest/deno-x86_64-pc-windows-msvc.zip",
-)
+YTDLP_ASSETS = {"win": "yt-dlp.exe", "mac": "yt-dlp_macos",
+                "linux": "yt-dlp_linux_aarch64" if ARCH == "arm64" else "yt-dlp_linux",
+                "android": None}
+DENO_ASSETS = {
+    "win": "deno-x86_64-pc-windows-msvc.zip",
+    "mac": f"deno-{'aarch64' if ARCH == 'arm64' else 'x86_64'}-apple-darwin.zip",
+    "linux": f"deno-{'aarch64' if ARCH == 'arm64' else 'x86_64'}-unknown-linux-gnu.zip",
+    # Deno publishes no Android build. The Android shell answers yt-dlp's
+    # JavaScript challenges with the system WebView instead; see js_runtime().
+    "android": None,
+}
+
+
+def spotdl_urls(version=SPOTDL_VERSION):
+    asset = SPOTDL_ASSETS[OS_TAG]
+    if not asset:
+        return ()
+    asset = asset.format(v=version)
+    return (f"https://github.com/spotDL/spotify-downloader/releases/download/"
+            f"v{version}/{asset}",
+            f"https://sourceforge.net/projects/spotdl.mirror/files/v{version}/"
+            f"{asset}/download")
+
+
+def ytdlp_urls(version=YTDLP_VERSION):
+    asset = YTDLP_ASSETS[OS_TAG]
+    if not asset:
+        return ()
+    # Independent hosts, tried in order. SourceForge is the escape hatch for
+    # networks that block GitHub release downloads.
+    return (f"https://github.com/yt-dlp/yt-dlp/releases/latest/download/{asset}",
+            f"https://github.com/yt-dlp/yt-dlp/releases/download/{version}/{asset}",
+            f"https://sourceforge.net/projects/yt-dlp.mirror/files/{version}/"
+            f"{asset}/download")
+
+
+def deno_urls():
+    asset = DENO_ASSETS[OS_TAG]
+    if not asset:
+        return ()
+    return (f"https://github.com/denoland/deno/releases/latest/download/{asset}",
+            f"https://dl.deno.land/release-latest/{asset}")
+
+
+SPOTDL_DOWNLOAD_URLS = spotdl_urls()
+YTDLP_DOWNLOAD_URLS = ytdlp_urls()
+DENO_DOWNLOAD_URLS = deno_urls()
+
+# FFmpeg is the one tool with no single project publishing every platform.
+# Each entry is (binaries this archive should contain, mirrors to try) — macOS
+# needs two archives because evermeet.cx packages ffmpeg and ffprobe apart.
+FFMPEG_DOWNLOADS = {
+    "win": ((("ffmpeg", "ffprobe"), (
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip")),),
+    "linux": ((("ffmpeg", "ffprobe"), (
+        f"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
+        f"ffmpeg-master-latest-linux{'arm64' if ARCH == 'arm64' else '64'}-gpl.tar.xz",)),),
+    "mac": ((("ffmpeg",), ("https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip",)),
+            (("ffprobe",), ("https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip",))),
+    # Android ships FFmpeg inside the APK as a native library; there is nowhere
+    # on the device it is allowed to download and mark executable at runtime.
+    "android": (),
+}
 
 # Every downloadable tool is described once, so finding, downloading and
 # updating are one code path instead of one per tool.
 TOOLS = {
     "spotdl": {
-        "label": "spotDL", "exe": "spotdl.exe", "urls": SPOTDL_DOWNLOAD_URLS,
+        "label": "spotDL", "exe": f"spotdl{EXE}", "urls": SPOTDL_DOWNLOAD_URLS,
         "api": "https://api.github.com/repos/spotDL/spotify-downloader/releases/latest",
     },
     "yt-dlp": {
-        "label": "yt-dlp", "exe": "yt-dlp.exe", "urls": YTDLP_DOWNLOAD_URLS,
+        "label": "yt-dlp", "exe": f"yt-dlp{EXE}", "urls": YTDLP_DOWNLOAD_URLS,
         "api": "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+        # Android has no release binary and no second Python to spawn, so the
+        # importable package stands in and pyshell runs it in this process.
+        "module": "yt_dlp",
     },
     "deno": {
-        "label": "Deno", "exe": "deno.exe", "urls": DENO_DOWNLOAD_URLS,
+        "label": "Deno", "exe": f"deno{EXE}", "urls": DENO_DOWNLOAD_URLS,
         "api": "https://api.github.com/repos/denoland/deno/releases/latest",
-        "archive_member": "deno.exe",
+        "archive_member": f"deno{EXE}",
         "checksum_urls": tuple(url + ".sha256sum" for url in DENO_DOWNLOAD_URLS),
     },
 }
+# A platform with neither a release asset nor an importable package has no tool
+# to find, download or update, and every check for one would only ever fail.
+TOOLS = {name: spec for name, spec in TOOLS.items()
+         if spec["urls"] or spec.get("module")}
 
 # yt-dlp format specs shared by the YouTube and TikTok pages.
 MEDIA_FORMATS = {
@@ -115,13 +179,16 @@ YOUTUBE_KINDS = {"youtube", "ytmusic"}
 COOKIE_SOURCES = {"instagram"}
 # Sources that usually work logged out, but sometimes demand a session. They get
 # cookies only after asking for them, so the normal path stays cookie-free.
-COOKIE_ON_DEMAND = {"youtube", "ytmusic", "tiktok", "x", "general"}
+COOKIE_ON_DEMAND = {"youtube", "ytmusic", "tiktok", "soundcloud", "x", "general"}
 # YouTube is rolling out "PO tokens", and a client that needs one cannot serve a
 # download without it. Per yt-dlp's PO Token Guide the exceptions are android_vr,
 # web_embedded and tv — so those are the ones worth retrying as. tv_simply,
 # web_safari and mweb all need a token, which is why they answered the earlier
 # attempts with "Requested format is not available" rather than a video.
-YT_FALLBACK_CLIENTS = "web_safari,android_vr,web_embedded,tv,default"
+YT_CLIENT_LADDER = ("android_vr", "web_embedded,tv,default")
+YOUTUBE_MEDIA_DENIED = re.compile(
+    r"unable to download (?:video|audio) data.*(?:http error 403|forbidden)|"
+    r"http error 403:\s*forbidden|fragment.*http error 403", re.I | re.S)
 PO_TOKEN_PATTERN = re.compile(r"^mweb\.gvs\+[A-Za-z0-9._~=/+-]{20,4096}$")
 SIGNIN_DEMANDED = re.compile(
     r"not a bot|sign ?in to confirm|login required|account.*cookies|"
@@ -135,7 +202,8 @@ COOKIE_PROBE_URL = "blueknightprobe://cookies"
 # The domain whose session makes a jar worth using, per source.
 COOKIE_DOMAINS = {
     "instagram": "instagram.com", "youtube": "youtube.com",
-    "ytmusic": "youtube.com", "tiktok": "tiktok.com", "x": "x.com",
+    "ytmusic": "youtube.com", "tiktok": "tiktok.com",
+    "soundcloud": "soundcloud.com", "x": "x.com",
 }
 
 # Performance optimization: Batch UI updates
@@ -181,6 +249,9 @@ SIGNIN_PAGES = {
     "tiktok": ("https://www.tiktok.com/login",
                ("https://www.tiktok.com/",),
                "www.tiktok.com"),
+    "soundcloud": ("https://soundcloud.com/signin",
+                   ("https://soundcloud.com/you/library", "https://soundcloud.com/"),
+                   "soundcloud.com"),
     "x": ("https://x.com/i/flow/login",
           ("https://x.com/home",),
           "x.com"),
@@ -252,10 +323,24 @@ PYTHON_COMPONENTS = {
     "streamlink": {"label": "Streamlink", "module": "streamlink", "max_major": 9},
     "img2pdf": {"label": "img2pdf", "module": "img2pdf", "max_major": 1},
     "pillow": {"label": "Pillow", "module": "PIL", "max_major": 13},
-    "pikepdf": {"label": "pikepdf", "module": "pikepdf", "max_major": 11},
+    "certifi": {"label": "certifi CA bundle", "module": "certifi", "max_major": 3000},
 }
-ENGINE_UPDATE_ROOT = (Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) /
-                      "SpotifyDownloader" / "python-engines")
+# pikepdf wraps qpdf, a C++ library with no Android build. pypdf does the same
+# reading and rewriting in pure Python, so it stands in there; the desktops keep
+# pikepdf, which is faster and stricter on damaged files.
+PDF_LIBRARY = "pypdf" if IS_ANDROID else "pikepdf"
+PYTHON_COMPONENTS[PDF_LIBRARY] = {
+    "label": PDF_LIBRARY, "module": PDF_LIBRARY,
+    "max_major": 7 if IS_ANDROID else 11,
+}
+if IS_ANDROID:
+    # img2pdf requires pikepdf, whose qpdf extension has no Android wheel.
+    # Android renders image PDFs with reportlab instead.
+    PYTHON_COMPONENTS.pop("img2pdf", None)
+    PYTHON_COMPONENTS["reportlab"] = {
+        "label": "reportlab", "module": "reportlab", "max_major": 6,
+    }
+ENGINE_UPDATE_ROOT = (app_data_dir() / "python-engines")
 ENGINE_UPDATE_REGISTRY = ENGINE_UPDATE_ROOT / "registry.json"
 
 
@@ -302,13 +387,38 @@ MEDIA_CONTENT_TYPES = {
 # an unbounded crawl of someone else's server.
 PDF_SCAN_LIMIT = 200
 MANGA_PAGE_LIMIT = 500
+# Real chapter pages are comfortably larger than this. These conservative
+# bounds discard spacer GIFs, analytics beacons and favicon-sized placeholders
+# without imposing a site-specific page resolution.
+MIN_CHAPTER_IMAGE_EDGE = 32
+MIN_CHAPTER_IMAGE_AREA = 4096
 MEDIA_CONVERT_FORMATS = {
     "mp3", "flac", "wav", "m4a", "ogg", "aac",
     "mp4", "mkv", "webm", "mov", "avi",
 }
 VIDEO_CONVERT_FORMATS = {"mp4", "mkv", "webm", "mov", "avi"}
 VIDEO_CONVERT_CODECS = {"auto", "h264", "h265", "vp9"}
-VIDEO_CONVERT_QUALITY = {"high": 18, "balanced": 23, "compact": 28}
+VIDEO_CONVERT_QUALITY = {"master": 14, "high": 18, "balanced": 23, "compact": 28}
+VIDEO_UPSCALE_FILTERS = {
+    "lanczos": "lanczos+accurate_rnd+full_chroma_int",
+    "spline": "spline+accurate_rnd",
+    "bicubic": "bicubic",
+}
+VIDEO_ENHANCEMENT_FILTERS = {
+    "none": (),
+    "clean": ("hqdn3d=1.5:1.5:6:6", "deband=1thr=0.02:2thr=0.02:3thr=0.02"),
+    "detail": ("hqdn3d=0.8:0.8:3:3", "unsharp=5:5:0.65:5:5:0.0"),
+    "cinema": ("hqdn3d=1.0:1.0:4:4", "eq=contrast=1.04:saturation=1.06",
+               "unsharp=5:5:0.4:5:5:0.0"),
+}
+AUDIO_ENHANCEMENT_FILTERS = {
+    "none": None,
+    "normalize": "loudnorm=I=-14:LRA=11:TP=-1.0",
+    "music": ("highpass=f=20,lowpass=f=20000,"
+              "acompressor=threshold=0.125:ratio=1.6:attack=20:release=250:makeup=1,"
+              "loudnorm=I=-14:LRA=11:TP=-1.0"),
+    "cleanup": "highpass=f=35,lowpass=f=18000,afftdn=nf=-30,loudnorm=I=-14:LRA=9:TP=-1.0",
+}
 VIDEO_RESIZE_PRESETS = {
     "source": None, "2160p": (3840, 2160), "1440p": (2560, 1440),
     "1080p": (1920, 1080), "720p": (1280, 720), "480p": (854, 480),
@@ -323,6 +433,18 @@ OFFICE_DOCUMENT_EXTENSIONS = {
 EBOOK_CONVERT_EXTENSIONS = {".epub", ".mobi", ".azw", ".azw3", ".fb2"}
 BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+# Frozen Python builds do not consistently find a usable OpenSSL CA bundle.
+# Use certifi explicitly so CDNs whose chain is not present in that embedded
+# OpenSSL installation still verify normally.  This retains hostname and
+# certificate validation; it is not an unverified-context escape hatch.
+def trusted_ssl_context():
+    # Imported after activate_engine_updates() so a validated certifi update is
+    # used on the next launch instead of the copy frozen into the executable.
+    import certifi
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+TRUSTED_SSL_CONTEXT = trusted_ssl_context()
 
 
 class PdfLinkParser(HTMLParser):
@@ -381,11 +503,17 @@ class HtmlImageParser(HTMLParser):
         values = dict(attrs)
         if tag == "img":
             value = (values.get("data-src") or values.get("data-original")
-                     or values.get("data-lazy-src") or values.get("src"))
+                     or values.get("data-lazy-src") or values.get("data-url"))
+            srcset = (values.get("data-srcset") or values.get("data-lazy-srcset")
+                      or values.get("srcset"))
+            if not value and srcset:
+                value = srcset.split(",")[-1].strip().split()[0]
+            value = value or values.get("src")
             if value:
                 self.links.append(value.strip())
-        elif tag == "source" and values.get("srcset"):
-            value = values["srcset"].split(",")[-1].strip().split()[0]
+        elif tag == "source" and (values.get("data-srcset") or values.get("srcset")):
+            srcset = values.get("data-srcset") or values["srcset"]
+            value = srcset.split(",")[-1].strip().split()[0]
             if value:
                 self.links.append(value)
         elif tag == "a" and values.get("href"):
@@ -458,12 +586,34 @@ def detect_document_extension(head, url, content_type=""):
     return None
 
 
+def is_valid_pdf_file(path):
+    """Check the structural markers required of a complete PDF file."""
+    try:
+        path = Path(path)
+        size = path.stat().st_size
+        if size < len(PDF_MAGIC) + len(b"%%EOF"):
+            return False
+        with path.open("rb") as handle:
+            head = handle.read(1024)
+            handle.seek(max(0, size - 4096))
+            tail = handle.read()
+        # ISO 32000 permits the header within the first 1024 bytes and requires
+        # an end-of-file marker near the end. This catches HTML error bodies and
+        # the common case where a connection closes halfway through a PDF.
+        return PDF_MAGIC in head and b"%%EOF" in tail
+    except OSError:
+        return False
+
+
 def inspect_zip_document(path):
     """Identify a validated ZIP-based document container."""
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
         mimetype = archive.read("mimetype").strip() if "mimetype" in names else b""
-        if mimetype == b"application/epub+zip":
+        if archive.testzip() is not None:
+            return None
+        if (mimetype == b"application/epub+zip"
+                and "META-INF/container.xml" in names):
             return ".epub"
         odf = {
             b"application/vnd.oasis.opendocument.text": ".odt",
@@ -505,6 +655,15 @@ def natural_sort_key(value):
                  for part in re.split(r"(\d+)", str(value)))
 
 
+def versions_equal(left, right):
+    """Compare numeric release strings without caring about zero padding."""
+    left = str(left or "").strip().lstrip("vV")
+    right = str(right or "").strip().lstrip("vV")
+    if re.fullmatch(r"\d+(?:\.\d+)*", left) and re.fullmatch(r"\d+(?:\.\d+)*", right):
+        return tuple(map(int, left.split("."))) == tuple(map(int, right.split(".")))
+    return left.casefold() == right.casefold()
+
+
 def unique_chapter_paths(folder, name):
     """Reserve a matching page folder, PDF and CBZ name without overwriting."""
     stem = Path(safe_filename(name, fallback="chapter", suffix=".pdf")).stem
@@ -518,6 +677,59 @@ def unique_chapter_paths(folder, name):
     stamp = int(time.time())
     return (folder / f"{stem} ({stamp})", folder / f"{stem} ({stamp}).pdf",
             folder / f"{stem} ({stamp}).cbz")
+
+
+def validate_engine_update(paths):
+    """Import and exercise a staged Python-engine set in a fresh process."""
+    try:
+        import importlib
+
+        for path in reversed(paths):
+            resolved = str(Path(path).resolve())
+            if resolved not in sys.path:
+                sys.path.insert(0, resolved)
+        importlib.invalidate_caches()
+
+        # certifi is needed while this file initializes TLS, so discard all
+        # already-imported engine modules before testing the staged overlays.
+        roots = {spec["module"].split(".", 1)[0] for spec in PYTHON_COMPONENTS.values()}
+        for module_name in list(sys.modules):
+            if module_name.split(".", 1)[0] in roots:
+                del sys.modules[module_name]
+
+        certifi_module = importlib.import_module("certifi")
+        gallery_module = importlib.import_module("gallery_dl")
+        streamlink_module = importlib.import_module("streamlink")
+        img2pdf_module = importlib.import_module("img2pdf")
+        pdf_module = importlib.import_module(PDF_LIBRARY)
+        image_module = importlib.import_module("PIL.Image")
+
+        if not Path(certifi_module.where()).is_file():
+            raise RuntimeError("certifi did not provide a CA bundle")
+        if not getattr(gallery_module, "__version__", None):
+            raise RuntimeError("gallery-dl did not report a version")
+        if not getattr(streamlink_module, "__version__", None):
+            raise RuntimeError("Streamlink did not report a version")
+
+        # Exercise the document stack together; importing alone does not catch
+        # incompatible Pillow/img2pdf/PDF-library binary combinations.
+        with tempfile.TemporaryDirectory() as temp:
+            image_path = Path(temp) / "probe.png"
+            image_module.new("RGB", (32, 32), "white").save(image_path)
+            payload = img2pdf_module.convert([str(image_path)])
+            if not payload.startswith(PDF_MAGIC):
+                raise RuntimeError("img2pdf returned invalid output")
+            if pdf_pages(io.BytesIO(payload)) != 1:
+                raise RuntimeError(f"{PDF_LIBRARY} could not read the img2pdf probe")
+
+        # This resolves a built-in URL scheme and does not touch the network.
+        stream_name, _, _ = streamlink_module.Streamlink().resolve_url(
+            "hls://example.com/probe.m3u8")
+        if stream_name != "hls":
+            raise RuntimeError("Streamlink plugin loading failed")
+        return True
+    except Exception:
+        return False
 
 
 def write_netscape_jar(cookies, path):
@@ -549,17 +761,30 @@ def write_netscape_jar(cookies, path):
     return written
 
 
+# Reading the clipboard is the one thing every desktop does through a different
+# program. Android has no command for it at all and answers in the shell instead.
+CLIPBOARD_READERS = {
+    "win": (["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],),
+    "mac": (["pbpaste"],),
+    # Wayland first: on a Wayland session xclip either fails or reads a stale
+    # X11 selection, while wl-paste is absent on a pure X11 one and falls through.
+    "linux": (["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"],
+              ["xsel", "--clipboard", "--output"]),
+    "android": (),
+}
+
+
 def read_clipboard():
-    """Windows clipboard text, empty when there is nothing to paste."""
-    try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
-            capture_output=True, text=True, timeout=6,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return out.stdout.strip()
-    except Exception:
-        return ""
+    """Clipboard text, empty when there is nothing to paste."""
+    for command in CLIPBOARD_READERS[OS_TAG]:
+        try:
+            out = pyshell.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=6)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except Exception:
+            continue
+    return ""
 
 
 class Var:
@@ -577,6 +802,17 @@ class Var:
 
 def bundled_tool(name):
     """Find a packaged tool in both PyInstaller one-file and one-folder layouts."""
+    # Android unpacks a bundled executable only from the native library
+    # directory, and only when it is named like a library. The shell passes
+    # that directory in; the lib*.so name is a packaging rule, not a format.
+    tools_override = os.environ.get("BLUEKNIGHT_TOOLS")
+    if tools_override:
+        stem = Path(name).stem
+        for candidate in (Path(tools_override) / f"lib{stem}.so",
+                          Path(tools_override) / name):
+            if candidate.is_file():
+                return str(candidate)
+
     roots = []
     bundle_root = getattr(sys, "_MEIPASS", None)
     if bundle_root:
@@ -594,6 +830,105 @@ def bundled_tool(name):
                 return str(candidate)
             seen.add(key)
     return None
+
+
+def pdf_pages(source):
+    """How many pages a PDF holds. Raises if it cannot be read at all.
+
+    Two libraries answer this, and which one is installed depends on the
+    platform rather than on anything the caller cares about — see PDF_LIBRARY.
+    """
+    if PDF_LIBRARY == "pikepdf":
+        import pikepdf
+        with pikepdf.Pdf.open(source) as document:
+            return len(document.pages)
+    from pypdf import PdfReader
+    return len(PdfReader(source).pages)
+
+
+def pdf_rewrite(source, target):
+    """Read a PDF and write it back out, which is what proves it is intact.
+
+    A file that opens, parses and re-serialises is a real PDF; one that was
+    renamed or truncated fails here rather than on the reader's device.
+    """
+    if PDF_LIBRARY == "pikepdf":
+        import pikepdf
+        with pikepdf.Pdf.open(source) as document:
+            document.save(target)
+        return
+
+    from pypdf import PdfReader, PdfWriter
+    reader = PdfReader(source)
+    if not reader.pages:
+        raise RuntimeError("The PDF holds no pages")
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    with open(target, "wb") as handle:
+        writer.write(handle)
+
+
+def make_executable(path):
+    """Give a freshly downloaded tool the permission bit it arrives without.
+
+    A release asset is a plain file: Windows infers runnability from the name,
+    every other platform from the mode, and an archive member's recorded mode
+    is not carried through the copy that verifies its checksum.
+    """
+    if IS_WINDOWS:
+        return
+    with contextlib.suppress(OSError):
+        path = Path(path)
+        path.chmod(path.stat().st_mode | 0o755)
+
+
+def extract_binaries(archive_path, wanted):
+    """Pull named programs out of a release archive.
+
+    wanted maps a bare program name to where it should land. Members are matched
+    on their base name rather than a full path, because the same binary sits at
+    `ffmpeg-.../bin/ffmpeg` in one project's archive and at the root of another's.
+    Each member is streamed rather than fully extracted, which verifies that
+    member's checksum without inflating the rest of a large distribution.
+    """
+    archive_path = Path(archive_path)
+    targets = {name.lower(): Path(target) for name, target in wanted.items()}
+    found = set()
+
+    def base(member):
+        return Path(member.replace("\\", "/")).name.lower()
+
+    def claim(member, opener):
+        stem, suffix = os.path.splitext(base(member))
+        # An archive also ships documentation, and `doc/ffmpeg.html` has the
+        # same stem as the program. Only a program-shaped name qualifies.
+        if suffix not in ("", ".exe"):
+            return
+        target = targets.get(stem)
+        if target is None or stem in found:
+            return
+        with opener() as source, target.open("wb") as output:
+            shutil.copyfileobj(source, output, length=1024 * 1024)
+        found.add(stem)
+
+    if zipfile.is_zipfile(archive_path):
+        with zipfile.ZipFile(archive_path) as archive:
+            for member in archive.namelist():
+                claim(member, lambda m=member: archive.open(m))
+    else:
+        # tarfile picks the compression itself, which is what makes the same
+        # call work for the .tar.xz Linux builds and any .tar.gz mirror.
+        with tarfile.open(archive_path) as archive:
+            for member in archive.getmembers():
+                if member.isfile():
+                    claim(member.name,
+                          lambda m=member: contextlib.closing(archive.extractfile(m)))
+
+    missing = sorted(set(targets) - found)
+    if missing:
+        raise RuntimeError(
+            f"{archive_path.name} is missing {', '.join(missing)}")
 
 
 def normalize_proxy_url(value, proxy_type="http"):
@@ -814,13 +1149,12 @@ class SpotifyDownloader:
         self.setup_running = False
         self.executor = ThreadPoolExecutor(max_workers=3)
 
-        # Store FFmpeg in app data directory
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        self.app_data = (Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local") / "SpotifyDownloader"
+        # Store FFmpeg in the per-user application data directory
+        self.app_data = app_data_dir()
         self.ffmpeg_dir = self.app_data / "ffmpeg"
-        self.ffmpeg_exe = self.ffmpeg_dir / "bin" / "ffmpeg.exe"
+        self.ffmpeg_exe = self.ffmpeg_dir / "bin" / f"ffmpeg{EXE}"
         self.tools_dir = self.app_data / "tools"
-        self.spotdl_exe = self.tools_dir / "spotdl.exe"
+        self.spotdl_exe = self.tools_dir / f"spotdl{EXE}"
 
         # Proxy settings with proper defaults for v2rayN
         self.download_format = Var("mp3")
@@ -1002,21 +1336,28 @@ class SpotifyDownloader:
             if not self.ffmpeg_cmd:
                 raise RuntimeError("Failed to setup FFmpeg")
 
-            self.ui("setup", "Checking spotDL...", "This downloads Spotify tracks")
-            self.spotdl_cmd = self.get_or_download_tool("spotdl")
-            if not self.spotdl_cmd:
-                raise RuntimeError("spotDL was installed, but its command could not be located.")
+            if IS_ANDROID:
+                # spotDL depends on native Python extensions which have no
+                # Android wheels. The Android path below resolves Spotify
+                # metadata and downloads the matching YouTube Music audio.
+                self.spotdl_cmd = "Android Spotify engine"
+            else:
+                self.ui("setup", "Checking spotDL...", "This downloads Spotify tracks")
+                self.spotdl_cmd = self.get_or_download_tool("spotdl")
+                if not self.spotdl_cmd:
+                    raise RuntimeError("spotDL was installed, but its command could not be located.")
 
             self.ui("setup", "Checking yt-dlp...", "This downloads YouTube, TikTok, Instagram and video-site media")
             self.ytdlp_cmd = self.get_or_download_tool("yt-dlp")
             if not self.ytdlp_cmd:
                 raise RuntimeError("yt-dlp was installed, but its command could not be located.")
 
-            self.ui("setup", "Checking YouTube challenge runtime...",
-                    "Deno runs yt-dlp's bundled EJS challenge solver")
-            self.deno_cmd = self.get_or_download_tool("deno")
-            if not self.deno_cmd:
-                raise RuntimeError("Deno was installed, but its command could not be located.")
+            if not IS_ANDROID:
+                self.ui("setup", "Checking YouTube challenge runtime...",
+                        "Deno runs yt-dlp's bundled EJS challenge solver")
+                self.deno_cmd = self.get_or_download_tool("deno")
+                if not self.deno_cmd:
+                    raise RuntimeError("Deno was installed, but its command could not be located.")
 
             self.ui("setup", "Checking fallback engines...",
                     "This adds live streams, HTML galleries and mixed media")
@@ -1033,7 +1374,8 @@ class SpotifyDownloader:
             self.log("✓ FFmpeg: " + str(self.ffmpeg_cmd), "success")
             self.log("✓ spotDL: " + str(self.spotdl_cmd), "success")
             self.log("✓ yt-dlp: " + str(self.ytdlp_cmd), "success")
-            self.log(f"✓ Deno: {self.deno_cmd}", "success")
+            if self.deno_cmd:
+                self.log(f"✓ Deno: {self.deno_cmd}", "success")
             self.log(f"✓ gallery-dl: {self.gallerydl_version}", "success")
             self.log(f"✓ Streamlink: {self.streamlink_version}", "success")
             self.log("💡 Use 'V2RayN HTTP' preset for proxy support", "info")
@@ -1052,15 +1394,15 @@ class SpotifyDownloader:
         """
         bridge = None
         try:
+            handlers = [urllib.request.HTTPSHandler(context=TRUSTED_SSL_CONTEXT)]
             if self.use_proxy.get() and self.proxy_url.get().strip():
                 proxy = normalize_proxy_url(self.proxy_url.get(), self.proxy_type.get())
                 if urlsplit(proxy).scheme.startswith("socks5"):
                     bridge = Socks5HttpBridge(proxy)
                     proxy = bridge.start()
-                yield urllib.request.build_opener(
-                    urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-            else:
-                yield urllib.request.build_opener()
+                handlers.insert(
+                    0, urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+            yield urllib.request.build_opener(*handlers)
         finally:
             if bridge:
                 bridge.close()
@@ -1150,7 +1492,7 @@ class SpotifyDownloader:
         raise RuntimeError(f"PyPI has no supported Windows wheel for {spec['label']}.")
 
     def install_python_engine(self, name, version, url, digest, filename):
-        """Download, verify and unpack one component wheel for activation on restart."""
+        """Download, verify and stage one wheel without activating it."""
         ENGINE_UPDATE_ROOT.mkdir(parents=True, exist_ok=True)
         wheel_path = ENGINE_UPDATE_ROOT / (filename + ".part")
         wheel_path.unlink(missing_ok=True)
@@ -1164,7 +1506,8 @@ class SpotifyDownloader:
             if actual.lower() != digest.lower():
                 raise RuntimeError("downloaded wheel failed its PyPI SHA-256 check")
 
-            target_dir = ENGINE_UPDATE_ROOT / f"{name}-{re.sub(r'[^0-9A-Za-z_.-]', '_', version)}"
+            safe_version = re.sub(r"[^0-9A-Za-z_.-]", "_", version)
+            target_dir = ENGINE_UPDATE_ROOT / f"{name}-{safe_version}-{digest[:12].lower()}"
             if not target_dir.is_dir():
                 with tempfile.TemporaryDirectory(dir=ENGINE_UPDATE_ROOT) as temp:
                     staging = Path(temp) / "package"
@@ -1176,25 +1519,58 @@ class SpotifyDownloader:
                             destination.relative_to(root)
                         wheel.extractall(staging)
                     os.replace(staging, target_dir)
-
-            try:
-                registry = json.loads(ENGINE_UPDATE_REGISTRY.read_text("utf-8"))
-            except (OSError, ValueError):
-                registry = {}
-            registry[name] = {"version": version, "path": str(target_dir)}
-            pending = ENGINE_UPDATE_REGISTRY.with_suffix(".json.new")
-            pending.write_text(json.dumps(registry, indent=2), encoding="utf-8")
-            os.replace(pending, ENGINE_UPDATE_REGISTRY)
-            return target_dir
+            return {"version": version, "path": str(target_dir), "sha256": digest.lower()}
         finally:
             wheel_path.unlink(missing_ok=True)
 
+    def validate_python_engine_updates(self, records):
+        """Smoke-test staged wheels together in a clean child process."""
+        paths = [record["path"] for record in records.values()]
+        command = [sys.executable]
+        if not getattr(sys, "frozen", False):
+            command.append(str(Path(__file__).resolve()))
+        command += ["--validate-engine-update", json.dumps(paths)]
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", timeout=90,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "compatibility probe failed").strip()
+            raise RuntimeError(detail[-180:])
+
     @staticmethod
-    def _is_windows_executable(path, minimum_size=1024 * 1024):
+    def commit_python_engine_updates(records):
+        """Atomically activate a validated group on the next app launch."""
+        try:
+            registry = json.loads(ENGINE_UPDATE_REGISTRY.read_text("utf-8"))
+            if not isinstance(registry, dict):
+                registry = {}
+        except (OSError, ValueError):
+            registry = {}
+        registry.update(records)
+        pending = ENGINE_UPDATE_REGISTRY.with_suffix(".json.new")
+        pending.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+        os.replace(pending, ENGINE_UPDATE_REGISTRY)
+
+    @staticmethod
+    def _is_native_executable(path, minimum_size=1024 * 1024):
+        """True for a real program image for this machine, not an HTML error page.
+
+        A mirror that answers a download with a login page or a 404 body still
+        writes a file of plausible size, so the first bytes are checked against
+        the executable formats: PE on Windows, ELF on Linux and Android, and
+        Mach-O — thin or universal, either byte order — on macOS.
+        """
+        magics = (b"MZ",) if IS_WINDOWS else (
+            (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe",
+             b"\xbe\xba\xfe\xca") if IS_MACOS else (b"\x7fELF",))
         try:
             path = Path(path)
             with path.open("rb") as handle:
-                return path.stat().st_size >= minimum_size and handle.read(2) == b"MZ"
+                head = handle.read(4)
+            return (path.stat().st_size >= minimum_size
+                    and any(head.startswith(magic) for magic in magics))
         except OSError:
             return False
 
@@ -1206,14 +1582,30 @@ class SpotifyDownloader:
         """
         spec = TOOLS[name]
         downloaded = self.tools_dir / spec["exe"]
-        if self._is_windows_executable(downloaded):
+        if self._is_native_executable(downloaded):
             return str(downloaded)
         packaged = bundled_tool(spec["exe"])
         if packaged:
             return packaged
-        return shutil.which(name)
+        found = shutil.which(name)
+        if found:
+            return found
+        # Nothing on disk. An importable package is still a usable tool, and
+        # pyshell knows how to run one; this is the whole Android path.
+        if spec.get("module") and pyshell.module_version(name) != "unknown":
+            return name
+        return None
 
-    def get_or_download_tool(self, name, force=False):
+    @staticmethod
+    def tool_download_urls(name, version=None):
+        """Release URLs for a specific version, with independent mirrors."""
+        if name == "spotdl" and version:
+            return spotdl_urls(version.lstrip("vV"))
+        if name == "yt-dlp" and version:
+            return ytdlp_urls(version)
+        return TOOLS[name]["urls"]
+
+    def get_or_download_tool(self, name, force=False, version=None):
         """Return a usable tool path, downloading from the mirrors when needed."""
         spec = TOOLS[name]
         if not force:
@@ -1226,7 +1618,8 @@ class SpotifyDownloader:
         archive_path = None
         if spec.get("archive_member"):
             archive_path = target.with_name(spec["exe"] + ".zip.new")
-            self._download_with_fallbacks(spec["urls"], archive_path, spec["label"])
+            self._download_with_fallbacks(
+                self.tool_download_urls(name, version), archive_path, spec["label"])
             try:
                 if spec.get("checksum_urls"):
                     checksum_path = target.with_name(spec["exe"] + ".sha256.new")
@@ -1251,26 +1644,40 @@ class SpotifyDownloader:
             finally:
                 archive_path.unlink(missing_ok=True)
         else:
-            self._download_with_fallbacks(spec["urls"], candidate, spec["label"])
-        if not self._is_windows_executable(candidate):
+            self._download_with_fallbacks(
+                self.tool_download_urls(name, version), candidate, spec["label"])
+        if not self._is_native_executable(candidate):
             candidate.unlink(missing_ok=True)
-            raise RuntimeError(f"The downloaded {spec['label']} file is not a valid Windows executable.")
+            raise RuntimeError(
+                f"The downloaded {spec['label']} file is not a valid executable.")
+        make_executable(candidate)
+        candidate_version = self.tool_version(candidate)
+        if candidate_version == "unknown":
+            candidate.unlink(missing_ok=True)
+            raise RuntimeError(f"The downloaded {spec['label']} executable did not start.")
+        if version and candidate_version.lstrip("vV") != version.lstrip("vV"):
+            candidate.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"The {spec['label']} server returned {candidate_version}, expected {version}.")
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(candidate, target)
         return str(target)
 
     def tool_version(self, path):
         try:
-            result = subprocess.run(
-                [path, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", timeout=45,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            stem = Path(path).stem.lower()
+            if stem.startswith("lib") and stem[3:] in {"ffmpeg", "ffprobe"}:
+                stem = stem[3:]
+            version_flag = "-version" if stem in {"ffmpeg", "ffprobe"} else "--version"
+            result = pyshell.run([path, version_flag], timeout=45)
             lines = result.stdout.strip().splitlines()
-            if not lines:
+            if result.returncode != 0 or not lines:
                 return "unknown"
-            if Path(path).stem.lower() == "deno":
+            if stem == "deno":
                 match = re.match(r"deno\s+([0-9][^\s]*)", lines[0])
+                return match.group(1) if match else lines[0].strip()
+            if stem in {"ffmpeg", "ffprobe"}:
+                match = re.match(r"ff(?:mpeg|probe) version\s+([^\s]+)", lines[0], re.I)
                 return match.group(1) if match else lines[0].strip()
             return lines[-1].strip()
         except Exception:
@@ -1278,7 +1685,11 @@ class SpotifyDownloader:
 
     def update_tools(self):
         """Refresh spotDL and yt-dlp from their mirrors, then report per tool."""
-        if self.updating or self.is_downloading:
+        if IS_ANDROID:
+            self.notify(
+                "Android components are verified and updated with each app release.", "ok")
+            return
+        if self.updating or self.is_downloading or self.is_converting or self.setup_running:
             self.notify("Wait for the current job to finish.", "err")
             return
         self.updating = True
@@ -1306,13 +1717,10 @@ class SpotifyDownloader:
         jar = Path(tempfile.gettempdir()) / f"blueknight_cookies_{os.getpid()}.txt"
         jar.unlink(missing_ok=True)
         try:
-            out = subprocess.run(
+            out = pyshell.run(
                 [self.ytdlp_cmd, "--simulate", "--no-warnings",
                  *ytdlp_cookie_args(candidate), "--cookies", str(jar), COOKIE_PROBE_URL],
-                capture_output=True, text=True, timeout=40,
-                encoding="utf-8", errors="replace",
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+                timeout=40)
             text = (out.stdout or "") + (out.stderr or "")
             failure = COOKIE_FAILURE.search(text)
             if failure:
@@ -1393,7 +1801,7 @@ class SpotifyDownloader:
                                      f"Keeping {current}.", "warning")
                             self._remember_tool(name, path)
                             continue
-                        if latest == current:
+                        if versions_equal(latest, current):
                             self.log(f"{label} is already current ({current}).", "success")
                             self._remember_tool(name, path)
                             continue
@@ -1401,7 +1809,8 @@ class SpotifyDownloader:
                     else:
                         self.log(f"{label} is missing. Installing…", "warning")
 
-                    path = self.get_or_download_tool(name, force=True)
+                    path = self.get_or_download_tool(
+                        name, force=True, version=latest if path else None)
                     after = self.tool_version(path)
                     self._remember_tool(name, path)
                     changed.append(f"{label} {current or 'missing'} → {after}")
@@ -1410,28 +1819,56 @@ class SpotifyDownloader:
                     failed.append(f"{label}: {str(exc)[:160]}")
                     self.log(f"{label} update failed: {str(exc)[:200]}", "error")
 
+            staged_engines = {}
+            staged_labels = []
             for name, spec in PYTHON_COMPONENTS.items():
                 label = spec["label"]
                 try:
                     current = self.python_engine_version(spec["module"])
                     self.log(f"Checking {label} (have {current or 'missing'})…", "info")
                     latest, url, digest, filename = self.latest_python_engine(name)
-                    if current == latest:
+                    if versions_equal(current, latest):
                         self.log(f"{label} is already current ({current}).", "success")
                         continue
-                    self.install_python_engine(name, latest, url, digest, filename)
-                    changed.append(f"{label} {current or 'missing'} → {latest} (restart required)")
-                    self.log(f"✓ {label} {latest} is ready; restart to activate it.", "success")
+                    staged_engines[name] = self.install_python_engine(
+                        name, latest, url, digest, filename)
+                    staged_labels.append((label, current or "missing", latest))
+                    self.log(f"Staged {label} {latest}; validating the update set…", "info")
                 except Exception as exc:
                     failed.append(f"{label}: {str(exc)[:160]}")
                     self.log(f"{label} update failed: {str(exc)[:200]}", "error")
 
-            if not self.ffmpeg_cmd:
+            if staged_engines:
                 try:
-                    self.ffmpeg_cmd = self.get_or_download_ffmpeg()
-                    changed.append("FFmpeg installed")
+                    self.validate_python_engine_updates(staged_engines)
+                    self.commit_python_engine_updates(staged_engines)
+                    for label, current, latest in staged_labels:
+                        changed.append(f"{label} {current} → {latest} (restart required)")
+                        self.log(
+                            f"✓ {label} {latest} passed compatibility checks; "
+                            "restart to activate it.", "success")
                 except Exception as exc:
-                    failed.append(f"FFmpeg: {str(exc)[:160]}")
+                    failed.append(f"Python engine set: {str(exc)[:160]}")
+                    self.log(
+                        "Python engine compatibility check failed; keeping every current version: "
+                        f"{str(exc)[:180]}", "error")
+
+            try:
+                current_ffmpeg = self.tool_version(self.ffmpeg_cmd) if self.ffmpeg_cmd else "missing"
+                self.log(f"Checking FFmpeg (have {current_ffmpeg})…", "info")
+                updated_ffmpeg = self.get_or_download_ffmpeg(force=True)
+                updated_version = self.tool_version(updated_ffmpeg)
+                self.ffmpeg_cmd = updated_ffmpeg
+                if updated_version != current_ffmpeg:
+                    changed.append(f"FFmpeg {current_ffmpeg} → {updated_version}")
+                    self.log(f"✓ FFmpeg is now {updated_version}", "success")
+                else:
+                    self.log(f"FFmpeg is already current ({current_ffmpeg}).", "success")
+            except Exception as exc:
+                failed.append(f"FFmpeg: {str(exc)[:160]}")
+                self.log(
+                    f"FFmpeg update failed; keeping the working version: {str(exc)[:180]}",
+                    "error")
 
             # Instagram needs a login, so a readable cookie jar is a component
             # like any other. Checked here because yt-dlp must exist first.
@@ -1448,6 +1885,23 @@ class SpotifyDownloader:
             else:
                 self.log("No cookie source found. Instagram needs a cookies.txt beside the app, "
                          "in your Downloads, or in the download folder.", "warning")
+
+            self.log("Checking the saved SoundCloud session…", "info")
+            if registry_entry("soundcloud"):
+                soundcloud_session = self.usable_cookies(
+                    COOKIE_DOMAINS["soundcloud"], require_session=True)
+                if soundcloud_session:
+                    self.log(
+                        f"SoundCloud Go/Go+ session found in "
+                        f"{candidate_label(soundcloud_session[0])}.", "success")
+                else:
+                    self.log(
+                        "The saved SoundCloud session is expired or unreadable; "
+                        "sign in again on the SoundCloud page.", "warning")
+            else:
+                self.log(
+                    "SoundCloud is in public mode. Go/Go+ members can optionally sign in "
+                    "on the SoundCloud page.", "info")
 
             self.ui("components", self.component_summary())
             if failed:
@@ -1476,61 +1930,87 @@ class SpotifyDownloader:
             self.deno_cmd = path
 
     def component_summary(self):
-        return (f"spotDL: {self.spotdl_cmd}\n"
+        python_versions = {
+            name: self.python_engine_version(spec["module"]) or "bundled"
+            for name, spec in PYTHON_COMPONENTS.items()
+        }
+        pdf_label = PYTHON_COMPONENTS[PDF_LIBRARY]["label"]
+        desktop_converters = (
+            f"\nOffice converter: {self._converter_program('soffice') or 'LibreOffice not found'}"
+            f"\nEbook converter: {self._converter_program('ebook-convert') or 'Calibre not found'}"
+            if not IS_ANDROID else "")
+        return (f"Spotify engine: {self.spotdl_cmd}\n"
                 f"yt-dlp: {self.ytdlp_cmd}\n"
-                f"Deno/EJS: {self.deno_cmd}\n"
-                f"gallery-dl: {self.gallerydl_version or 'bundled'}\n"
-                f"Streamlink: {self.streamlink_version or 'bundled'}\n"
-                f"FFmpeg: {self.ffmpeg_cmd}\n"
-                f"Office converter: {self._converter_program('soffice') or 'LibreOffice not found'}\n"
-                f"Ebook converter: {self._converter_program('ebook-convert') or 'Calibre not found'}")
+                f"Deno/EJS: {self.deno_cmd or 'not used on Android'}\n"
+                f"gallery-dl: {python_versions['gallery-dl']}\n"
+                f"Streamlink: {python_versions['streamlink']}\n"
+                f"{'reportlab' if IS_ANDROID else 'img2pdf'}: "
+                f"{python_versions['reportlab' if IS_ANDROID else 'img2pdf']}\n"
+                f"Pillow: {python_versions['pillow']}\n"
+                f"{pdf_label}: {python_versions[PDF_LIBRARY]}\n"
+                f"certifi: {python_versions['certifi']}\n"
+                f"FFmpeg: {self.tool_version(self.ffmpeg_cmd) if self.ffmpeg_cmd else 'missing'}"
+                f"{desktop_converters}")
 
-    def get_or_download_ffmpeg(self):
-        packaged_ffmpeg = bundled_tool("ffmpeg.exe")
-        if packaged_ffmpeg:
-            return packaged_ffmpeg
+    def get_or_download_ffmpeg(self, force=False):
+        """Return FFmpeg, staging and launching updates before activation."""
+        if not force:
+            # A successfully updated copy must win over the bundled baseline.
+            if (self._is_native_executable(self.ffmpeg_exe)
+                    and self.tool_version(self.ffmpeg_exe) != "unknown"):
+                return str(self.ffmpeg_exe)
+            packaged_ffmpeg = bundled_tool(f"ffmpeg{EXE}")
+            if packaged_ffmpeg:
+                return packaged_ffmpeg
+            system_ffmpeg = shutil.which("ffmpeg")
+            if system_ffmpeg:
+                return system_ffmpeg
+            try:
+                import imageio_ffmpeg
+                binary = imageio_ffmpeg.get_ffmpeg_exe()
+                if binary and Path(binary).exists():
+                    return binary
+            except Exception:
+                pass
 
-        if self._is_windows_executable(self.ffmpeg_exe):
-            return str(self.ffmpeg_exe)
-        
-        system_ffmpeg = shutil.which("ffmpeg")
-        if system_ffmpeg:
-            return system_ffmpeg
-        
-        try:
-            import imageio_ffmpeg
-            binary = imageio_ffmpeg.get_ffmpeg_exe()
-            if binary and Path(binary).exists():
-                return binary
-        except Exception:
-            pass
-        
+        archives = FFMPEG_DOWNLOADS[OS_TAG]
+        if not archives:
+            raise RuntimeError(
+                "FFmpeg is not downloadable on this platform and none is bundled.")
+
+        archive_path = self.app_data / "ffmpeg.archive.new"
         try:
             self.app_data.mkdir(parents=True, exist_ok=True)
-            zip_path = self.app_data / "ffmpeg.zip"
-            self._download_with_fallbacks(FFMPEG_DOWNLOAD_URLS, zip_path, "FFmpeg")
-            
-            self.ui("setup", "Extracting FFmpeg...", "Setting up audio converter")
-            with zipfile.ZipFile(zip_path, "r") as archive:
-                members = archive.namelist()
-                ffmpeg_member = next((name for name in members if name.replace("\\", "/").lower().endswith("/bin/ffmpeg.exe")), None)
-                ffprobe_member = next((name for name in members if name.replace("\\", "/").lower().endswith("/bin/ffprobe.exe")), None)
-                if not ffmpeg_member:
-                    raise RuntimeError("Could not find ffmpeg.exe in the downloaded archive")
-                self.ffmpeg_exe.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(ffmpeg_member) as source, self.ffmpeg_exe.open("wb") as target:
-                    shutil.copyfileobj(source, target)
-                if ffprobe_member:
-                    ffprobe_path = self.ffmpeg_dir / "bin" / "ffprobe.exe"
-                    with archive.open(ffprobe_member) as source, ffprobe_path.open("wb") as target:
-                        shutil.copyfileobj(source, target)
-            zip_path.unlink(missing_ok=True)
-            if not self._is_windows_executable(self.ffmpeg_exe):
-                self.ffmpeg_exe.unlink(missing_ok=True)
-                raise RuntimeError("The downloaded FFmpeg file is not a valid Windows executable")
+            self.ffmpeg_exe.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=self.ffmpeg_dir) as temp:
+                stage = Path(temp)
+                # Both binaries are staged and launch-checked before either is
+                # activated, so a half-downloaded pair can never replace a
+                # working one.
+                for wanted, urls in archives:
+                    archive_path.unlink(missing_ok=True)
+                    self._download_with_fallbacks(urls, archive_path, "FFmpeg")
+                    self.ui("setup", "Extracting FFmpeg...", "Setting up audio converter")
+                    extract_binaries(archive_path,
+                                     {name: stage / f"{name}{EXE}" for name in wanted})
+                for name in ("ffmpeg", "ffprobe"):
+                    candidate = stage / f"{name}{EXE}"
+                    make_executable(candidate)
+                    if (not self._is_native_executable(candidate)
+                            or self.tool_version(candidate) == "unknown"):
+                        raise RuntimeError(
+                            f"The downloaded {candidate.name} did not pass its launch check")
+
+                # ffmpeg is the activation point and is replaced last. A failure
+                # before this line leaves every running download and the prior
+                # executable untouched.
+                os.replace(stage / f"ffprobe{EXE}", self.ffmpeg_dir / "bin" / f"ffprobe{EXE}")
+                os.replace(stage / f"ffmpeg{EXE}", self.ffmpeg_exe)
             return str(self.ffmpeg_exe)
         except Exception as e:
             raise RuntimeError(f"FFmpeg setup failed: {e}")
+        finally:
+            archive_path.unlink(missing_ok=True)
 
     def find_spotdl(self):
         return self.find_tool("spotdl")
@@ -1544,7 +2024,7 @@ class SpotifyDownloader:
         if quality:
             self.quality.set(quality)
 
-        if self.setup_running or not self.spotdl_cmd:
+        if self.updating or self.setup_running or not self.spotdl_cmd:
             self.notify("Still finishing setup. Try again in a moment.", "err")
             self.ui("finished")
             return
@@ -1574,10 +2054,170 @@ class SpotifyDownloader:
             "proxy_type": self.proxy_type.get(),
         }
         threading.Thread(
-            target=self.download_with_spotdl,
+            target=(self.download_with_android_spotify
+                    if IS_ANDROID else self.download_with_spotdl),
             args=(url, output, options),
             daemon=True,
         ).start()
+
+    def _spotify_json(self, url, token=None):
+        headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        with self._net_opener() as opener:
+            request = urllib.request.Request(url, headers=headers)
+            with opener.open(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8", "replace"))
+
+    @staticmethod
+    def _spotify_track_record(item, album=None):
+        return {
+            "title": str(item.get("name") or "Unknown track"),
+            "artists": ", ".join(
+                str(artist.get("name")) for artist in item.get("artists", [])
+                if artist.get("name")) or "Unknown artist",
+            "album": str((item.get("album") or {}).get("name") or album or ""),
+            "track_number": int(item.get("track_number") or 0),
+        }
+
+    def android_spotify_tracks(self, url):
+        """Resolve a public Spotify track, album or playlist without spotDL.
+
+        Spotify's web player exposes a short-lived anonymous access token. The
+        token is used only for public metadata; audio still comes from the
+        matching YouTube Music result, exactly as it does in spotDL.
+        """
+        match = re.search(
+            r"open\.spotify\.com/(track|album|playlist)/([A-Za-z0-9]+)", url, re.I)
+        if not match:
+            raise ValueError("That is not a Spotify track, album, or playlist link.")
+        kind, item_id = match.group(1).lower(), match.group(2)
+        token_payload = self._spotify_json(
+            "https://open.spotify.com/get_access_token?reason=transport&productType=web_player")
+        token = token_payload.get("accessToken")
+        if not token:
+            raise RuntimeError("Spotify did not provide a public metadata session.")
+
+        base = "https://api.spotify.com/v1"
+        if kind == "track":
+            return [self._spotify_track_record(
+                self._spotify_json(f"{base}/tracks/{item_id}", token))]
+
+        payload = self._spotify_json(f"{base}/{kind}s/{item_id}", token)
+        album = payload.get("name") if kind == "album" else None
+        page = payload.get("tracks") or {}
+        tracks = []
+        while page:
+            for wrapped in page.get("items", []):
+                item = wrapped.get("track") if kind == "playlist" else wrapped
+                if item and not item.get("is_local"):
+                    tracks.append(self._spotify_track_record(item, album))
+            next_url = page.get("next")
+            page = self._spotify_json(next_url, token) if next_url else None
+        if not tracks:
+            raise RuntimeError(f"Spotify returned no downloadable tracks for this {kind}.")
+        return tracks
+
+    def download_with_android_spotify(self, url, output, options):
+        """Android's pure-Python Spotify-to-YouTube-Music download path."""
+        started = time.time()
+        failures = []
+        completed = 0
+        try:
+            from ytmusicapi import YTMusic
+            import mutagen
+            import yt_dlp
+
+            tracks = self.android_spotify_tracks(url)
+            total = len(tracks)
+            self.ui("plan", total, 1, str(output))
+            music = YTMusic()
+
+            for index, track in enumerate(tracks, 1):
+                if not self.is_downloading:
+                    break
+                label = f"{track['artists']} - {track['title']}"
+                self.ui("track", index, total, label[:90])
+                self._batch_log(f"[{index}/{total}] Finding {label}", "download")
+                try:
+                    results = music.search(label, filter="songs", limit=5)
+                    match = next((item for item in results if item.get("videoId")), None)
+                    if not match:
+                        raise RuntimeError("no matching YouTube Music result")
+                    video_url = "https://music.youtube.com/watch?v=" + match["videoId"]
+                    target = unique_path(output, safe_filename(
+                        label, fallback=f"track-{index}", suffix=f".{options['format']}"))
+                    outtmpl = str(target.parent / f"{target.stem}.%(ext)s")
+
+                    def progress(status):
+                        if not self.is_downloading:
+                            raise RuntimeError("Download stopped")
+                        if status.get("status") == "downloading":
+                            match_percent = re.search(
+                                r"([0-9]+(?:\.[0-9]+)?)", status.get("_percent_str", ""))
+                            percent = float(match_percent.group(1)) if match_percent else 0.0
+                            self.ui("progress", percent, status.get("_speed_str", ""),
+                                    status.get("_eta_str", ""))
+
+                    ydl_options = {
+                        "format": "bestaudio/best",
+                        "outtmpl": outtmpl,
+                        "noplaylist": True,
+                        "quiet": True,
+                        "no_warnings": True,
+                        "ffmpeg_location": self.ffmpeg_cmd,
+                        "progress_hooks": [progress],
+                        "postprocessors": [{
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": options["format"],
+                            "preferredquality": options["quality"],
+                        }],
+                    }
+                    if options["proxy_enabled"] and options["proxy_url"]:
+                        ydl_options["proxy"] = normalize_proxy_url(
+                            options["proxy_url"], options["proxy_type"])
+                    with yt_dlp.YoutubeDL(ydl_options) as downloader:
+                        downloader.download([video_url])
+
+                    if not target.is_file():
+                        candidates = sorted(target.parent.glob(target.stem + ".*"))
+                        target = candidates[-1] if candidates else target
+                    if not target.is_file() or target.stat().st_size == 0:
+                        raise RuntimeError("the audio converter returned no file")
+                    with contextlib.suppress(Exception):
+                        tags = mutagen.File(str(target), easy=True)
+                        if tags is not None:
+                            tags["title"] = [track["title"]]
+                            tags["artist"] = [track["artists"]]
+                            if track["album"]:
+                                tags["album"] = [track["album"]]
+                            if track["track_number"]:
+                                tags["tracknumber"] = [str(track["track_number"])]
+                            tags.save()
+                    completed += 1
+                    self._batch_log(f"Downloaded {target.name}", "success")
+                except Exception as exc:
+                    failures.append(f"{label}: {str(exc)[:140]}")
+                    self._batch_log(f"Skipped {label}: {str(exc)[:140]}", "error")
+
+            self._flush_logs()
+            if not self.is_downloading:
+                self.log("Download stopped.", "warning")
+            elif completed:
+                self.ui("success", max(time.time() - started, 0.1))
+                if failures:
+                    self.notify(
+                        f"Downloaded {completed} track(s); {len(failures)} could not be matched.",
+                        "err")
+            else:
+                raise RuntimeError(failures[0] if failures else "No tracks were downloaded.")
+        except Exception as exc:
+            self._flush_logs()
+            detail = str(exc)[:300]
+            self.log(f"Spotify download failed: {detail}", "error")
+            self.ui("failure", detail)
+        finally:
+            self.ui("finished")
 
     def _prepare_proxy(self, proxy_url, proxy_type):
         """Return an HTTP proxy URL accepted by spotDL and an optional bridge."""
@@ -1639,10 +2279,7 @@ class SpotifyDownloader:
 
         try:
             # Use larger buffer for better I/O performance
-            self.process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=8192, encoding="utf-8", errors="replace", env=env
-            )
+            self.process = pyshell.popen(cmd, bufsize=8192, env=env)
             
             total = None
             count = 0
@@ -1795,6 +2432,10 @@ class SpotifyDownloader:
     def start_pdf_download(self, url, limit=None):
         if self.is_downloading:
             return
+        if self.updating or self.setup_running:
+            self.notify("Components are being updated. Try again when the update finishes.", "err")
+            self.ui("finished")
+            return
         try:
             url = normalize_page_url(url)
             if limit is not None:
@@ -1820,6 +2461,10 @@ class SpotifyDownloader:
 
     def start_manga_download(self, url, limit=None):
         if self.is_downloading:
+            return
+        if self.updating or self.setup_running:
+            self.notify("Components are being updated. Try again when the update finishes.", "err")
+            self.ui("finished")
             return
         try:
             url = normalize_page_url(url)
@@ -1950,12 +2595,17 @@ class SpotifyDownloader:
             if not self.is_downloading:
                 partial.unlink(missing_ok=True)
                 return None, head
+            if size and done != size:
+                raise RuntimeError(
+                    f"The server closed the document early ({done} of {size} bytes).")
             if suffix == ".zip":
                 actual_suffix = inspect_zip_document(partial)
                 if not actual_suffix:
                     partial.unlink(missing_ok=True)
                     return None, head
                 path = unique_path(output, safe_filename(name, suffix=actual_suffix))
+            elif suffix == ".pdf" and not is_valid_pdf_file(partial):
+                raise RuntimeError("The server returned an incomplete or invalid PDF.")
             os.replace(partial, path)
             self.ui("track", index, total, path.name[:90])
             return path, head
@@ -2141,7 +2791,8 @@ class SpotifyDownloader:
                 found.append((entry[1], name, ext))
         return found
 
-    def _download_media_urls(self, items, output, label, ordered_names=False):
+    def _download_media_urls(self, items, output, label, ordered_names=False,
+                             chapter_images=False):
         """Stream already-resolved media URLs. Returns saved paths in source order."""
         saved = []
         self.ui("plan", len(items), 1, str(output))
@@ -2156,11 +2807,31 @@ class SpotifyDownloader:
                         path = self._save_stream(response, output, media_url, index,
                                                  len(items), suffix=f".{ext}",
                                                  name_hint=name_hint)
+                    if path and chapter_images:
+                        from PIL import Image
+                        try:
+                            with Image.open(path) as image:
+                                width, height = image.size
+                                image.verify()
+                            # Tracking pixels and spacer GIFs are common among
+                            # ordinary <img> tags.  They are not chapter pages,
+                            # and accepting them can add blank pages or violate
+                            # a PDF writer's minimum page dimension.
+                            if (width < MIN_CHAPTER_IMAGE_EDGE
+                                    or height < MIN_CHAPTER_IMAGE_EDGE
+                                    or width * height < MIN_CHAPTER_IMAGE_AREA):
+                                path.unlink(missing_ok=True)
+                                path = None
+                        except Exception:
+                            path.unlink(missing_ok=True)
+                            path = None
                     if path:
                         saved.append(path)
                         self._batch_log(f"Saved {path.name}", "success")
                     else:
-                        self._batch_log(f"Skipped {media_url[:70]}: not media", "warning")
+                        reason = ("not a readable chapter page" if chapter_images
+                                  else "not media")
+                        self._batch_log(f"Skipped {media_url[:70]}: {reason}", "warning")
                 except Exception as exc:
                     self._batch_log(f"Skipped {media_url[:70]}: {str(exc)[:80]}", "warning")
         self._flush_logs()
@@ -2345,7 +3016,8 @@ class SpotifyDownloader:
             page_folder, pdf_path, cbz_path = unique_chapter_paths(output, slug)
             page_folder.mkdir(parents=True)
             pages = self._download_media_urls(
-                items, page_folder, "chapter page", ordered_names=True)
+                items, page_folder, "chapter page", ordered_names=True,
+                chapter_images=True)
             if not self.is_downloading:
                 self.log("Download stopped.", "warning")
                 return
@@ -2379,6 +3051,8 @@ class SpotifyDownloader:
             try:
                 with tempfile.TemporaryDirectory() as temp:
                     self._write_images_pdf(pages, pdf_partial, Path(temp))
+                if not is_valid_pdf_file(pdf_partial):
+                    raise RuntimeError("The PDF builder returned an incomplete file.")
                 os.replace(pdf_partial, pdf_path)
             finally:
                 pdf_partial.unlink(missing_ok=True)
@@ -2399,16 +3073,20 @@ class SpotifyDownloader:
             self.ui("finished")
 
     def _ytdlp_cmd_for(self, kind, url, output, quality, audio_only, limit, candidate=None,
-                       clients=None, impersonate=False):
+                       clients=None, impersonate=False, fresh=False):
         cmd = [
             self.ytdlp_cmd, url,
+            # Do not inherit a machine-wide yt-dlp.conf. The UI is the source of
+            # truth, and a stale format/client override can break a new build.
+            "--ignore-config",
             "--output", str(output / "%(title).150B.%(ext)s"),
             "--newline", "--no-warnings", "--ignore-errors",
             # Partials stay in .part files and are renamed on success. Writing
             # straight to the final name leaves a truncated file behind when a
             # run fails, and the next run tries to resume it — which Instagram
             # answers with HTTP 416.
-            "--retries", "10", "--socket-timeout", "30",
+            "--retries", "10", "--fragment-retries", "10",
+            "--extractor-retries", "5", "--socket-timeout", "30",
             "--ffmpeg-location", str(Path(self.ffmpeg_cmd).parent),
             # A machine-readable progress line beats scraping the pretty bar.
             # Pipe-separated because titles and speeds both contain spaces.
@@ -2416,6 +3094,10 @@ class SpotifyDownloader:
             "PROGRESS|%(progress._percent_str)s|%(progress._speed_str)s"
             "|%(progress._eta_str)s|%(info.title).70s",
         ]
+        if fresh:
+            # A .part file can refer to an expired GoogleVideo delivery URL.
+            # Keep normal resume support, but restart a delivery-403 retry.
+            cmd += ["--no-continue"]
         if audio_only:
             codec = self.download_format.get() if self.download_format.get() in ("mp3", "flac") else "mp3"
             cmd += ["--extract-audio", "--audio-format", codec, "--audio-quality", f"{self.quality.get()}K"]
@@ -2497,18 +3179,27 @@ class SpotifyDownloader:
         # Chromium browser locks its DB, and Chrome 127+ encrypts it app-bound.
         # Probing costs a second and tells us before the download instead of after.
         cookies = [None]
-        if kind in COOKIE_SOURCES:
-            cookies = self.usable_cookies(COOKIE_DOMAINS.get(kind)) or [None]
-            if cookies == [None]:
+        stored_site = cookie_site(kind)
+        use_stored_session = stored_site in SIGNIN_PAGES and registry_entry(stored_site)
+        if kind in COOKIE_SOURCES or use_stored_session:
+            cookies = self.usable_cookies(
+                COOKIE_DOMAINS.get(kind), require_session=(kind == "soundcloud")) or [None]
+            if cookies == [None] and kind == "instagram":
                 self._batch_log(
                     "No readable cookies — log into Instagram in Firefox, or drop a cookies.txt "
                     "beside the app. Trying anyway.", "warning")
+
+        if cookies == [None] and kind == "soundcloud" and use_stored_session:
+            self._batch_log(
+                "The saved SoundCloud session is unavailable or expired. "
+                "Trying the public stream; sign in again for Go/Go+ access.", "warning")
 
         # Each attempt is a cookie jar, a set of YouTube player clients, and an
         # optional browser-impersonation pass. The ladder is climbed when a run says why it
         # failed, and every rung is used at most once — otherwise a jar that can
         # never satisfy the site gets retried forever.
-        plan = [{"cookies": c, "clients": None, "impersonate": False} for c in cookies]
+        plan = [{"cookies": c, "clients": None, "impersonate": False, "fresh": False}
+                for c in cookies]
         spent = set()
 
         try:
@@ -2523,7 +3214,8 @@ class SpotifyDownloader:
                     # stored session that expired between runs only shows up as a
                     # sign-in demand mid-download, and that is what the ladder fixes.
                     may_borrow_cookies=(kind in COOKIE_ON_DEMAND or kind in COOKIE_SOURCES),
-                    clients=attempt["clients"], impersonate=attempt["impersonate"])
+                    clients=attempt["clients"], impersonate=attempt["impersonate"],
+                    fresh=attempt["fresh"])
 
                 if verdict is None:
                     return
@@ -2542,6 +3234,17 @@ class SpotifyDownloader:
                         plan.insert(0, nxt)
                         continue
                     self._flush_logs()
+                    if verdict == "challenge" and kind in YOUTUBE_KINDS:
+                        detail = (
+                            "YouTube refused the media URL after fresh-link and "
+                            "alternate-client retries.")
+                        self.log(detail, "error")
+                        self.ui(
+                            "failure",
+                            detail + "\n\nTry the app's proxy, a different connection, or "
+                            "a signed-in YouTube session. A PO token may be required when "
+                            "YouTube binds delivery URLs to proof-of-origin.")
+                        return
                     self._report_signin_failure(kind, url)
                     return
 
@@ -2573,12 +3276,17 @@ class SpotifyDownloader:
             self._flush_logs()
             return {**attempt, "impersonate": True}
 
-        if kind in YOUTUBE_KINDS and "clients" not in spent:
-            spent.add("clients")
-            self._batch_log("YouTube asked for a bot check — retrying as a different client.",
-                            "warning")
-            self._flush_logs()
-            return {**attempt, "clients": YT_FALLBACK_CLIENTS}
+        if kind in YOUTUBE_KINDS:
+            for index, clients in enumerate(YT_CLIENT_LADDER):
+                key = f"clients-{index}"
+                if key in spent:
+                    continue
+                spent.add(key)
+                self._batch_log(
+                    f"YouTube delivery failed — requesting a fresh media URL as {clients}.",
+                    "warning")
+                self._flush_logs()
+                return {**attempt, "clients": clients, "fresh": True}
 
         # The stored login outlives its cookies, because the site rotates them.
         # If this app has ever signed in here, re-read the session before
@@ -2792,7 +3500,8 @@ class SpotifyDownloader:
         session; one taken in a private window and never used again does not.
         """
         site = {"youtube": "www.youtube.com", "instagram": "www.instagram.com",
-                "tiktok": "www.tiktok.com", "x": "x.com"}.get(kind, "the site")
+                "tiktok": "www.tiktok.com", "soundcloud": "soundcloud.com",
+                "x": "x.com"}.get(kind, "the site")
         return (f"\n\n🍪 Export a cookies.txt — this lasts:"
                 "\n1. Install the “Get cookies.txt LOCALLY” extension"
                 "\n2. Open a private/incognito window and sign in"
@@ -2843,23 +3552,19 @@ class SpotifyDownloader:
                 " folder — an exported file wins over every browser")
 
     def _run_ytdlp(self, kind, url, output, quality, audio_only, limit, candidate, started,
-                   may_borrow_cookies=False, clients=None, impersonate=False):
+                   may_borrow_cookies=False, clients=None, impersonate=False, fresh=False):
         """One yt-dlp run.
 
         Returns None when the job is over (success, stop, or a failure already
         reported), or a verdict the caller can act on: "cookies" for an unreadable
         jar, "signin" for a site that wants a session, or "challenge" for a
-        General-site browser challenge that has another safe fallback.
+        browser/media-delivery challenge that has another safe fallback.
         """
         error_lines = []
         try:
             cmd = self._ytdlp_cmd_for(kind, url, output, quality, audio_only, limit, candidate,
-                                      clients, impersonate)
-            self.process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=8192, encoding="utf-8", errors="replace",
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+                                      clients, impersonate, fresh)
+            self.process = pyshell.popen(cmd, bufsize=8192)
             for raw in self.process.stdout:
                 if not self.is_downloading:
                     break
@@ -2919,6 +3624,8 @@ class SpotifyDownloader:
             # Say nothing yet when the caller still has a move to make.
             if candidate and COOKIE_FAILURE.search(joined):
                 return "cookies"
+            if kind in YOUTUBE_KINDS and YOUTUBE_MEDIA_DENIED.search(joined):
+                return "challenge"
             if kind == "general" and GENERAL_CHALLENGE.search(joined):
                 return "challenge"
             if may_borrow_cookies and SIGNIN_DEMANDED.search(joined):
@@ -3044,24 +3751,27 @@ class SpotifyDownloader:
     # Utilities
     # ------------------------------------------------------------------
     def check_setup(self):
+        if self.updating:
+            self.notify("The component update is still running.", "err")
+            return
         self.log("Checking components...", "info")
 
-        packaged_ffmpeg = bundled_tool("ffmpeg.exe")
-        if packaged_ffmpeg:
-            self.ffmpeg_cmd = packaged_ffmpeg
-        elif self.ffmpeg_exe.exists():
+        if (self._is_windows_executable(self.ffmpeg_exe)
+                and self.tool_version(self.ffmpeg_exe) != "unknown"):
             self.ffmpeg_cmd = str(self.ffmpeg_exe)
         else:
-            self.ffmpeg_cmd = shutil.which("ffmpeg")
+            self.ffmpeg_cmd = bundled_tool(f"ffmpeg{EXE}") or shutil.which("ffmpeg")
 
-        self.spotdl_cmd = self.find_tool("spotdl")
+        self.spotdl_cmd = ("Android Spotify engine" if IS_ANDROID
+                           else self.find_tool("spotdl"))
         self.ytdlp_cmd = self.find_tool("yt-dlp")
-        self.deno_cmd = self.find_tool("deno")
+        self.deno_cmd = None if IS_ANDROID else self.find_tool("deno")
 
-        missing = [label for label, found in (
-            ("spotDL", self.spotdl_cmd), ("yt-dlp", self.ytdlp_cmd), ("FFmpeg", self.ffmpeg_cmd),
-            ("Deno", self.deno_cmd),
-        ) if not found]
+        required = [("Spotify engine", self.spotdl_cmd), ("yt-dlp", self.ytdlp_cmd),
+                    ("FFmpeg", self.ffmpeg_cmd)]
+        if not IS_ANDROID:
+            required.append(("Deno", self.deno_cmd))
+        missing = [label for label, found in required if not found]
         self.ui("components", self.component_summary())
         if not missing:
             self.status.set("Ready")
@@ -3095,6 +3805,18 @@ class SpotifyDownloader:
         fps = str(options.get("fps", "source")).lower()
         if fps not in {"source", "24", "30", "60"}:
             raise ValueError("Choose a supported frame rate.")
+        frame_mode = str(options.get("frame_mode", "standard")).lower()
+        if frame_mode not in {"standard", "motion"}:
+            raise ValueError("Choose a supported frame processing mode.")
+        upscale = str(options.get("upscale", "lanczos")).lower()
+        if upscale not in VIDEO_UPSCALE_FILTERS:
+            raise ValueError("Choose a supported upscale engine.")
+        video_enhance = str(options.get("video_enhance", "none")).lower()
+        if video_enhance not in VIDEO_ENHANCEMENT_FILTERS:
+            raise ValueError("Choose a supported video enhancement preset.")
+        audio_enhance = str(options.get("audio_enhance", "none")).lower()
+        if audio_enhance not in AUDIO_ENHANCEMENT_FILTERS:
+            raise ValueError("Choose a supported audio enhancement preset.")
         bitrate = str(options.get("audio_bitrate", "192"))
         if bitrate not in {"128", "192", "256", "320"}:
             raise ValueError("Choose a supported audio bitrate.")
@@ -3117,8 +3839,10 @@ class SpotifyDownloader:
             codec = "h264"
         return {
             "format": output_format, "codec": codec, "quality": quality,
-            "resize": resize, "fps": fps, "audio_bitrate": bitrate,
-            "width": width, "height": height,
+            "resize": resize, "fps": fps, "frame_mode": frame_mode,
+            "audio_bitrate": bitrate,
+            "width": width, "height": height, "upscale": upscale,
+            "video_enhance": video_enhance, "audio_enhance": audio_enhance,
         }
 
     @staticmethod
@@ -3130,46 +3854,89 @@ class SpotifyDownloader:
             ffmpeg, "-hide_banner", "-y", "-i", str(source),
             "-map", "0:v:0?", "-map", "0:a:0?", "-map_metadata", "0",
         ]
+        audio_filter = AUDIO_ENHANCEMENT_FILTERS[options["audio_enhance"]]
+        # loudnorm processes internally at 192 kHz. Bring enhanced output back
+        # to a widely supported professional rate so FLAC/AAC muxers do not
+        # reject the filter's temporary sample rate.
+        audio_args = ["-af", audio_filter, "-ar", "48000"] if audio_filter else []
         if output_format == "mp3":
-            return base + ["-vn", "-c:a", "libmp3lame", "-b:a", f"{bitrate}k", str(target)]
+            return base + audio_args + [
+                "-vn", "-c:a", "libmp3lame", "-b:a", f"{bitrate}k", str(target)]
         if output_format == "flac":
-            return base + ["-vn", "-c:a", "flac", "-compression_level", "8", str(target)]
+            return base + audio_args + [
+                "-vn", "-c:a", "flac", "-compression_level", "8", str(target)]
         if output_format == "wav":
-            return base + ["-vn", "-c:a", "pcm_s16le", str(target)]
+            return base + audio_args + ["-vn", "-c:a", "pcm_s24le", str(target)]
         if output_format in {"m4a", "aac"}:
-            return base + ["-vn", "-c:a", "aac", "-b:a", f"{bitrate}k", str(target)]
+            return base + audio_args + [
+                "-vn", "-c:a", "aac", "-b:a", f"{bitrate}k", str(target)]
         if output_format == "ogg":
-            return base + ["-vn", "-c:a", "libopus", "-b:a", f"{bitrate}k", str(target)]
+            audio_codec = "opus" if IS_ANDROID else "libopus"
+            experimental = ["-strict", "-2"] if IS_ANDROID else []
+            return base + audio_args + [
+                "-vn", "-c:a", audio_codec, *experimental,
+                "-b:a", f"{bitrate}k", str(target)]
 
-        filters = []
+        filters = list(VIDEO_ENHANCEMENT_FILTERS[options["video_enhance"]][:1])
         resize = options["resize"]
+        scale_flags = VIDEO_UPSCALE_FILTERS[options["upscale"]]
         if resize == "custom":
             width = options["width"] or -2
             height = options["height"] or -2
             filters.append(
-                f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2")
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
+                f"force_divisible_by=2:flags={scale_flags}")
         elif VIDEO_RESIZE_PRESETS[resize]:
             width, height = VIDEO_RESIZE_PRESETS[resize]
             filters.append(
-                f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2")
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
+                f"force_divisible_by=2:flags={scale_flags}")
+        filters.extend(VIDEO_ENHANCEMENT_FILTERS[options["video_enhance"]][1:])
         if options["fps"] != "source":
-            filters.append(f"fps={options['fps']}")
+            if options["frame_mode"] == "motion":
+                filters.append(
+                    f"minterpolate=fps={options['fps']}:mi_mode=mci:mc_mode=aobmc:"
+                    "me_mode=bidir:vsbmc=1")
+            else:
+                filters.append(f"fps={options['fps']}")
         if filters:
             base += ["-vf", ",".join(filters)]
 
         crf = str(VIDEO_CONVERT_QUALITY[options["quality"]])
         codec = options["codec"]
-        if codec == "h265":
-            command = base + ["-c:v", "libx265", "-preset", "medium", "-crf", crf]
+        preset = "slow" if options["quality"] in {"master", "high"} else (
+            "fast" if options["quality"] == "compact" else "medium")
+        if IS_ANDROID:
+            # The APK's FFmpeg uses Android's hardware codecs instead of the
+            # desktop-only libx264/libx265/libvpx libraries. Bitrate is used
+            # because MediaCodec encoders do not accept CRF or x264 presets.
+            android_codec = {
+                "h264": "h264_mediacodec",
+                "h265": "hevc_mediacodec",
+                "vp9": "vp9_mediacodec",
+            }[codec]
+            video_bitrate = {
+                "master": "16M", "high": "10M", "balanced": "6M", "compact": "3M",
+            }[options["quality"]]
+            command = base + ["-c:v", android_codec, "-b:v", video_bitrate,
+                              "-pix_fmt", "yuv420p"]
+        elif codec == "h265":
+            command = base + ["-c:v", "libx265", "-preset", preset, "-crf", crf]
             if output_format in {"mp4", "mov"}:
                 command += ["-tag:v", "hvc1"]
         elif codec == "vp9":
-            command = base + ["-c:v", "libvpx-vp9", "-crf", crf, "-b:v", "0", "-row-mt", "1"]
+            cpu_used = "2" if options["quality"] in {"master", "high"} else "4"
+            command = base + ["-c:v", "libvpx-vp9", "-crf", crf, "-b:v", "0",
+                              "-row-mt", "1", "-cpu-used", cpu_used]
         else:
-            command = base + ["-c:v", "libx264", "-preset", "medium", "-crf", crf,
+            command = base + ["-c:v", "libx264", "-preset", preset, "-crf", crf,
                               "-pix_fmt", "yuv420p"]
+        command += audio_args
         if output_format == "webm":
-            command += ["-c:a", "libopus", "-b:a", f"{bitrate}k"]
+            command += ["-c:a", "opus" if IS_ANDROID else "libopus"]
+            if IS_ANDROID:
+                command += ["-strict", "-2"]
+            command += ["-b:a", f"{bitrate}k"]
         elif output_format == "avi":
             command += ["-c:a", "libmp3lame", "-b:a", f"{bitrate}k"]
         else:
@@ -3183,6 +3950,9 @@ class SpotifyDownloader:
             options = self.normalize_media_conversion_options(options)
         except (TypeError, ValueError) as exc:
             self.notify(str(exc), "err")
+            return
+        if self.updating or self.setup_running:
+            self.notify("Components are being updated. Try again when the update finishes.", "err")
             return
         if self.is_converting:
             self.notify("A conversion is already running.", "err")
@@ -3201,7 +3971,9 @@ class SpotifyDownloader:
                 raise RuntimeError("FFmpeg is not ready. Run Check setup first.")
             if not source.is_file():
                 raise RuntimeError("The selected media file no longer exists.")
-            target = unique_path(source.parent, safe_filename(
+            target_parent = (download_dir("converted", self.save_folder.get().strip())
+                             if IS_ANDROID else source.parent)
+            target = unique_path(target_parent, safe_filename(
                 source.stem, fallback="converted", suffix=f".{output_format}"))
             partial = target.with_name(target.stem + ".working" + target.suffix)
             partial.unlink(missing_ok=True)
@@ -3230,50 +4002,180 @@ class SpotifyDownloader:
 
     @staticmethod
     def _converter_program(name):
+        """LibreOffice or Calibre, wherever this platform installs it.
+
+        Both ship a launcher on PATH on Linux, and neither reliably does on
+        Windows or macOS, so the standard install location is checked too.
+        """
         found = shutil.which(name)
         if found:
             return found
-        roots = [os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)")]
-        relative = ("LibreOffice/program/soffice.exe" if name == "soffice"
-                    else "Calibre2/ebook-convert.exe")
+        soffice = name == "soffice"
+        if IS_WINDOWS:
+            roots = [os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)")]
+            relative = ("LibreOffice/program/soffice.exe" if soffice
+                        else "Calibre2/ebook-convert.exe")
+        elif IS_MACOS:
+            roots = ["/Applications", str(Path.home() / "Applications")]
+            relative = ("LibreOffice.app/Contents/MacOS/soffice" if soffice
+                        else "calibre.app/Contents/MacOS/ebook-convert")
+        else:
+            roots = ["/usr/lib", "/usr/local/lib", "/opt", "/snap/bin",
+                     str(Path.home() / ".local/bin")]
+            relative = ("libreoffice/program/soffice" if soffice else "calibre/ebook-convert")
         for root in filter(None, roots):
-            candidate = Path(root) / Path(relative)
-            if candidate.is_file():
-                return str(candidate)
+            for candidate in (Path(root) / Path(relative), Path(root) / name):
+                if candidate.is_file():
+                    return str(candidate)
         return None
 
     @staticmethod
     def _write_images_pdf(image_sources, target, workspace):
-        import img2pdf
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         normalized = []
-        for index, source in enumerate(image_sources, 1):
-            destination = workspace / f"{index:05d}.png"
-            if isinstance(source, tuple):
-                _, payload = source
-                image = Image.open(io.BytesIO(payload))
-            else:
-                image = Image.open(source)
-            with image:
-                image.seek(0)
-                rgba = image.convert("RGBA")
-                canvas = Image.new("RGB", rgba.size, "white")
-                canvas.paste(rgba, mask=rgba.getchannel("A"))
-                canvas.save(destination, "PNG", optimize=True)
-            normalized.append(str(destination))
+        for source in image_sources:
+            try:
+                if isinstance(source, tuple):
+                    _, payload = source
+                    image = Image.open(io.BytesIO(payload))
+                else:
+                    image = Image.open(source)
+                with image:
+                    image.seek(0)
+                    oriented = ImageOps.exif_transpose(image)
+                    if oriented.width < 4 or oriented.height < 4:
+                        continue
+                    rgba = oriented.convert("RGBA")
+                    canvas = Image.new("RGB", rgba.size, "white")
+                    canvas.paste(rgba, mask=rgba.getchannel("A"))
+                    # Number only successfully decoded inputs. This keeps the
+                    # normalized sequence contiguous when a folder or CBZ has
+                    # a corrupt image or tracking pixel in the middle.
+                    destination = workspace / f"{len(normalized) + 1:05d}.png"
+                    canvas.save(destination, "PNG", optimize=True)
+                normalized.append(str(destination))
+            except Exception:
+                # One damaged image should not destroy an otherwise valid
+                # chapter. The caller reports the number actually merged.
+                continue
         if not normalized:
             raise RuntimeError("No readable images were found.")
-        target.write_bytes(img2pdf.convert(normalized))
+
+        # A fixed A4 page prevents tiny or unusually tall webtoon strips from
+        # creating invalid page sizes. Android uses reportlab because img2pdf
+        # depends on pikepdf/qpdf, which has no Android wheel.
+        if IS_ANDROID:
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.lib.utils import ImageReader
+            from reportlab.pdfgen import canvas as pdf_canvas
+
+            document = pdf_canvas.Canvas(str(target), pagesize=A4)
+            for image_path in normalized:
+                with Image.open(image_path) as image:
+                    page = landscape(A4) if image.width > image.height else A4
+                    page_width, page_height = page
+                    document.setPageSize(page)
+                    scale = min(page_width / image.width, page_height / image.height)
+                    width, height = image.width * scale, image.height * scale
+                    document.drawImage(
+                        ImageReader(image_path), (page_width - width) / 2,
+                        (page_height - height) / 2, width, height,
+                        preserveAspectRatio=True)
+                    document.showPage()
+            document.save()
+        else:
+            import img2pdf
+            a4 = (img2pdf.mm_to_pt(210), img2pdf.mm_to_pt(297))
+            layout = img2pdf.get_layout_fun(
+                a4, fit=img2pdf.FitMode.into, auto_orient=True)
+            target.write_bytes(img2pdf.convert(normalized, layout_fun=layout))
+        return len(normalized)
 
     def start_document_conversion(self, path):
+        if self.updating or self.setup_running:
+            self.notify("Components are being updated. Try again when the update finishes.", "err")
+            return
         if self.is_converting:
             self.notify("A conversion is already running.", "err")
             return
         self.is_converting = True
         threading.Thread(target=self.convert_document_file, args=(path,), daemon=True).start()
 
+    @staticmethod
+    def _android_document_to_pdf(source, target):
+        """Render Android-supported text/office/ebook formats to a readable PDF."""
+        from xml.sax.saxutils import escape
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+        suffix = source.suffix.lower()
+        blocks = []
+        if suffix == ".docx":
+            from docx import Document
+            document = Document(str(source))
+            blocks.extend(paragraph.text for paragraph in document.paragraphs)
+            for table in document.tables:
+                blocks.extend(" | ".join(cell.text for cell in row.cells) for row in table.rows)
+        elif suffix == ".xlsx":
+            from openpyxl import load_workbook
+            workbook = load_workbook(source, read_only=True, data_only=True)
+            for sheet in workbook.worksheets:
+                blocks.append(sheet.title)
+                blocks.extend(" | ".join("" if value is None else str(value) for value in row)
+                              for row in sheet.iter_rows(values_only=True))
+            workbook.close()
+        elif suffix == ".pptx":
+            from pptx import Presentation
+            presentation = Presentation(str(source))
+            for index, slide in enumerate(presentation.slides, 1):
+                blocks.append(f"Slide {index}")
+                blocks.extend(shape.text for shape in slide.shapes if hasattr(shape, "text"))
+        elif suffix in {".odt", ".ods", ".odp"}:
+            from odf import teletype
+            from odf.opendocument import load
+            document = load(str(source))
+            blocks.append(teletype.extractText(document.text))
+        elif suffix == ".epub":
+            from ebooklib import ITEM_DOCUMENT, epub
+            book = epub.read_epub(str(source))
+            for item in book.get_items_of_type(ITEM_DOCUMENT):
+                text = re.sub(r"<[^>]+>", " ", item.get_content().decode("utf-8", "replace"))
+                blocks.append(re.sub(r"\s+", " ", text))
+        elif suffix == ".fb2":
+            import xml.etree.ElementTree as element_tree
+            blocks.append(" ".join(element_tree.parse(source).getroot().itertext()))
+        elif suffix in {".txt", ".csv", ".html", ".htm", ".rtf"}:
+            text = source.read_text("utf-8", "replace")
+            if suffix in {".html", ".htm"}:
+                text = re.sub(r"<[^>]+>", " ", text)
+            elif suffix == ".rtf":
+                text = re.sub(r"\\[A-Za-z]+-?\d* ?|[{}]", "", text)
+            blocks.append(text)
+        else:
+            raise RuntimeError(
+                "This legacy document type needs LibreOffice or Calibre on a desktop build.")
+
+        styles = getSampleStyleSheet()
+        body = styles["BodyText"]
+        body.wordWrap = "CJK"
+        story = []
+        for block in blocks:
+            for paragraph in str(block).replace("\r", "").split("\n"):
+                if paragraph.strip():
+                    story.extend((Paragraph(escape(paragraph.strip()), body), Spacer(1, 2 * mm)))
+        if not story:
+            raise RuntimeError("The selected document contains no readable text.")
+        SimpleDocTemplate(str(target), pagesize=A4, leftMargin=15 * mm,
+                          rightMargin=15 * mm, topMargin=15 * mm,
+                          bottomMargin=15 * mm).build(story)
+
     def start_image_folder_conversion(self, path):
+        if self.updating or self.setup_running:
+            self.notify("Components are being updated. Try again when the update finishes.", "err")
+            return
         if self.is_converting:
             self.notify("A conversion is already running.", "err")
             return
@@ -3284,7 +4186,7 @@ class SpotifyDownloader:
         """Combine a chapter/image folder into a naturally ordered PDF."""
         folder = Path(path)
         partial = None
-        self.ui("converting", True, "document")
+        self.ui("converting", True, "images")
         try:
             if not folder.is_dir():
                 raise RuntimeError("The selected image folder no longer exists.")
@@ -3295,17 +4197,21 @@ class SpotifyDownloader:
                 raise RuntimeError("No supported images were found in that folder.")
             if len(images) > MANGA_PAGE_LIMIT:
                 raise RuntimeError(f"Image folders are limited to {MANGA_PAGE_LIMIT} pages.")
-            target = unique_path(folder.parent, safe_filename(
+            target_parent = (download_dir("converted", self.save_folder.get().strip())
+                             if IS_ANDROID else folder.parent)
+            target = unique_path(target_parent, safe_filename(
                 folder.name, fallback="chapter", suffix=".pdf"))
             partial = target.with_name(target.stem + ".working.pdf")
             self.log(f"Combining {len(images)} ordered images into {target.name}...", "info")
             with tempfile.TemporaryDirectory() as temp:
-                self._write_images_pdf(images, partial, Path(temp))
-            if not partial.is_file() or partial.stat().st_size == 0:
-                raise RuntimeError("The image converter returned an empty PDF.")
+                merged = self._write_images_pdf(images, partial, Path(temp))
+            if not is_valid_pdf_file(partial):
+                raise RuntimeError("The image converter returned an incomplete PDF.")
             os.replace(partial, target)
-            self.log(f"Created {target.name} from {len(images)} images.", "success")
-            self.notify(f"Created {target.name}", "ok")
+            skipped = len(images) - merged
+            detail = (f" ({skipped} unreadable/tiny image(s) skipped)" if skipped else "")
+            self.log(f"Created {target.name} from {merged} images{detail}.", "success")
+            self.notify(f"Created {target.name} from {merged} ordered images{detail}", "ok")
         except Exception as exc:
             detail = str(exc)[:250]
             self.log(f"Image-folder conversion failed: {detail}", "error")
@@ -3314,7 +4220,7 @@ class SpotifyDownloader:
             if partial:
                 partial.unlink(missing_ok=True)
             self.is_converting = False
-            self.ui("converting", False, "document")
+            self.ui("converting", False, "images")
 
     def convert_document_file(self, path):
         source = Path(path)
@@ -3323,7 +4229,9 @@ class SpotifyDownloader:
         try:
             if not source.is_file():
                 raise RuntimeError("The selected document no longer exists.")
-            target = unique_path(source.parent, safe_filename(
+            target_parent = (download_dir("converted", self.save_folder.get().strip())
+                             if IS_ANDROID else source.parent)
+            target = unique_path(target_parent, safe_filename(
                 source.stem, fallback="document", suffix=".pdf"))
             partial = target.with_name(target.stem + ".working.pdf")
             partial.unlink(missing_ok=True)
@@ -3336,17 +4244,30 @@ class SpotifyDownloader:
                     self._write_images_pdf([source], partial, workspace)
                 elif suffix == ".cbz":
                     with zipfile.ZipFile(source) as archive:
-                        names = [name for name in archive.namelist()
-                                 if Path(name).suffix.lower() in IMAGE_DOCUMENT_EXTENSIONS]
-                        names.sort(key=natural_sort_key)
-                        if len(names) > MANGA_PAGE_LIMIT:
+                        members = [member for member in archive.infolist()
+                                   if not member.is_dir()
+                                   and Path(member.filename).suffix.lower()
+                                   in IMAGE_DOCUMENT_EXTENSIONS]
+                        members.sort(key=lambda member: natural_sort_key(member.filename))
+                        if len(members) > MANGA_PAGE_LIMIT:
                             raise RuntimeError(f"Comic archives are limited to {MANGA_PAGE_LIMIT} pages.")
-                        images = [(name, archive.read(name)) for name in names]
+                        images = []
+                        for index, member in enumerate(members, 1):
+                            # Extract to generated flat names instead of trusting
+                            # archive paths, and stream each member so large CBZ
+                            # files do not keep every page in RAM simultaneously.
+                            extracted = workspace / (
+                                f"cbz-{index:05d}{Path(member.filename).suffix.lower()}")
+                            with (archive.open(member) as source_image,
+                                  extracted.open("wb") as target_image):
+                                shutil.copyfileobj(source_image, target_image, length=256 * 1024)
+                            images.append(extracted)
                     self._write_images_pdf(images, partial, workspace)
                 elif suffix == ".pdf":
-                    import pikepdf
-                    with pikepdf.Pdf.open(source) as document:
-                        document.save(partial)
+                    pdf_rewrite(source, partial)
+                elif IS_ANDROID and suffix in (EBOOK_CONVERT_EXTENSIONS |
+                                               OFFICE_DOCUMENT_EXTENSIONS):
+                    self._android_document_to_pdf(source, partial)
                 elif suffix in EBOOK_CONVERT_EXTENSIONS:
                     converter = self._converter_program("ebook-convert")
                     if not converter:
@@ -3376,8 +4297,8 @@ class SpotifyDownloader:
                 else:
                     raise RuntimeError("That document type cannot be converted to PDF.")
 
-            if not partial.is_file() or partial.stat().st_size == 0:
-                raise RuntimeError("The converter returned an empty PDF.")
+            if not is_valid_pdf_file(partial):
+                raise RuntimeError("The converter returned an incomplete or invalid PDF.")
             os.replace(partial, target)
             self.log(f"Converted: {target.name}", "success")
             self.notify(f"Created {target.name}", "ok")
@@ -3562,16 +4483,27 @@ def main():
 
 
 if __name__ == "__main__":
-    if "--self-test" in sys.argv:
-        spotdl = bundled_tool("spotdl.exe")
-        ffmpeg = bundled_tool("ffmpeg.exe")
-        ytdlp = bundled_tool("yt-dlp.exe")
-        deno = bundled_tool("deno.exe")
-        if not ffmpeg and os.environ.get("LOCALAPPDATA"):
-            local_ffmpeg = (Path(os.environ["LOCALAPPDATA"]) / "SpotifyDownloader" /
-                            "ffmpeg" / "bin" / "ffmpeg.exe")
+    if "--validate-engine-update" in sys.argv:
+        try:
+            _probe_index = sys.argv.index("--validate-engine-update")
+            _probe_paths = json.loads(sys.argv[_probe_index + 1])
+            if not isinstance(_probe_paths, list) or not all(
+                    isinstance(item, str) for item in _probe_paths):
+                raise ValueError("engine paths must be a JSON list of strings")
+        except (ValueError, IndexError, json.JSONDecodeError):
+            raise SystemExit(4)
+        raise SystemExit(0 if validate_engine_update(_probe_paths) else 4)
+    elif "--self-test" in sys.argv:
+        spotdl = bundled_tool(f"spotdl{EXE}")
+        ffmpeg = bundled_tool(f"ffmpeg{EXE}")
+        ytdlp = bundled_tool(f"yt-dlp{EXE}")
+        deno = bundled_tool(f"deno{EXE}")
+        if not ffmpeg:
+            local_ffmpeg = app_data_dir() / "ffmpeg" / "bin" / f"ffmpeg{EXE}"
             ffmpeg = str(local_ffmpeg) if local_ffmpeg.is_file() else None
-        if not spotdl or not ffmpeg or not ytdlp or not deno:
+        # Only the tools this platform actually has a build of are required.
+        if not ffmpeg or not ytdlp or ("spotdl" in TOOLS and not spotdl) or (
+                "deno" in TOOLS and not deno):
             raise SystemExit(2)
         assert MEDIA_PATTERNS["youtube"].search("https://youtu.be/abc")
         assert MEDIA_PATTERNS["tiktok"].search("https://www.tiktok.com/@u/video/1")
@@ -3597,7 +4529,13 @@ if __name__ == "__main__":
                 raise AssertionError(f"YouTube Music accepted a plain YouTube URL: {wrong}")
         assert cookie_site("ytmusic") == "youtube" and cookie_site("x") == "x"
         assert SIGNIN_PAGES["x"][0] == "https://x.com/i/flow/login"
+        assert SIGNIN_PAGES["soundcloud"][0] == "https://soundcloud.com/signin"
         assert "auth_token" in SITE_SESSION_COOKIES["x"]
+        assert "oauth_token" in SITE_SESSION_COOKIES["soundcloud"]
+        assert "soundcloud" in COOKIE_ON_DEMAND
+        assert "certifi" in PYTHON_COMPONENTS
+        assert f"v9.9.9/{SPOTDL_ASSETS[OS_TAG].format(v='9.9.9')}" in (
+            SpotifyDownloader.tool_download_urls("spotdl", "9.9.9")[0])
         _app = SpotifyDownloader()
         _app.ytdlp_cmd, _app.ffmpeg_cmd, _app.deno_cmd = ytdlp, ffmpeg, deno
         _ym_cmd = _app._ytdlp_cmd_for(
@@ -3606,13 +4544,32 @@ if __name__ == "__main__":
         _sc_cmd = _app._ytdlp_cmd_for(
             "soundcloud", "https://soundcloud.com/a/song", Path(tempfile.gettempdir()),
             "best", True, None)
+        _sc_cookie_cmd = _app._ytdlp_cmd_for(
+            "soundcloud", "https://soundcloud.com/a/song", Path(tempfile.gettempdir()),
+            "best", True, None, ("file", str(Path(tempfile.gettempdir()) / "sc-cookies.txt")))
         _general_cmd = _app._ytdlp_cmd_for(
             "general", "https://video.example.com/watch/1", Path(tempfile.gettempdir()),
             "best", False, None, impersonate=True)
+        _fresh_cmd = _app._ytdlp_cmd_for(
+            "youtube", "https://youtu.be/g9ilhvSurpQ", Path(tempfile.gettempdir()),
+            "best", False, None, clients="android_vr", fresh=True)
         assert "--embed-metadata" in _ym_cmd and "--embed-thumbnail" in _ym_cmd
         assert "--js-runtimes" in _ym_cmd and any(str(deno) in part for part in _ym_cmd)
         assert "--js-runtimes" in _sc_cmd and "--js-runtimes" in _general_cmd
         assert "--sleep-requests" in _ym_cmd
+        assert "--ignore-config" in _fresh_cmd
+        assert "--no-continue" in _fresh_cmd
+        assert "--fragment-retries" in _fresh_cmd and "--extractor-retries" in _fresh_cmd
+        assert any("player_client=android_vr" in part for part in _fresh_cmd)
+        _spent = set()
+        _step = _app._next_signin_step(
+            "youtube", "https://youtu.be/g9ilhvSurpQ",
+            {"cookies": None, "clients": None, "impersonate": False, "fresh": False},
+            _spent, challenge=True)
+        assert _step["clients"] == "android_vr" and _step["fresh"]
+        _step = _app._next_signin_step(
+            "youtube", "https://youtu.be/g9ilhvSurpQ", _step, _spent, challenge=True)
+        assert _step["clients"] == YT_CLIENT_LADDER[1] and _step["fresh"]
         _app.youtube_po_token.set("mweb.gvs+" + "A" * 32)
         _pot_cmd = _app._ytdlp_cmd_for(
             "youtube", "https://youtube.com/watch?v=1", Path(tempfile.gettempdir()),
@@ -3620,6 +4577,7 @@ if __name__ == "__main__":
         assert any("po_token=mweb.gvs+" in part and "player_client=mweb,default" in part
                    for part in _pot_cmd)
         assert "--extract-audio" in _sc_cmd and "--embed-metadata" not in _sc_cmd
+        assert "--cookies" in _sc_cookie_cmd
         assert _general_cmd[_general_cmd.index("--impersonate") + 1] == "chrome"
         assert "--sleep-requests" not in _general_cmd
         assert not any("youtube:" in part or "po_token=" in part or "player_client=" in part
@@ -3659,11 +4617,21 @@ if __name__ == "__main__":
         assert detect_document_extension(b"<FictionBook/>", "https://host/book.fb2") == ".fb2"
         assert detect_document_extension(b"<html>error</html>", "https://host/book.epub") is None
         with tempfile.TemporaryDirectory() as _tmp:
+            _complete_pdf = Path(_tmp) / "complete.pdf"
+            _complete_pdf.write_bytes(b"%PDF-1.7\nbody\n%%EOF\n")
+            _truncated_pdf = Path(_tmp) / "truncated.pdf"
+            _truncated_pdf.write_bytes(b"%PDF-1.7\nbody")
+            assert is_valid_pdf_file(_complete_pdf)
+            assert not is_valid_pdf_file(_truncated_pdf)
             _book = Path(_tmp) / "book.zip"
             with zipfile.ZipFile(_book, "w") as _archive:
                 _archive.writestr("mimetype", "application/epub+zip")
                 _archive.writestr("META-INF/container.xml", "<container/>")
             assert inspect_zip_document(_book) == ".epub"
+            _broken_book = Path(_tmp) / "missing-container.zip"
+            with zipfile.ZipFile(_broken_book, "w") as _archive:
+                _archive.writestr("mimetype", "application/epub+zip")
+            assert inspect_zip_document(_broken_book) is None
             _office = Path(_tmp) / "office.zip"
             with zipfile.ZipFile(_office, "w") as _archive:
                 _archive.writestr("[Content_Types].xml", "<Types/>")
@@ -3674,7 +4642,8 @@ if __name__ == "__main__":
                     'content="https://cdn.test/master.m3u8"><a href="sound.mp3">x</a>')
         assert _media.links == ["/movie.mp4", "https://cdn.test/master.m3u8", "sound.mp3"]
         _images = HtmlImageParser()
-        _images.feed('<img data-src="/001.jpg"><img src="/002.webp">')
+        _images.feed('<img data-src="/001.jpg"><img src="pixel.gif" '
+                     'srcset="/002-small.webp 320w, /002.webp 1280w">')
         assert _images.links == ["/001.jpg", "/002.webp"]
         _bulk_images = HtmlImageParser()
         _bulk_images.feed("".join(
@@ -3687,19 +4656,27 @@ if __name__ == "__main__":
         assert SpotifyDownloader._pick_streamlink_stream(_streams, "720")[0] == "720p"
         assert sorted(["page10.jpg", "page2.jpg", "page1.jpg"], key=natural_sort_key) == [
             "page1.jpg", "page2.jpg", "page10.jpg"]
+        assert versions_equal("2026.07.22", "2026.7.22")
+        assert not versions_equal("8.5.0", "8.6.0")
         _convert_options = SpotifyDownloader.normalize_media_conversion_options({
-            "format": "mp4", "codec": "h265", "quality": "high",
-            "resize": "1080p", "fps": "30", "audio_bitrate": "256",
+            "format": "mp4", "codec": "h265", "quality": "master",
+            "resize": "1080p", "fps": "30", "frame_mode": "motion",
+            "upscale": "lanczos", "video_enhance": "detail",
+            "audio_enhance": "normalize", "audio_bitrate": "256",
         })
         _convert_cmd = SpotifyDownloader.media_conversion_command(
             ffmpeg, Path("input.mkv"), Path("output.mp4"), _convert_options)
-        assert "libx265" in _convert_cmd and "fps=30" in " ".join(_convert_cmd)
+        assert "libx265" in _convert_cmd and "minterpolate=fps=30" in " ".join(_convert_cmd)
         assert "scale=1920:1080" in " ".join(_convert_cmd) and "+faststart" in _convert_cmd
+        assert "flags=lanczos" in " ".join(_convert_cmd)
+        assert "unsharp=" in " ".join(_convert_cmd) and "loudnorm=" in " ".join(_convert_cmd)
+        assert _convert_cmd[_convert_cmd.index("-preset") + 1] == "slow"
         _audio_options = SpotifyDownloader.normalize_media_conversion_options({
-            "format": "ogg", "audio_bitrate": "320"})
+            "format": "ogg", "audio_bitrate": "320", "audio_enhance": "music"})
         _audio_cmd = SpotifyDownloader.media_conversion_command(
             ffmpeg, Path("input.mp4"), Path("output.ogg"), _audio_options)
         assert "-vn" in _audio_cmd and "libopus" in _audio_cmd and "320k" in _audio_cmd
+        assert "acompressor=" in " ".join(_audio_cmd) and "48000" in _audio_cmd
         with tempfile.TemporaryDirectory() as _tmp:
             _chapter_dir, _chapter_pdf, _chapter_cbz = unique_chapter_paths(
                 Path(_tmp), "chapter 12")
@@ -3718,6 +4695,8 @@ if __name__ == "__main__":
                        "ERROR: [DRM] The requested site is known to use DRM protection",
                        "ERROR: Video unavailable"):
             assert not NO_VIDEO_FOR_YTDLP.search(phrase), phrase
+        assert YOUTUBE_MEDIA_DENIED.search(
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden")
         # Only sources with a second engine may hand off at all.
         assert set(ENGINES) <= set(MEDIA_LABELS), set(ENGINES) - set(MEDIA_LABELS)
         assert not ({"youtube", "ytmusic"} & set(ENGINES)), (

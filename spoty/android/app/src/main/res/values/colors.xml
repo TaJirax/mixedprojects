@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The dark interface background token. The window must be painted this
+         colour or a white system background flashes before the WebView draws. -->
+    <color name="void_bg">#05080D</color>
+</resources>

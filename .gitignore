@@ -26,3 +26,18 @@ BlueKnightdownloader/
 GWD/app/libs/*.aar
 # Source drops, not the source of truth.
 GWD*.zip
+
+# --- Blue Knight Downloader: Android ---
+# FFmpeg/FFprobe cross-compiled by build_ffmpeg_android.sh (~50 MB), and the
+# engine + web files copied in from spoty/ at build time. All reproducible.
+spoty/android/app/src/main/jniLibs/
+spoty/android/app/src/main/assets/
+spoty/android/app/src/main/python/spotify_downloader.py
+spoty/android/app/src/main/python/blueknight_paths.py
+spoty/android/app/src/main/python/pyshell.py
+spoty/android/app/src/main/python/__pycache__/
+spoty/android/.ffmpeg-build/
+spoty/android/out/
+# Signing material must never be committed.
+spoty/android/keystore.properties
+spoty/android/*.keystore

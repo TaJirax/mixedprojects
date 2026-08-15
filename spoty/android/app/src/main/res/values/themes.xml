@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The interface is drawn entirely in the WebView, so the theme's only
+         job is to hand it a window the same colour as the page. Anything
+         lighter shows as a flash on launch and as bars behind the glass. -->
+    <style name="Theme.BlueKnight" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/void_bg</item>
+        <item name="android:statusBarColor">@color/void_bg</item>
+        <item name="android:navigationBarColor">@color/void_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

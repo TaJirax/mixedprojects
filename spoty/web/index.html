@@ -30,9 +30,28 @@
     var(--pane-solid) 52%,
     color-mix(in srgb, var(--spotify) 20%, var(--pane-solid)) 100%);
 
-  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
-  --font-text:    "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono:    "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  /* Windows faces first, then the Android ones. Roboto Flex carries width and
+     weight axes, which is what keeps the wide-tracked uppercase display voice
+     on a phone instead of collapsing it into the default system sans. */
+  --font-display: "Segoe UI Variable Display", "Segoe UI", "Roboto Flex", Roboto,
+                  system-ui, sans-serif;
+  --font-text:    "Segoe UI Variable Text", "Segoe UI", "Roboto Flex", Roboto,
+                  system-ui, sans-serif;
+  --font-mono:    "Cascadia Mono", "Cascadia Code", Consolas, "Roboto Mono",
+                  ui-monospace, monospace;
+
+  /* Each source's own colour, named once.
+     The html[data-mode] blocks below use these to retint the whole room; the
+     mobile source grid uses them to show all nine rooms side by side. */
+  --src-spotify:    #1ed760;
+  --src-youtube:    #ff3b30;
+  --src-ytmusic:    #ff2d6f;
+  --src-tiktok:     #25f4ee;
+  --src-instagram:  #e1306c;
+  --src-soundcloud: #ff7a1a;
+  --src-x:          #dfe6ee;
+  --src-general:    #5aa0ff;
+  --src-pdf:        #ffb454;
 
   --r-lg: 18px;
   --r-md: 12px;
@@ -765,7 +784,49 @@ body.busy .status-word { color: var(--spotify); }
   gap: 10px 14px;
   padding: 3px 2px 10px;
 }
+.converter-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  max-width: 430px;
+  margin: 2px 2px 12px;
+}
+.converter-mode-switch button {
+  padding: 10px 16px;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  background: var(--control-solid);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.converter-mode-switch button[aria-pressed="true"] {
+  color: #06110b;
+  border-color: var(--spotify);
+  background: var(--spotify);
+}
+.converter-panel {
+  margin: 0 2px 12px;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid var(--edge-2);
+  border-radius: var(--r-md);
+  background: var(--glass-1);
+}
+.converter-panel[hidden] { display: none; }
+.converter-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 2px 10px;
+}
+.converter-panel-head strong { color: var(--ink); font-size: 14px; }
+.converter-panel-head span { color: var(--ink-3); font-size: 11px; }
 .converter-control { min-width: 0; }
+.converter-control select { min-width: 0; max-width: 100%; }
 .converter-control > label {
   display: block;
   margin-bottom: 5px;
@@ -775,6 +836,43 @@ body.busy .status-word { color: var(--spotify); }
   text-transform: uppercase;
 }
 .converter-control[hidden] { display: none; }
+.output-format-control {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  padding: 10px;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-sm);
+  background: var(--glass-2);
+}
+.format-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
+  gap: 6px;
+  width: 100%;
+  overflow: hidden;
+}
+.format-picker button {
+  min-width: 0;
+  padding: 7px 6px;
+  border: 1px solid var(--edge);
+  border-radius: 7px;
+  color: var(--ink-2);
+  background: var(--control-solid);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.format-picker button[aria-checked="true"] {
+  color: #06110b;
+  border-color: var(--spotify);
+  background: var(--spotify);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--spotify) 24%, transparent);
+}
+.converter-note {
+  grid-column: 1 / -1;
+  margin: -2px 2px 4px;
+  line-height: 1.55;
+}
 .dimension-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .converter-actions {
   display: flex;
@@ -845,6 +943,261 @@ body.busy .status-word { color: var(--spotify); }
 .gate-card h2 { font-family: var(--font-display); font-size: 21px; font-weight: 600; margin-top: 16px; }
 .gate-card p { color: var(--ink-2); font-size: 13px; margin: 10px 0 20px; }
 .gate-bar { height: 3px; border-radius: 2px; overflow: hidden; background: var(--glass-3); }
+
+/* ========================================================= phone shell ====
+   The desktop window has a 1005px minimum, so nothing below can fire there.
+   This is the Android layout, and the only place the two builds diverge.
+
+   The phone keeps the glass, the knight and the per-source rooms, and gives up
+   the sidebar: a phone has room for one navigation control, and here that is
+   the source, because everything else on screen belongs to whichever source is
+   open. The sidebar's own controls are not duplicated — they are moved into
+   the source sheet at startup, so every button keeps its existing wiring. */
+.mbar { display: none; }
+.sheet[hidden] { display: none; }
+
+@media (max-width: 760px) {
+  html, body { height: 100dvh; }
+  body {
+    font-size: 15px;                 /* 13.5px is a desktop reading distance */
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* The knight covers proportionally more of a phone than of a 1210px window,
+     and the activity log is monospaced 11.5px sitting on top of it. Easing the
+     art back a few points keeps it plainly visible and the log readable. */
+  html[data-theme="dark"] { --art: 0.15; }
+
+  .shell {
+    height: 100dvh;
+    /* minmax(0,…) rather than 1fr: a grid item's default min-width is its
+       content, and one non-wrapping row of stats is enough to push the whole
+       column wider than the phone. */
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "bar" "main";
+    row-gap: 10px;
+    padding: 0 10px calc(10px + env(safe-area-inset-bottom));
+  }
+  .titlebar { display: none; }        /* Android draws the window controls */
+  .side { display: none; }
+  .main, .page, .runbar, .paste-row, .status-block, .row { min-width: 0; }
+  .run-stats { flex-wrap: wrap; gap: 8px 16px; }
+  .row { flex-wrap: wrap; }
+
+  /* ---------------------------------------------------------- the bar --- */
+  .mbar {
+    grid-area: bar;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: calc(env(safe-area-inset-top) + 8px) 6px 0;
+  }
+  .mbar-mark { width: 30px; height: 30px; flex: none; }
+
+  /* The source control is the widest thing in the bar because it is the only
+     thing in the bar anyone taps on purpose. */
+  .mbar-source {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    padding: 6px 10px;
+    border: 1px solid var(--edge-2);
+    border-radius: var(--r-md);
+    background: var(--glass);
+    color: var(--ink);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color .25s ease, background .25s ease;
+  }
+  .mbar-source:active { background: var(--glass-2); }
+  .mbar-source:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
+  .mbar-kicker {
+    font-family: var(--font-mono);
+    font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .mbar-name {
+    display: flex; align-items: center; gap: 7px;
+    font-family: var(--font-display);
+    font-size: 15px; font-weight: 600; letter-spacing: .01em;
+    max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* The dot is the room you are standing in, and it changes with the accent. */
+  .mbar-name::before {
+    content: ""; flex: none;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--spotify);
+    box-shadow: 0 0 9px var(--spotify);
+    transition: background .3s ease, box-shadow .3s ease;
+  }
+  .mbar-eq { display: none; }
+  body.busy .mbar-eq { display: block; flex: none; }
+
+  .mbar-btn {
+    flex: none;
+    width: 42px; height: 42px;
+    display: grid; place-content: center; gap: 4px;
+    border: 1px solid var(--edge-2); border-radius: var(--r-md);
+    background: var(--glass); cursor: pointer;
+  }
+  .mbar-btn span { display: block; width: 15px; height: 1.5px; background: var(--ink-2); }
+  .mbar-btn:active { background: var(--glass-2); }
+  .mbar-btn:focus-visible { outline: 2px solid var(--spotify); outline-offset: 2px; }
+
+  /* --------------------------------------------------------- the page --- */
+  .main { border-radius: var(--r-lg); }
+  .page { padding: 16px 14px 12px; }
+  .page-head { padding-bottom: 12px; }
+  /* The bar already names the source in the same words, one line above. A
+     second, larger copy of it is the first thing to cut when the screen is
+     360px wide and the input field is what people came for. */
+  .page[data-page] > .page-head > h1 { display: none; }
+  .lede { font-size: 13px; }
+  .scroll { padding-right: 6px; }
+
+  /* Every control a thumb has to hit gets a 44px target. */
+  .btn, .segment button, .chip-btn, .format-picker button,
+  .converter-mode-switch button { min-height: 44px; }
+  input, select { min-height: 46px; font-size: 16px; }  /* 16px: iOS/Android will not zoom */
+  .btn.primary { flex: 1; justify-content: center; font-size: 15px; }
+
+  /* The paste row is the hero, and three buttons abreast do not fit 360px —
+     the last one gets clipped. As a two-column grid the field and the primary
+     action each take the full width, and the two secondary actions share the
+     row beneath. Order is set here rather than in the markup so the desktop
+     row keeps its own left-to-right reading. */
+  .paste-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .paste-row input {
+    grid-column: 1 / -1;
+    order: 0;
+    font-size: 16px; padding: 14px;
+  }
+  .paste-row .btn { order: 2; }
+  .paste-row .btn.primary { grid-column: 1 / -1; order: 1; }
+
+  /* A three-column label/control/hint row cannot survive 360px. */
+  .field {
+    grid-template-columns: 1fr;
+    gap: 7px;
+    padding: 11px 2px;
+  }
+  .field .help, .field > * { grid-column: 1 / -1; }
+  .converter-grid { grid-template-columns: 1fr; }
+  .dimension-pair { grid-template-columns: 1fr 1fr; }
+  .converter-actions .primary { min-width: 0; width: 100%; }
+
+  .status-block { flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px 0 10px; }
+  .status-word { font-size: 30px; }
+
+  /* The controls take exactly the height they need at the top of the screen,
+     and the activity log absorbs whatever is left — otherwise the page
+     stretches and leaves a band of empty glass between the buttons and the
+     status. */
+  .main[data-runbar="on"] .page.on { flex: 0 0 auto; }
+  .runbar { flex: 1 1 auto; padding: 0 14px 14px; }
+  .run-stats { font-size: 10.5px; }
+  .console { font-size: 11.5px; }
+
+  .toast-stack {
+    right: 10px; left: 10px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+  .gate-card { width: auto; margin: 16px; padding: 26px 20px; }
+  .gate-card img { width: 72px; height: 72px; }
+
+  /* --------------------------------------------------- the source sheet --
+     Nine sources, so a 3x3 grid lands exactly with no orphan tile, and the
+     whole picker fits above the fold on a phone. */
+  .sheet {
+    position: fixed; inset: 0; z-index: 70;
+    display: grid; align-items: end;
+  }
+  .sheet-scrim {
+    position: absolute; inset: 0;
+    border: 0; padding: 0;
+    background: rgba(0, 0, 0, .55);
+    animation: scrim-in .22s ease-out;
+  }
+  .sheet-body {
+    position: relative;
+    padding: 10px 14px calc(18px + env(safe-area-inset-bottom));
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    border: 1px solid var(--edge);
+    border-bottom: 0;
+    background: var(--pane-solid);
+    box-shadow: var(--shadow);
+    animation: sheet-up .26s cubic-bezier(.22, 1, .36, 1);
+    max-height: 88dvh;
+    overflow-y: auto;
+  }
+  .sheet-grip {
+    width: 38px; height: 4px; border-radius: 2px;
+    background: var(--edge); margin: 2px auto 16px;
+  }
+  .sheet-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .tile {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 6px;
+    min-height: 84px;
+    padding: 10px 9px;
+    border: 1px solid var(--edge-2);
+    border-radius: var(--r-md);
+    /* The tile carries its own source's colour, not the active accent: this
+       grid is the one view where all nine rooms are seen together. */
+    background: linear-gradient(157deg,
+      color-mix(in srgb, var(--tint) 17%, var(--pane-solid)),
+      var(--pane-solid) 72%);
+    color: var(--ink-2);
+    text-align: left;
+    cursor: pointer;
+  }
+  .tile::before {
+    content: "";
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--tint);
+    box-shadow: 0 0 10px var(--tint);
+  }
+  .tile b {
+    font-family: var(--font-display);
+    font-size: 12.5px; font-weight: 600; line-height: 1.25;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .tile[aria-current="true"] {
+    border-color: var(--tint);
+    background: linear-gradient(157deg,
+      color-mix(in srgb, var(--tint) 30%, var(--pane-solid)),
+      var(--pane-solid) 68%);
+  }
+  .tile:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
+
+  /* The sidebar's utility buttons, moved here rather than rebuilt. */
+  .sheet-foot .side-foot { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+  .sheet-foot .eq-wrap { display: none; }
+  .sheet-foot .ghost { min-height: 46px; }
+}
+
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-body, .sheet-scrim, .backdrop { animation: none; }
+  * { transition-duration: .01ms !important; }
+}
 .gate-bar::after {
   content: ""; display: block; height: 100%; width: 34%;
   background: var(--signal);
@@ -873,6 +1226,23 @@ body.busy .status-word { color: var(--spotify); }
     <button class="wbtn close" id="w-close" title="Close">&#10005;</button>
   </div>
 
+  <!-- Phone only; the desktop keeps its sidebar. A phone has room for one
+       navigation control, and in this app that is the source: everything else
+       on screen belongs to whichever source is open. -->
+  <header class="mbar">
+    <img class="mbar-mark" src="logo.png" alt="">
+    <button class="mbar-source" id="mbar-source" aria-haspopup="dialog" aria-expanded="false">
+      <span class="mbar-kicker">Source</span>
+      <span class="mbar-name" id="mbar-name">Spotify</span>
+    </button>
+    <div class="mbar-eq" aria-hidden="true">
+      <div class="eq"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <button class="mbar-btn" id="mbar-more" aria-label="Settings and tools">
+      <span></span><span></span><span></span>
+    </button>
+  </header>
+
   <aside class="pane side">
     <div class="brand">
       <img src="logo.png" alt="Blue Knight">
@@ -890,7 +1260,7 @@ body.busy .status-word { color: var(--spotify); }
         <div class="eq"><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="eq-label" id="eq-label">Idle</div>
       </div>
-      <button class="ghost update" id="update-btn"><span class="spin"></span><span id="update-label">Check for updates</span></button>
+      <button class="ghost update" id="update-btn"><span class="spin"></span><span id="update-label">Update all components</span></button>
       <button class="ghost telegram" id="telegram-btn">Telegram · @BlueKnight_Net</button>
       <button class="ghost" id="theme-btn"></button>
     </div>
@@ -1060,6 +1430,10 @@ body.busy .status-word { color: var(--spotify); }
         <input type="text" id="sc-limit" placeholder="all" spellcheck="false">
         <span class="hint">tracks</span>
       </div>
+      <div class="row" style="padding-top:4px">
+        <button class="btn" data-signin="soundcloud">Sign in to SoundCloud</button><span class="hint signin-note"></span>
+      </div>
+      <p class="hint warn">SoundCloud Go/Go+ members can sign in to use streams their account is entitled to. The app never bypasses DRM; a track that remains DRM-encrypted cannot be downloaded.</p>
     </section>
 
     <!-- ------------------------------------------------------------- x -->
@@ -1252,80 +1626,135 @@ body.busy .status-word { color: var(--spotify); }
         </div>
 
         <div class="group-head"><span>Local converters</span><span class="line"></span></div>
-        <div class="converter-grid">
-          <div class="converter-control">
-            <label for="media-convert-format">Output</label>
-            <select class="converter-input" id="media-convert-format">
-              <optgroup label="Video">
-                <option value="mp4" selected>MP4</option>
-                <option value="mkv">MKV</option>
-                <option value="webm">WebM</option>
-                <option value="mov">MOV</option>
-                <option value="avi">AVI</option>
-              </optgroup>
-              <optgroup label="Audio">
-                <option value="mp3">MP3</option>
-                <option value="flac">FLAC</option>
-                <option value="wav">WAV</option>
-                <option value="m4a">M4A</option>
-                <option value="ogg">OGG</option>
-                <option value="aac">AAC</option>
-              </optgroup>
-            </select>
-          </div>
-          <div class="converter-control" data-video-option>
-            <label for="media-convert-codec">Video codec</label>
-            <select class="converter-input" id="media-convert-codec">
-              <option value="auto" selected>Automatic</option>
-              <option value="h264">H.264</option>
-              <option value="h265">H.265 / HEVC</option>
-              <option value="vp9">VP9</option>
-            </select>
-          </div>
-          <div class="converter-control" data-video-option>
-            <label for="media-convert-quality">Video quality</label>
-            <select class="converter-input" id="media-convert-quality">
-              <option value="high">High</option>
-              <option value="balanced" selected>Balanced</option>
-              <option value="compact">Smaller file</option>
-            </select>
-          </div>
-          <div class="converter-control" data-video-option>
-            <label for="media-convert-resize">Resize</label>
-            <select class="converter-input" id="media-convert-resize">
-              <option value="source" selected>Original size</option>
-              <option value="2160p">Up to 4K</option>
-              <option value="1440p">Up to 1440p</option>
-              <option value="1080p">Up to 1080p</option>
-              <option value="720p">Up to 720p</option>
-              <option value="480p">Up to 480p</option>
-              <option value="custom">Custom</option>
-            </select>
-          </div>
-          <div class="converter-control" data-video-option>
-            <label for="media-convert-fps">Frame rate</label>
-            <select class="converter-input" id="media-convert-fps">
-              <option value="source" selected>Keep source</option>
-              <option value="24">24 FPS</option>
-              <option value="30">30 FPS</option>
-              <option value="60">60 FPS</option>
-            </select>
-          </div>
-          <div class="converter-control">
-            <label for="media-convert-bitrate">Audio bitrate</label>
-            <select class="converter-input" id="media-convert-bitrate">
-              <option value="128">128 kbps</option>
-              <option value="192" selected>192 kbps</option>
-              <option value="256">256 kbps</option>
-              <option value="320">320 kbps</option>
-            </select>
-          </div>
-          <div class="converter-control" id="media-custom-size" data-video-option hidden>
-            <label>Custom dimensions</label>
-            <div class="dimension-pair">
-              <input class="converter-input" id="media-convert-width" type="number" min="16" max="7680" placeholder="Width">
-              <input class="converter-input" id="media-convert-height" type="number" min="16" max="4320" placeholder="Height">
+        <input class="converter-input" id="media-convert-format" type="hidden" value="mp4">
+        <div class="converter-mode-switch" id="converter-mode" role="tablist" aria-label="Converter type">
+          <button type="button" data-converter-mode="video" role="tab" aria-pressed="true">Video converter</button>
+          <button type="button" data-converter-mode="audio" role="tab" aria-pressed="false">Audio converter</button>
+        </div>
+
+        <div class="converter-panel" id="video-converter-panel" data-converter-panel="video">
+          <div class="converter-panel-head"><strong>Video conversion</strong><span>Picture, motion and soundtrack</span></div>
+          <div class="converter-grid">
+            <div class="converter-control output-format-control">
+              <label>Video output</label>
+              <div class="format-picker" id="video-format-picker" role="radiogroup" aria-label="Video output format">
+                <button type="button" data-format="mp4" role="radio" aria-checked="true">MP4</button>
+                <button type="button" data-format="mkv" role="radio" aria-checked="false">MKV</button>
+                <button type="button" data-format="webm" role="radio" aria-checked="false">WebM</button>
+                <button type="button" data-format="mov" role="radio" aria-checked="false">MOV</button>
+                <button type="button" data-format="avi" role="radio" aria-checked="false">AVI</button>
+              </div>
             </div>
+            <div class="converter-control">
+              <label for="media-convert-codec">Video codec</label>
+              <select class="converter-input" id="media-convert-codec">
+                <option value="auto" selected>Automatic</option><option value="h264">H.264</option>
+                <option value="h265">H.265 / HEVC</option><option value="vp9">VP9</option>
+              </select>
+            </div>
+            <div class="converter-control">
+              <label for="media-convert-quality">Video quality</label>
+              <select class="converter-input" id="media-convert-quality">
+                <option value="master">Master / archival</option><option value="high">High</option>
+                <option value="balanced" selected>Balanced</option><option value="compact">Smaller file</option>
+              </select>
+            </div>
+            <div class="converter-control">
+              <label for="media-convert-resize">Resolution</label>
+              <select class="converter-input" id="media-convert-resize">
+                <option value="source" selected>Original size</option><option value="2160p">Upscale up to 4K</option>
+                <option value="1440p">Upscale up to 1440p</option><option value="1080p">Up to 1080p</option>
+                <option value="720p">Up to 720p</option><option value="480p">Up to 480p</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            <div class="converter-control">
+              <label for="media-convert-upscale">Upscale engine</label>
+              <select class="converter-input" id="media-convert-upscale">
+                <option value="lanczos" selected>Lanczos · detailed</option>
+                <option value="spline">Spline · smooth</option><option value="bicubic">Bicubic · fast</option>
+              </select>
+            </div>
+            <div class="converter-control">
+              <label for="media-convert-video-enhance">Picture enhancement</label>
+              <select class="converter-input" id="media-convert-video-enhance">
+                <option value="none" selected>Off · preserve source</option>
+                <option value="clean">Clean · denoise + deband</option>
+                <option value="detail">Detail · light denoise + sharpen</option>
+                <option value="cinema">Cinema · clean + color polish</option>
+              </select>
+            </div>
+            <div class="converter-control">
+              <label for="media-convert-fps">Frame rate</label>
+              <select class="converter-input" id="media-convert-fps">
+                <option value="source" selected>Keep source</option><option value="24">24 FPS</option>
+                <option value="30">30 FPS</option><option value="60">60 FPS</option>
+              </select>
+            </div>
+            <div class="converter-control">
+              <label for="media-convert-frame-mode">Frame processing</label>
+              <select class="converter-input" id="media-convert-frame-mode">
+                <option value="standard" selected>Standard · fast</option>
+                <option value="motion">Motion interpolation · smooth</option>
+              </select>
+            </div>
+            <div class="converter-control">
+              <label for="video-convert-audio-enhance">Soundtrack processing</label>
+              <select class="converter-input" id="video-convert-audio-enhance">
+                <option value="none" selected>Off · preserve source</option>
+                <option value="normalize">Normalize · -14 LUFS</option><option value="music">Music polish</option>
+                <option value="cleanup">Noise cleanup</option>
+              </select>
+            </div>
+            <div class="converter-control">
+              <label for="video-convert-bitrate">Soundtrack bitrate</label>
+              <select class="converter-input" id="video-convert-bitrate">
+                <option value="128">128 kbps</option><option value="192" selected>192 kbps</option>
+                <option value="256">256 kbps</option><option value="320">320 kbps</option>
+              </select>
+            </div>
+            <div class="converter-control" id="media-custom-size" hidden>
+              <label>Custom dimensions</label>
+              <div class="dimension-pair">
+                <input class="converter-input" id="media-convert-width" type="number" min="16" max="7680" placeholder="Width">
+                <input class="converter-input" id="media-convert-height" type="number" min="16" max="4320" placeholder="Height">
+              </div>
+            </div>
+            <p class="hint converter-note">Lanczos/Spline scaling, motion interpolation and picture cleanup are real FFmpeg processing. They improve presentation but cannot recreate missing source detail.</p>
+          </div>
+        </div>
+
+        <div class="converter-panel" id="audio-converter-panel" data-converter-panel="audio" hidden>
+          <div class="converter-panel-head"><strong>Audio conversion</strong><span>Music, mastering and cleanup</span></div>
+          <div class="converter-grid">
+            <div class="converter-control output-format-control">
+              <label>Audio output</label>
+              <div class="format-picker" id="audio-format-picker" role="radiogroup" aria-label="Audio output format">
+                <button type="button" data-format="mp3" role="radio" aria-checked="true">MP3</button>
+                <button type="button" data-format="flac" role="radio" aria-checked="false">FLAC</button>
+                <button type="button" data-format="wav" role="radio" aria-checked="false">WAV 24-bit</button>
+                <button type="button" data-format="m4a" role="radio" aria-checked="false">M4A</button>
+                <button type="button" data-format="ogg" role="radio" aria-checked="false">OGG</button>
+                <button type="button" data-format="aac" role="radio" aria-checked="false">AAC</button>
+              </div>
+            </div>
+            <div class="converter-control">
+              <label for="audio-convert-enhance">Audio processing</label>
+              <select class="converter-input" id="audio-convert-enhance">
+                <option value="none" selected>Off · preserve source</option>
+                <option value="normalize">Studio loudness · -14 LUFS</option>
+                <option value="music">Music polish · dynamics + loudness</option>
+                <option value="cleanup">Noise cleanup · speech/recordings</option>
+              </select>
+            </div>
+            <div class="converter-control" id="audio-bitrate-control">
+              <label for="audio-convert-bitrate">Audio bitrate</label>
+              <select class="converter-input" id="audio-convert-bitrate">
+                <option value="128">128 kbps</option><option value="192" selected>192 kbps</option>
+                <option value="256">256 kbps</option><option value="320">320 kbps</option>
+              </select>
+            </div>
+            <p class="hint converter-note">Use FLAC or 24-bit WAV to avoid additional lossy compression. Loudness, music and cleanup modes use real DSP; converting a lossy source to lossless does not restore removed detail.</p>
           </div>
         </div>
         <div class="converter-actions">
@@ -1333,16 +1762,17 @@ body.busy .status-word { color: var(--spotify); }
           <span class="hint" id="converter-status">Ready</span>
         </div>
         <div class="document-converter">
-          <label>Document / images</label>
+          <label>Images to ordered PDF</label>
           <span class="fixed-value">PDF</span>
           <button class="btn" id="convert-document">Choose document</button>
-          <button class="btn" id="convert-image-folder">Choose image folder</button>
+          <button class="btn" id="convert-image-folder">Merge image folder</button>
         </div>
+        <p class="hint">Image folders are merged recursively in natural filename order: page2 comes before page10. Unreadable files and tracking pixels are skipped.</p>
 
         <div class="group-head"><span>Components</span><span class="line"></span></div>
         <div class="row" style="padding:2px">
           <button class="btn" id="check-setup">Check setup</button>
-          <button class="btn" id="update-components">Check for updates</button>
+          <button class="btn" id="update-components">Update all components</button>
           <button class="btn" id="about">About</button>
         </div>
         <p class="hint" id="components">—</p>
@@ -1376,6 +1806,18 @@ body.busy .status-word { color: var(--spotify); }
       <div class="console" id="console" tabindex="0"></div>
     </div>
   </main>
+</div>
+
+<!-- The source picker. Nine tiles, each in its own source's colour, because
+     picking a source retints the entire app — this is the only place all nine
+     of those rooms can be seen at once. -->
+<div class="sheet" id="sheet" hidden>
+  <button class="sheet-scrim" id="sheet-scrim" tabindex="-1" aria-label="Close"></button>
+  <div class="sheet-body" role="dialog" aria-modal="true" aria-label="Choose a source">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <div class="sheet-grid" id="sheet-grid"></div>
+    <div class="sheet-foot" id="sheet-foot"></div>
+  </div>
 </div>
 
 <div class="toast-stack" id="toasts"></div>
@@ -1448,9 +1890,68 @@ function buildNav() {
   });
 }
 
+/* ------------------------------------------------------------ phone shell ---
+   The desktop window cannot be narrow enough to reach any of this: its minimum
+   is 1005px. Everything here is the Android build's navigation.
+
+   The tiles are built from the same PAGES and MODES the sidebar uses, so a
+   source added in one place appears in both. The sidebar's utility buttons are
+   moved into the sheet rather than copied, which keeps their ids unique and
+   their existing wiring intact. */
+const PHONE = matchMedia("(max-width: 760px)");
+
+function buildSheet() {
+  const grid = $("sheet-grid");
+  PAGES.filter(([id]) => MODES[id]).forEach(([id, label]) => {
+    const tile = document.createElement("button");
+    tile.className = "tile";
+    tile.dataset.target = id;
+    tile.style.setProperty("--tint", `var(--src-${MODES[id]})`);
+    const name = document.createElement("b");
+    name.textContent = label;
+    tile.appendChild(name);
+    tile.onclick = () => { show(id); closeSheet(); };
+    grid.appendChild(tile);
+  });
+  const foot = document.querySelector(".side-foot");
+  if (foot) $("sheet-foot").appendChild(foot);
+}
+
+function openSheet() {
+  document.querySelectorAll("#sheet-grid .tile").forEach(t =>
+    t.setAttribute("aria-current", String(MODES[t.dataset.target] === state.source)));
+  $("sheet").hidden = false;
+  $("mbar-source").setAttribute("aria-expanded", "true");
+}
+
+function closeSheet() {
+  $("sheet").hidden = true;
+  $("mbar-source").setAttribute("aria-expanded", "false");
+}
+
+function setupPhone() {
+  if (!PHONE.matches) return;
+  buildSheet();
+  $("mbar-source").onclick = openSheet;
+  $("sheet-scrim").onclick = closeSheet;
+  $("mbar-more").onclick = () => { closeSheet(); show("settings"); };
+}
+
+/* A link shared into the app from anywhere else lands in the open source's
+   field, ready to download — the shell calls this. */
+window.blueknightShared = function (url) {
+  const field = document.querySelector(".page.on .paste-row input");
+  if (!field) return;
+  field.value = url;
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  field.focus();
+};
+
 function show(id) {
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.dataset.page === id));
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.target === id));
+  const label = (PAGES.find(([page]) => page === id) || [, ""])[1];
+  if ($("mbar-name") && label) $("mbar-name").textContent = label;
   $("main").dataset.runbar = MODES[id] ? "on" : "off";
   // A finished job belongs to the page it ran on, not the one being opened.
   if (!state.busy) resetRun();
@@ -1483,28 +1984,51 @@ function paintSignin() {
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   $("theme-btn").textContent = theme === "dark" ? "Light theme" : "Dark theme";
-  localStorage.setItem("theme", theme);
 }
+
+const AUDIO_CONVERTER_FORMATS = new Set(["mp3", "flac", "wav", "m4a", "ogg", "aac"]);
 
 function paintConverter() {
   const format = $("media-convert-format").value;
-  const audioOnly = ["mp3", "flac", "wav", "m4a", "ogg", "aac"].includes(format);
-  document.querySelectorAll("[data-video-option]").forEach(el => { el.hidden = audioOnly; });
-  $("media-custom-size").hidden = audioOnly || $("media-convert-resize").value !== "custom";
+  const audioOnly = AUDIO_CONVERTER_FORMATS.has(format);
+  const mode = audioOnly ? "audio" : "video";
+  document.querySelectorAll("[data-converter-mode]").forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.converterMode === mode));
+  });
+  document.querySelectorAll("[data-converter-panel]").forEach(panel => {
+    panel.hidden = panel.dataset.converterPanel !== mode;
+  });
+  document.querySelectorAll(".format-picker [data-format]").forEach(button => {
+    button.setAttribute("aria-checked", String(button.dataset.format === format));
+  });
+  const lossless = ["flac", "wav"].includes(format);
+  $("media-custom-size").hidden = $("media-convert-resize").value !== "custom";
+  $("audio-bitrate-control").hidden = lossless;
   const codec = $("media-convert-codec");
-  codec.disabled = audioOnly || format === "webm" || format === "avi";
+  codec.disabled = format === "webm" || format === "avi";
+  $("media-convert-upscale").disabled = $("media-convert-resize").value === "source";
+  $("media-convert-frame-mode").disabled = $("media-convert-fps").value === "source";
   if (format === "webm") codec.value = "vp9";
   if (format === "avi") codec.value = "h264";
+  $("convert-media").textContent = audioOnly
+    ? "Choose audio or video & convert audio" : "Choose video & convert";
 }
 
 function converterOptions() {
+  const audioOnly = AUDIO_CONVERTER_FORMATS.has($("media-convert-format").value);
   return {
     format: $("media-convert-format").value,
     codec: $("media-convert-codec").value,
     quality: $("media-convert-quality").value,
     resize: $("media-convert-resize").value,
     fps: $("media-convert-fps").value,
-    audio_bitrate: $("media-convert-bitrate").value,
+    frame_mode: $("media-convert-frame-mode").value,
+    upscale: $("media-convert-upscale").value,
+    video_enhance: $("media-convert-video-enhance").value,
+    audio_enhance: audioOnly ? $("audio-convert-enhance").value
+                             : $("video-convert-audio-enhance").value,
+    audio_bitrate: audioOnly ? $("audio-convert-bitrate").value
+                             : $("video-convert-bitrate").value,
     width: Number($("media-convert-width").value) || 0,
     height: Number($("media-convert-height").value) || 0,
   };
@@ -1730,7 +2254,7 @@ function handle(ev) {
       const busy = args[0];
       $("update-btn").disabled = busy;
       $("update-components").disabled = busy;
-      $("update-label").textContent = busy ? "Updating…" : "Check for updates";
+      $("update-label").textContent = busy ? "Updating all components…" : "Update all components";
       break;
     }
     case "converting": {
@@ -1739,8 +2263,10 @@ function handle(ev) {
       $("convert-document").disabled = busy;
       $("convert-image-folder").disabled = busy;
       document.querySelectorAll(".converter-input").forEach(el => { el.disabled = busy; });
+      document.querySelectorAll(".format-picker button, [data-converter-mode]").forEach(el => { el.disabled = busy; });
       $("converter-status").textContent = busy
-        ? (args[1] === "document" ? "Converting document..." : "Converting media...")
+        ? (args[1] === "document" ? "Converting document..."
+          : args[1] === "images" ? "Merging ordered images..." : "Converting media...")
         : "Ready";
       if (!busy) paintConverter();
       break;
@@ -1928,8 +2454,20 @@ function wire() {
   $("folder").onchange = () => api().set_option("folder", $("folder").value.trim());
   $("browse").onclick = () => api().browse();
   $("open-folder").onclick = () => api().open_folder();
-  $("media-convert-format").onchange = paintConverter;
+  document.querySelectorAll("[data-converter-mode]").forEach(button => {
+    button.onclick = () => {
+      $("media-convert-format").value = button.dataset.converterMode === "audio" ? "mp3" : "mp4";
+      paintConverter();
+    };
+  });
+  document.querySelectorAll(".format-picker [data-format]").forEach(button => {
+    button.onclick = () => {
+      $("media-convert-format").value = button.dataset.format;
+      paintConverter();
+    };
+  });
   $("media-convert-resize").onchange = paintConverter;
+  $("media-convert-fps").onchange = paintConverter;
   $("convert-media").onclick = () => api().convert_media(converterOptions());
   $("convert-document").onclick = () => api().convert_document();
   $("convert-image-folder").onclick = () => api().convert_image_folder();
@@ -1942,9 +2480,12 @@ function boot() {
   if (boot.done) return;
   boot.done = true;
   buildNav();
+  setupPhone();
   wire();
   paintConverter();
-  applyTheme(localStorage.getItem("theme") || "dark");
+  // Every process launch starts dark. The theme button can switch the current
+  // session, but a prior light choice never causes a bright startup flash.
+  applyTheme("dark");
   document.documentElement.dataset.mode = state.source;
   refreshStats();
   setReady(false);

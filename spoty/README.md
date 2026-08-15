@@ -7,8 +7,9 @@ networks and common sign-in walls.
 
 No install, no Python, no command line. ffmpeg, spotDL, yt-dlp, Deno, Streamlink,
 gallery-dl and the document conversion libraries ship inside the executable.
-The **Update tools** button checks each bundled downloader and converter, verifies
-Python wheels against PyPI's SHA-256 digest, and activates those updates on restart.
+The **Update all components** button checks every bundled downloader and converter,
+verifies Python wheels against PyPI's SHA-256 digest, and activates validated
+Python updates on restart.
 
 <sub>Telegram: <a href="https://t.me/BlueKnight_Net">@BlueKnight_Net</a></sub>
 
@@ -32,7 +33,7 @@ metadata and fetch media.
 | **YouTube Music** | song · album · playlist | MP3 or FLAC, tagged with artist, album and cover art |
 | **TikTok** | video link · `@username` · hashtag page | MP4 |
 | **Instagram** | reel · post · `@username` | source quality, photo or video |
-| **SoundCloud** | track · set · profile | MP3 or FLAC |
+| **SoundCloud** | track · set · profile, including account-entitled Go/Go+ streams | MP3 or FLAC |
 | **X** | `x.com` or `twitter.com` post - video, photo, GIF, multi-image | MP4, or JPG/PNG at full resolution |
 | **Video** | public video page or direct media URL, excluding YouTube | MP4 or audio-only |
 | **Documents & Ebooks** | documents, Office files, ebooks, comic archives, or an index page | original format |
@@ -71,9 +72,18 @@ YouTube pages and are never sent to other sites.
 **Netflix, Crunchyroll, Disney+ and similar services are not supported and
 cannot be added.** Every stream they serve is encrypted with Widevine DRM, and
 downloading one means breaking that encryption. yt-dlp refuses these sites
-outright, and so does this app. The same applies to individual protected
-tracks elsewhere — SoundCloud Go+, for instance — which report `DRM protected`
-and stop. Unprotected media on those same sites still works.
+outright, and so does this app. The same applies to individual protected tracks
+elsewhere which still report `DRM protected` after account authentication. Those
+stop without an attempted bypass. Unprotected media on those same sites works.
+
+### SoundCloud Go / Go+
+
+Use **Sign in to SoundCloud** on the SoundCloud page, finish the normal SoundCloud
+login, and save the session. Downloads then begin with that account's verified
+`oauth_token`, allowing yt-dlp to request premium or original formats the account
+is entitled to. Public tracks still work without signing in. Authentication does
+not decrypt DRM: if SoundCloud only returns an encrypted stream, the app reports
+that limitation and leaves it untouched.
 
 ### Documents
 
@@ -123,9 +133,25 @@ the result beside the selected source without overwriting it.
 The document converter creates PDF from images, CBZ archives and PDF using the
 bundled libraries. **Choose image folder** collects up to 500 images recursively,
 uses numeric-aware ordering (`page2` before `page10`), and creates one PDF beside
-the folder. Office and OpenDocument conversion uses LibreOffice when installed;
-ebook conversion uses Calibre when installed. DRM-protected inputs are not
-decrypted or bypassed.
+the folder. Every readable image is fitted onto a legal portrait or landscape PDF
+page without cropping; corrupt files and tracking pixels are skipped without
+changing the remaining order. Office and OpenDocument conversion uses
+LibreOffice when installed; ebook conversion uses Calibre when installed.
+Downloaded PDFs are checked for a complete end marker, and EPUB/Office/CBZ ZIP
+containers are CRC-checked before they are accepted. DRM-protected inputs are
+not decrypted or bypassed.
+
+The media converter has separate Video and Audio workspaces and contained format
+buttons instead of an operating-system dropdown, so unrelated controls stay out
+of the way and the output chooser cannot open outside the app window. Every app
+launch begins in dark mode. Video profiles include archival CRF encoding,
+detailed Lanczos or smooth Spline scaling,
+denoise/deband/sharpen/color presets, and optional motion-compensated frame-rate
+interpolation. Audio profiles include -14 LUFS normalization, gentle music dynamics,
+and broadband noise cleanup; WAV uses 24-bit PCM. These are real FFmpeg resampling
+and DSP operations, but they do not claim to reconstruct detail missing from the
+source. FLAC/WAV prevent additional lossy compression rather than improving an
+already lossy input by themselves.
 
 ## Sign-in and cookies
 
@@ -183,6 +209,11 @@ then retries the current token-free and HLS-capable clients before asking for a
 fresh signed-in session. Playlist requests are spaced out to reduce session
 rate limits.
 
+If a GoogleVideo URL expires or returns HTTP 403, the app discards stale partial
+state, asks YouTube for a fresh delivery URL, and walks the client ladder before
+requesting sign-in. Machine-wide yt-dlp configuration files are ignored so an
+old local override cannot silently break the bundled downloader.
+
 If YouTube still requires proof-of-origin attestation, **Connection settings**
 accepts an `mweb.gvs+TOKEN` value in yt-dlp's official format. It is kept in
 memory only. These tokens are session/video-bound and expire, so this is an
@@ -191,11 +222,19 @@ account or a different IP may still be required.
 
 ## Keeping it current
 
-**Check for updates** refreshes spotDL, yt-dlp, Deno and the Python engines from mirrored hosts (GitHub,
-with SourceForge as the escape hatch for blocked networks), and reports whether
-a usable Instagram session is on file. Sites change their defences constantly;
-an outdated yt-dlp is the single most common cause of a download that used to
-work.
+**Update all components** refreshes spotDL, yt-dlp, Deno, FFmpeg, gallery-dl,
+Streamlink, img2pdf, Pillow, pikepdf and the certifi CA bundle. Executables download
+to temporary files and must launch successfully before an atomic replacement.
+Python wheels are SHA-256 checked, staged as one set, and exercised together by a
+fresh process before their registry is committed; they activate on restart. A
+failed or incompatible update leaves the working downloader unchanged. Downloads
+and conversions cannot start during activation, preventing a tool from changing
+underneath a running job.
+
+The tools use mirrored hosts (GitHub, with SourceForge as an escape hatch where
+available). The check also reports whether usable Instagram and SoundCloud
+sessions are on file. Sites change frequently, so keeping yt-dlp and the fallback
+engines current is important.
 
 ## Building from source
 
@@ -204,9 +243,30 @@ cd spoty
 .\build_portable.ps1
 ```
 
-Needs Python 3.12, PyInstaller, pywebview, `vendor/spotdl.exe`,
-`vendor/yt-dlp.exe`, `vendor/deno.exe` plus an ffmpeg build. The result is
-`release/SpotifyDownloader.exe`.
+Needs Python 3.12. The build script fetches any missing command-line tools and
+creates `release/SpotifyDownloader.exe` plus
+`release/BlueKnightDownloader-windows-x64.zip`.
+
+Linux and macOS use `bash ./build_portable.sh`. Android uses the Gradle project:
+
+```bash
+cd spoty/android
+./gradlew lintRelease testReleaseUnitTest assembleRelease
+```
+
+The Android build embeds the same Python engine and web interface, an arm64
+Python runtime, and locally built FFmpeg/FFprobe executables. Its system pickers
+import media and documents without broad storage permission; completed files are
+also copied to the folder selected in the app. Modern DOCX/XLSX/PPTX,
+OpenDocument, EPUB/FB2, text, image and PDF conversions run on-device. Legacy
+binary Office and Kindle formats still require LibreOffice or Calibre on desktop.
+
+CI builds Windows, Linux, macOS and Android on every downloader change. A tag
+named `downloader-v6.8.2` publishes all six artifacts. Dedicated Android signing
+uses `ANDROID_KEYSTORE_BASE64`, `ANDROID_STORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
+`ANDROID_KEY_PASSWORD` repository secrets. When those are absent, this repository
+reuses its existing WhiteBooster release signer so APK upgrades keep a stable
+certificate instead of receiving a new CI debug key on every build.
 
 | File | Role |
 | --- | --- |
@@ -215,6 +275,7 @@ Needs Python 3.12, PyInstaller, pywebview, `vendor/spotdl.exe`,
 | `blueknight_paths.py` | download folders, cookie discovery, the jar registry |
 | `instagram.py`, `youtubedl.py`, `tiktok.py` | standalone CLI versions |
 | `build_portable.ps1` | one-file build |
+| `android/` | Kotlin/Chaquopy Android shell and arm64 release build |
 
 `blueknight_paths.py` runs its own checks with `python blueknight_paths.py`.
 

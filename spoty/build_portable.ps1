@@ -1,10 +1,12 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Ffmpeg = Join-Path $env:LOCALAPPDATA "SpotifyDownloader\ffmpeg\bin\ffmpeg.exe"
-$Spotdl = Join-Path $Root "vendor\spotdl.exe"
-$Ytdlp = Join-Path $Root "vendor\yt-dlp.exe"
-$Deno = Join-Path $Root "vendor\deno.exe"
+$Vendor = Join-Path $Root "vendor"
+$Spotdl = Join-Path $Vendor "spotdl.exe"
+$Ytdlp = Join-Path $Vendor "yt-dlp.exe"
+$Deno = Join-Path $Vendor "deno.exe"
+$Ffmpeg = Join-Path $Vendor "ffmpeg.exe"
+$Ffprobe = Join-Path $Vendor "ffprobe.exe"
 $Output = Join-Path $Root "release"
 $Work = Join-Path $Root "build"
 $PythonRoot = python -c "import sys; print(sys.base_prefix)"
@@ -12,10 +14,60 @@ $PythonDlls = Join-Path $PythonRoot "DLLs"
 $PythonLib = Join-Path $PythonRoot "Lib"
 $PythonTcl = Join-Path $PythonRoot "tcl"
 
-if (-not (Test-Path -LiteralPath $Ffmpeg)) { throw "FFmpeg not found: $Ffmpeg" }
-if (-not (Test-Path -LiteralPath $Spotdl)) { throw "spotDL not found: $Spotdl" }
-if (-not (Test-Path -LiteralPath $Ytdlp)) { throw "yt-dlp not found: $Ytdlp" }
-if (-not (Test-Path -LiteralPath $Deno)) { throw "Deno not found: $Deno" }
+$SpotdlVersion = "4.5.2"
+
+# vendor/ is deliberately not in the repository: it is 200 MB of other
+# projects' release binaries. Fetching what is missing is what makes a fresh
+# clone — and a CI runner — able to build without a manual setup step.
+New-Item -ItemType Directory -Force -Path $Vendor | Out-Null
+
+function Get-Tool {
+    param([string]$Url, [string]$Destination)
+    if (Test-Path -LiteralPath $Destination) { return }
+    Write-Host "  fetching $(Split-Path -Leaf $Destination)"
+    Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+}
+
+Get-Tool "https://github.com/spotDL/spotify-downloader/releases/download/v$SpotdlVersion/spotdl-$SpotdlVersion-win32.exe" $Spotdl
+Get-Tool "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" $Ytdlp
+
+if (-not (Test-Path -LiteralPath $Deno)) {
+    $DenoZip = Join-Path $Vendor "deno.zip"
+    Get-Tool "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" $DenoZip
+    Expand-Archive -LiteralPath $DenoZip -DestinationPath $Vendor -Force
+    Remove-Item -LiteralPath $DenoZip -Force
+}
+
+if (-not (Test-Path -LiteralPath $Ffmpeg) -or -not (Test-Path -LiteralPath $Ffprobe)) {
+    # An existing local install is preferred over a fresh 130 MB download.
+    $LocalFfmpeg = Join-Path $env:LOCALAPPDATA "SpotifyDownloader\ffmpeg\bin"
+    if (Test-Path -LiteralPath (Join-Path $LocalFfmpeg "ffmpeg.exe")) {
+        Copy-Item (Join-Path $LocalFfmpeg "ffmpeg.exe") $Ffmpeg -Force
+        Copy-Item (Join-Path $LocalFfmpeg "ffprobe.exe") $Ffprobe -Force
+    } else {
+        $FfmpegZip = Join-Path $Vendor "ffmpeg.zip"
+        Get-Tool "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" $FfmpegZip
+        $Stage = Join-Path $Vendor "ffmpeg-stage"
+        Expand-Archive -LiteralPath $FfmpegZip -DestinationPath $Stage -Force
+        foreach ($name in @("ffmpeg.exe", "ffprobe.exe")) {
+            $found = Get-ChildItem -Path $Stage -Filter $name -Recurse | Select-Object -First 1
+            if (-not $found) { throw "The FFmpeg archive is missing $name" }
+            Copy-Item $found.FullName (Join-Path $Vendor $name) -Force
+        }
+        Remove-Item -LiteralPath $FfmpegZip -Force
+        Remove-Item -LiteralPath $Stage -Recurse -Force
+    }
+}
+
+foreach ($tool in @($Ffmpeg, $Ffprobe, $Spotdl, $Ytdlp, $Deno)) {
+    if (-not (Test-Path -LiteralPath $tool)) { throw "Missing after fetch: $tool" }
+}
+
+$FfmpegInfo = @(& $Ffmpeg -version 2>&1)
+if ($LASTEXITCODE -ne 0 -or $FfmpegInfo.Count -eq 0) {
+    throw "FFmpeg did not pass its pre-build launch check: $Ffmpeg"
+}
+Write-Host "Bundling $($FfmpegInfo[0])"
 
 # gallery-dl imports each site's extractor by name at runtime, so a normal import
 # scan finds none of them and the frozen app would be able to do yt-dlp only.
@@ -30,6 +82,7 @@ python -m PyInstaller --noconfirm --clean --windowed --onefile `
     --collect-all gallery_dl `
     --collect-all streamlink `
     --collect-all requests `
+    --collect-all certifi `
     --collect-all PIL `
     --collect-all pikepdf `
     --hidden-import img2pdf `
@@ -46,6 +99,7 @@ python -m PyInstaller --noconfirm --clean --windowed --onefile `
     --add-binary "$Ytdlp;tools" `
     --add-binary "$Deno;tools" `
     --add-binary "$Ffmpeg;tools" `
+    --add-binary "$Ffprobe;tools" `
     (Join-Path $Root "spotify_downloader.py")
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
@@ -55,7 +109,7 @@ Copy-Item (Join-Path $Root "THIRD_PARTY_NOTICES.txt") $Dist -Force
 Copy-Item (Join-Path $Root "GPL-3.0.txt") $Dist -Force
 
 $Executable = Join-Path $Dist "SpotifyDownloader.exe"
-$Package = Join-Path $Dist "SpotifyDownloader.zip"
+$Package = Join-Path $Dist "BlueKnightDownloader-windows-x64.zip"
 $PackageItems = @(
     $Executable,
     (Join-Path $Dist "README.md"),
