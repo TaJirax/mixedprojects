@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "6.8.4"
+APP_VERSION = "6.8.5"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -1592,8 +1592,11 @@ class SpotifyDownloader:
             return found
         # Nothing on disk. An importable package is still a usable tool, and
         # pyshell knows how to run one; this is the whole Android path.
-        if spec.get("module") and pyshell.module_version(name) != "unknown":
-            return name
+        if spec.get("module"):
+            if IS_ANDROID and pyshell.module_available(name):
+                return name
+            if not IS_ANDROID and pyshell.module_version(name) != "unknown":
+                return name
         return None
 
     @staticmethod
@@ -1608,6 +1611,16 @@ class SpotifyDownloader:
     def get_or_download_tool(self, name, force=False, version=None):
         """Return a usable tool path, downloading from the mirrors when needed."""
         spec = TOOLS[name]
+        if IS_ANDROID and spec.get("module"):
+            # Python command packages are compiled into the APK by Chaquopy.
+            # Android has no compatible native release asset to fetch, so never
+            # turn a missing/broken bundle into a doomed network download.
+            existing = self.find_tool(name)
+            if existing:
+                return existing
+            raise RuntimeError(
+                f"The bundled {spec['label']} package is missing or cannot start. "
+                "Install a complete BlueKnight Downloader APK.")
         if not force:
             existing = self.find_tool(name)
             if existing:

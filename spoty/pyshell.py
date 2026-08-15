@@ -53,6 +53,16 @@ def _in_process(cmd):
     return not os.path.isfile(str(cmd[0])) and _entry_point(cmd[0]) is not None
 
 
+def module_available(name):
+    """Return whether an embedded tool's actual command entry point imports.
+
+    Availability must not be inferred from ``__version__``: yt-dlp keeps its
+    version in a submodule on some releases even though ``yt_dlp.main`` is
+    present and fully usable.
+    """
+    return _entry_point(name) is not None
+
+
 class _Embedded:
     """A Popen stand-in that runs a Python entry point on a thread.
 

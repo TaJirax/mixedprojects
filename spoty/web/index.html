@@ -977,11 +977,11 @@ body.busy .status-word { color: var(--spotify); }
     font-size: 15px;                 /* 13.5px is a desktop reading distance */
     -webkit-tap-highlight-color: transparent;
   }
-  /* Keep the artwork at its natural aspect ratio. On a tall phone, `cover`
-     zooms the nearly square image until only an oversized center slice shows. */
+  /* Fill the full phone canvas. The crop is intentional: it keeps the artwork
+     edge-to-edge without stretching it on tall Android displays. */
   body::before {
-    background-size: 100% auto;
-    background-position: center top;
+    background-size: cover;
+    background-position: center center;
   }
   /* The knight covers proportionally more of a phone than of a 1210px window,
      and the activity log is monospaced 11.5px sitting on top of it. Easing the
@@ -1157,7 +1157,7 @@ body.busy .status-word { color: var(--spotify); }
   .document-converter { grid-template-columns: 1fr 1fr; gap: 8px; }
   .document-converter .btn { width: 100%; }
 
-  .status-block { align-items: center; gap: 10px; padding: 8px 0 7px; }
+  .status-block { align-items: center; gap: 10px; padding: 2px 0 5px; }
   .status-word { flex: none; font-size: 24px; }
   .status-meta {
     min-width: 0;
@@ -1177,7 +1177,7 @@ body.busy .status-word { color: var(--spotify); }
     overscroll-behavior: contain;
   }
   .runbar {
-    flex: 0 0 clamp(150px, 26dvh, 200px);
+    flex: 0 0 clamp(162px, 28.08dvh, 216px);
     min-height: 0;
     padding: 0 14px 12px;
     border-top: 1px solid var(--edge-2);
