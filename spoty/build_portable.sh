@@ -143,7 +143,7 @@ if [ ! -f "$YOUTUBE_EXPLODE" ]; then
             linux:arm64) RID=linux-arm64 ;;
             *)           RID=linux-x64 ;;
         esac
-        dotnet publish "$ROOT/dotnet/BlueKnightYoutube/BlueKnightYoutube.csproj"             -c Release -r "$RID" -o "$WORK/dotnet"
+        dotnet publish "$ROOT/dotnet/BlueKnightYoutube/BlueKnightYoutube.csproj"             -c Release -r "$RID" --property:PublishDir="$WORK/dotnet/"
         cp "$WORK/dotnet/blueknight-youtube" "$YOUTUBE_EXPLODE"
         chmod +x "$YOUTUBE_EXPLODE"
     else

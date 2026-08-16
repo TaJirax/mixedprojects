@@ -1,0 +1,19 @@
+{
+  "$comment": [
+    "Pins the SDK that builds the desktop's second YouTube engine.",
+    "",
+    "Without this the runner uses whatever it happens to have preinstalled —",
+    "10.0.302 at the time of writing — and its publish arguments are handled",
+    "differently enough that MSBuild read the output path as a second project",
+    "and refused to build at all. The engine targets net8.0, so the 8.0 SDK is",
+    "what it should be built with, on a runner and on a clone alike.",
+    "",
+    "rollForward stays on latestFeature so a machine with a newer 8.0.x patch",
+    "still builds, rather than demanding this exact number."
+  ],
+  "sdk": {
+    "version": "8.0.100",
+    "rollForward": "latestFeature",
+    "allowPrerelease": false
+  }
+}
