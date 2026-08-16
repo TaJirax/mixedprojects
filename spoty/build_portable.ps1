@@ -15,6 +15,7 @@ $PythonLib = Join-Path $PythonRoot "Lib"
 $PythonTcl = Join-Path $PythonRoot "tcl"
 
 $SpotdlVersion = "4.5.2"
+$YtjsVersion = "18.0.0"
 
 # Extra PyInstaller arguments that only exist when their file does.
 $ExtraArgs = @()
@@ -47,7 +48,11 @@ if (-not (Test-Path -LiteralPath $YoutubeExplode)) {
             -c Release -r win-x64 `
             --property:PublishDir="$(Join-Path $Work 'dotnet')/"
         if ($LASTEXITCODE -ne 0) { throw "the YoutubeExplode engine failed to build" }
-        Copy-Item (Join-Path $Work "dotnet/blueknight-youtube.exe") $YoutubeExplode -Force
+        $Published = Join-Path $Work "dotnet/blueknight-youtube.exe"
+        if ((Get-Item $Published).Length -lt 20MB) {
+            throw "the engine published framework-dependent: it will not run without .NET installed"
+        }
+        Copy-Item $Published $YoutubeExplode -Force
     } else {
         Write-Warning "no .NET SDK: building without the YoutubeExplode fallback engine"
     }
@@ -55,6 +60,18 @@ if (-not (Test-Path -LiteralPath $YoutubeExplode)) {
 if (Test-Path -LiteralPath $YoutubeExplode) {
     $ExtraArgs += @("--add-binary", "$YoutubeExplode;tools")
 }
+
+# The YouTube.js engine: our two scripts plus the library as one bundled file,
+# so nothing is fetched at run time. Deno already ships for yt-dlp's challenge
+# solver, so this engine costs a script rather than another runtime.
+$YtjsDir = Join-Path $Root "engines/youtubejs"
+$YtjsBundle = Join-Path $YtjsDir "youtubei.bundle.mjs"
+if (-not (Test-Path -LiteralPath $YtjsBundle)) {
+    Write-Host "  fetching the YouTube.js library"
+    Invoke-WebRequest -UseBasicParsing -OutFile $YtjsBundle `
+        -Uri "https://esm.sh/youtubei.js@$YtjsVersion/denonext/youtubei.bundle.mjs"
+}
+$ExtraArgs += @("--add-data", "$YtjsDir;tools")
 
 if (-not (Test-Path -LiteralPath $Deno)) {
     $DenoZip = Join-Path $Vendor "deno.zip"

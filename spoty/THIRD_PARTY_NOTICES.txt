@@ -108,3 +108,17 @@ The behaviour this engine relies on — visitor-data resolution, the ANDROID_VR
 innertube client, the TV-embedded fallback, signature deciphering and the
 stream request handling — is the library's own, deliberately, so that updating
 the package is what keeps the engine working when YouTube changes.
+
+--------------------------------------------------------------------------
+YouTube.js (youtubei.js)
+--------------------------------------------------------------------------
+Copyright (c) LuanRT
+Licensed under the MIT License.
+
+Used as an additional YouTube engine — fourth on the desktop, third on
+Android. The library is fetched at build time as its published ESM bundle and
+loaded as-is; none of its source is copied into this application. The desktop
+runs it under the Deno already shipped for yt-dlp's challenge solver, and
+Android runs the same script inside a WebView.
+
+  https://github.com/LuanRT/YouTube.js

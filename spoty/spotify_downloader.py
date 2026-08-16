@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.1.0"
+APP_VERSION = "7.2.0"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -403,14 +403,14 @@ if IS_ANDROID:
     # by android_bridge. It is deliberately second to yt-dlp, whose extractor
     # catalogue and playlist support are much broader.
     ENGINES.update({
-        "youtube": ("newpipe",),
-        "ytmusic": ("newpipe",),
+        "youtube": ("newpipe", "youtube-js"),
+        "ytmusic": ("newpipe", "youtube-js"),
         "soundcloud": ("newpipe",),
     })
 else:
     ENGINES.update({
-        "youtube": ("youtube-explode",),
-        "ytmusic": ("youtube-explode",),
+        "youtube": ("youtube-explode", "youtube-js"),
+        "ytmusic": ("youtube-explode", "youtube-js"),
     })
     ENGINES["general"] = ("youtube-explode",) + ENGINES["general"]
 
@@ -445,6 +445,16 @@ SESSION_REFRESHER = None
 # Installed by android_bridge at boot. It returns NewPipeExtractor's direct
 # stream candidates as a plain dict and stays None on every desktop build.
 NEWPIPE_RESOLVER = None
+# Installed by the Android shell, which runs the YouTube.js engine in a WebView
+# instead of under Deno. Desktop leaves this None and spawns Deno itself.
+YOUTUBEJS_RESOLVER = None
+
+
+def youtube_video_id(url):
+    """The eleven characters YouTube identifies a video by, or None."""
+    match = re.search(r"(?:v=|/shorts/|youtu\.be/|/embed/|/v/)([A-Za-z0-9_-]{11})",
+                      str(url or ""))
+    return match.group(1) if match else None
 
 PDF_LIBRARY = "pypdf" if IS_ANDROID else "pikepdf"
 PYTHON_COMPONENTS[PDF_LIBRARY] = {
@@ -3542,6 +3552,69 @@ class SpotifyDownloader:
                            if reason != "unavailable"
                            else failure or "YouTube says this video is unavailable")
 
+    def _resolve_with_youtube_js(self, url):
+        """Ask the YouTube.js engine what this video can be fetched as.
+
+        Desktop runs it under the Deno already shipped for yt-dlp's challenge
+        solver, so the engine costs a script and a vendored library rather than
+        another runtime. Android hands the same script to a WebView instead,
+        through the shell — the resolver returns the same shape either way, and
+        everything below this point stops caring which host produced it.
+        """
+        if YOUTUBEJS_RESOLVER is not None:
+            return YOUTUBEJS_RESOLVER(url, self.configured_proxy())
+
+        runtime_name, runtime = self.js_runtime()
+        if runtime_name != "deno" or not runtime:
+            raise RuntimeError("The YouTube.js engine needs Deno, which this build "
+                               "does not have.")
+        script = bundled_tool("deno_main.mjs") or bundled_tool("youtubejs/deno_main.mjs")
+        if not script:
+            raise RuntimeError("The YouTube.js engine is not part of this build.")
+
+        video_id = youtube_video_id(url)
+        if not video_id:
+            raise RuntimeError("That does not look like a YouTube video link.")
+
+        cmd = [runtime, "run", "--allow-net", "--allow-env", "--no-remote",
+               "--no-check", "--quiet", str(script), video_id]
+        proxy = self.configured_proxy()
+        if proxy:
+            cmd.append(proxy)
+        result = pyshell.run(cmd, timeout=180)
+        for line in reversed((result.stdout or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                return json.loads(line)
+        raise RuntimeError("The YouTube.js engine returned nothing readable.")
+
+    def _download_with_youtube_js(self, url, output, quality, audio_only):
+        """Resolve with YouTube.js, then fetch with the app's own downloader.
+
+        The engine only ever resolves. One downloader in this app already knows
+        about proxies, progress, part files and stopping, and a second copy of
+        that is a second copy of its bugs — so the streams come back here and
+        are fetched the same way NewPipe's are.
+        """
+        started = time.time()
+        self.log_engine_attempt("YouTube.js", "resolving", url, quality)
+        payload = self._resolve_with_youtube_js(url)
+        if not isinstance(payload, dict):
+            raise RuntimeError("The YouTube.js engine returned an invalid response.")
+        if not payload.get("ok"):
+            tried = "; ".join(
+                f"{a.get('client')}: {a.get('reason', '')[:60]}"
+                for a in payload.get("attempts", [])[:4])
+            raise RuntimeError(tried or "YouTube.js found no usable streams.")
+
+        self.log_engine_attempt(
+            "YouTube.js", "manifest resolved", url, quality,
+            f"{len(payload.get('streams') or [])} streams via {payload.get('client')}",
+            started)
+        # Same shape as the NewPipe adapter's, so the same selection and the
+        # same fetch serve both rather than each growing its own.
+        return self._fetch_resolved_streams(payload, url, output, quality, audio_only)
+
     def _download_with_newpipe(self, url, output, quality, audio_only):
         """Resolve with Android's NewPipeExtractor adapter and fetch via FFmpeg."""
         if NEWPIPE_RESOLVER is None:
@@ -3555,6 +3628,16 @@ class SpotifyDownloader:
         self.log_engine_attempt(
             "NewPipe", "manifest resolved", url, quality,
             f"{len(payload.get('streams') or [])} streams", started)
+        return self._fetch_resolved_streams(payload, url, output, quality, audio_only)
+
+    def _fetch_resolved_streams(self, payload, url, output, quality, audio_only):
+        """Fetch streams that some engine has already resolved.
+
+        Shared by every engine that reports direct URLs — NewPipe and
+        YouTube.js today — because the part after "here are the streams" is the
+        same work each time: pick, name, mux, report progress, and stop when
+        asked. A second copy of it is a second copy of its bugs.
+        """
         video, audio = self._pick_newpipe_streams(payload, quality, audio_only)
         hls = str(payload.get("hls") or "")
         if audio_only and audio is None and hls:
@@ -3658,6 +3741,17 @@ class SpotifyDownloader:
                         url, output, quality, audio_only)
                     if path:
                         self._batch_log(f"YoutubeExplode saved {path.name}.", "success")
+                        self._flush_logs()
+                        self.ui("success", time.time() - started)
+                        return True
+                    continue
+                if engine == "youtube-js":
+                    self._batch_log(
+                        "Trying YouTube.js — a different extractor again.", "info")
+                    self._flush_logs()
+                    path = self._download_with_youtube_js(url, output, quality, audio_only)
+                    if path:
+                        self._batch_log(f"YouTube.js saved {path.name}.", "success")
                         self._flush_logs()
                         self.ui("success", time.time() - started)
                         return True
@@ -5871,23 +5965,34 @@ if __name__ == "__main__":
             "ERROR: unable to download video data: HTTP Error 403: Forbidden")
         # Only sources with a second engine may hand off at all.
         assert set(ENGINES) <= set(MEDIA_LABELS), set(ENGINES) - set(MEDIA_LABELS)
+        # The order is the whole design, so it is asserted rather than trusted.
+        #   Desktop: yt-dlp -> YoutubeExplode -> YouTube.js
+        #   Android: yt-dlp -> NewPipe        -> YouTube.js
+        # yt-dlp is first on both and is deliberately absent from this table.
         if IS_ANDROID:
-            assert ENGINES["youtube"] == ("newpipe",)
-            assert ENGINES["ytmusic"] == ("newpipe",)
+            assert ENGINES["youtube"] == ("newpipe", "youtube-js")
+            assert ENGINES["ytmusic"] == ("newpipe", "youtube-js")
             assert ENGINES["general"][0] == "newpipe"
+            assert not any("youtube-explode" in e for e in ENGINES.values()), (
+                "YoutubeExplode is a .NET engine and desktop-only")
         else:
             # The desktop's second engine is the .NET one, and NewPipe is not
             # available here: it is a JVM library and this package carries no
             # JVM. yt-dlp is first on both, and is not in this table at all.
-            assert ENGINES["youtube"] == ("youtube-explode",)
-            assert ENGINES["ytmusic"] == ("youtube-explode",)
+            assert ENGINES["youtube"] == ("youtube-explode", "youtube-js")
+            assert ENGINES["ytmusic"] == ("youtube-explode", "youtube-js")
             assert ENGINES["general"][0] == "youtube-explode"
             assert not any("newpipe" in engines for engines in ENGINES.values()), (
                 "NewPipeExtractor is Android-only")
         assert "gallery-dl" in ENGINES["x"] and "direct" in ENGINES["general"]
         assert ("streamlink", "html5") == tuple(
             engine for engine in ENGINES["general"]
-            if engine not in ("newpipe", "youtube-explode"))[:2]
+            if engine not in ("newpipe", "youtube-explode", "youtube-js"))[:2]
+        for _url, _want in (("https://youtu.be/f6_GyoY64bE?is=X", "f6_GyoY64bE"),
+                            ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1", "dQw4w9WgXcQ"),
+                            ("https://www.youtube.com/shorts/abcdefghijk", "abcdefghijk"),
+                            ("https://example.com/watch", None)):
+            assert youtube_video_id(_url) == _want, _url
         # Dynamic plugin imports are easy for a freezer to miss. Exercise both
         # engines inside the packaged executable without touching the network.
         import gallery_dl

@@ -1,0 +1,3 @@
+
+# Fetched at build time, like vendor/: a third-party bundle, not our source.
+engines/youtubejs/youtubei.bundle.mjs

@@ -14,6 +14,7 @@ OUTPUT="$ROOT/release"
 WORK="$ROOT/build"
 
 SPOTDL_VERSION="4.5.2"
+YTJS_VERSION="18.0.0"
 case "$(uname -s)" in
     Darwin) OS_TAG=mac ;;
     Linux)  OS_TAG=linux ;;
@@ -144,6 +145,11 @@ if [ ! -f "$YOUTUBE_EXPLODE" ]; then
             *)           RID=linux-x64 ;;
         esac
         dotnet publish "$ROOT/dotnet/BlueKnightYoutube/BlueKnightYoutube.csproj"             -c Release -r "$RID" --property:PublishDir="$WORK/dotnet/"
+        _size=$(wc -c < "$WORK/dotnet/blueknight-youtube")
+        if [ "$_size" -lt 20000000 ]; then
+            echo "the engine published at $_size bytes: that is a framework-dependent build, not a self-contained one" >&2
+            exit 1
+        fi
         cp "$WORK/dotnet/blueknight-youtube" "$YOUTUBE_EXPLODE"
         chmod +x "$YOUTUBE_EXPLODE"
     else
@@ -151,6 +157,16 @@ if [ ! -f "$YOUTUBE_EXPLODE" ]; then
     fi
 fi
 [ -f "$YOUTUBE_EXPLODE" ] && PYI_ARGS+=(--add-binary "$YOUTUBE_EXPLODE:tools")
+
+# The YouTube.js engine: our two scripts plus the library, bundled as one file
+# so nothing is fetched at run time. Deno already ships for yt-dlp's challenge
+# solver, so this engine costs a script rather than another runtime.
+YTJS_BUNDLE="$ROOT/engines/youtubejs/youtubei.bundle.mjs"
+if [ ! -f "$YTJS_BUNDLE" ]; then
+    echo "  fetching the YouTube.js library"
+    curl --fail --location --retry 3 -o "$YTJS_BUNDLE"         "https://esm.sh/youtubei.js@$YTJS_VERSION/denonext/youtubei.bundle.mjs"
+fi
+PYI_ARGS+=(--add-data "$ROOT/engines/youtubejs:tools")
 if [ "$OS_TAG" = mac ]; then
     # .icns is the only icon format a bundle accepts; skip rather than fail
     # the build when only the Windows .ico has been checked in.
