@@ -2506,14 +2506,28 @@ function syncPhoneProgress() {
     $("run-path"),
     document.querySelector(".run-stats"),
   ].filter(Boolean);
+  // Re-parenting a node that is already in place still detaches and reinserts
+  // it, and this runs on every page switch — which on a phone is every tap on
+  // a source tile. The moves are skipped only when the whole run is already
+  // sitting in order, because a half-checked reorder is worse than none.
+  const inOrderUnder = (parent, before) => parts.every((part, i) =>
+    part.parentNode === parent &&
+    part.nextElementSibling === (parts[i + 1] || before));
+
   if (PHONE.matches) {
-    parts.forEach(part => progress.appendChild(part));
     const actions = document.querySelector(".page.on .paste-row");
-    if (actions) actions.insertAdjacentElement("afterend", progress);
+    if (!inOrderUnder(progress, null)) {
+      parts.forEach(part => progress.appendChild(part));
+    }
+    if (actions && actions.nextElementSibling !== progress) {
+      actions.insertAdjacentElement("afterend", progress);
+    }
   } else {
-    parts.forEach(part => runbar.insertBefore(part, activity));
+    if (!inOrderUnder(runbar, activity)) {
+      parts.forEach(part => runbar.insertBefore(part, activity));
+    }
     const firstPage = main.querySelector(".page");
-    main.insertBefore(progress, firstPage);
+    if (progress.nextElementSibling !== firstPage) main.insertBefore(progress, firstPage);
   }
 }
 
@@ -2964,12 +2978,20 @@ function handle(ev) {
   }
 }
 
+/* On the desktop the engine is a separate process and an empty poll costs
+   almost nothing. On Android the page, the engine and the download itself
+   share one interpreter, so every poll takes the GIL away from the download
+   just to be told nothing happened. Answering quickly while events are
+   arriving and easing off when they are not keeps the progress bar as live as
+   it was, on a fraction of the round trips. */
 async function pump() {
+  let events = [];
   try {
-    const events = await api().poll();
+    events = (await api().poll()) || [];
     events.forEach(handle);
   } catch (e) { /* bridge not up yet */ }
-  setTimeout(pump, state.busy ? 150 : 350);
+  pump.quiet = events.length ? 0 : Math.min((pump.quiet || 0) + 1, 8);
+  setTimeout(pump, state.busy ? 120 + pump.quiet * 40 : 350);
 }
 
 /* --------------------------------------------------------------- wiring -- */

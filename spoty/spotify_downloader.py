@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "6.9.10"
+APP_VERSION = "7.0.0"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -2093,6 +2093,28 @@ class SpotifyDownloader:
         finally:
             archive_path.unlink(missing_ok=True)
 
+    def ffmpeg_location(self):
+        """What --ffmpeg-location can actually be handed.
+
+        yt-dlp looks a program up by file name inside the folder it is given.
+        On Android the packaged binaries are named libffmpeg.so and
+        libffprobe.so — a packaging rule, not a format — so the folder only
+        answers once the shims exist there under the real names. Passing the
+        native library folder regardless, which is what this did, meant yt-dlp
+        found no ffmpeg at all: every merge of a separate video and audio
+        stream, and every MP3 extraction, would have failed with the tool
+        reported missing.
+
+        When the shims cannot be made, the binary's own path goes instead.
+        yt-dlp accepts a file there and picks the program out of its name, and
+        "libffmpeg.so" contains "ffmpeg".
+        """
+        ffmpeg = Path(self.ffmpeg_cmd)
+        folder = ffmpeg.parent
+        if (folder / f"ffmpeg{EXE}").is_file():
+            return str(folder)
+        return str(ffmpeg)
+
     def js_runtime(self):
         """The JavaScript engine yt-dlp gets, as (name, path).
 
@@ -2270,7 +2292,9 @@ class SpotifyDownloader:
                         "noplaylist": True,
                         "quiet": True,
                         "no_warnings": True,
-                        "ffmpeg_location": self.ffmpeg_cmd,
+                        # Same rule as the command-line path: the folder when
+                        # both shims are there, the binary itself when not.
+                        "ffmpeg_location": self.ffmpeg_location(),
                         "progress_hooks": [progress],
                         "postprocessors": [{
                             "key": "FFmpegExtractAudio",
@@ -3192,7 +3216,7 @@ class SpotifyDownloader:
             # answers with HTTP 416.
             "--retries", "10", "--fragment-retries", "10",
             "--extractor-retries", "5", "--socket-timeout", "30",
-            "--ffmpeg-location", str(Path(self.ffmpeg_cmd).parent),
+            "--ffmpeg-location", self.ffmpeg_location(),
             # A machine-readable progress line beats scraping the pretty bar.
             # Pipe-separated because titles and speeds both contain spaces.
             "--progress-template",
@@ -3891,6 +3915,11 @@ class SpotifyDownloader:
             self.ffmpeg_cmd = str(self.ffmpeg_exe)
         else:
             self.ffmpeg_cmd = bundled_tool(f"ffmpeg{EXE}") or shutil.which("ffmpeg")
+
+        # Resolving ffprobe is what puts its shim next to ffmpeg's on Android.
+        # Without it the folder handed to yt-dlp holds one of the pair, and
+        # yt-dlp needs both to probe formats before it merges them.
+        self.ffprobe_cmd = bundled_tool(f"ffprobe{EXE}") or shutil.which("ffprobe")
 
         self.spotdl_cmd = ("Android Spotify engine" if IS_ANDROID
                            else self.find_tool("spotdl"))
@@ -4639,6 +4668,25 @@ if __name__ == "__main__":
         if not ffmpeg or not ytdlp or ("spotdl" in TOOLS and not spotdl) or (
                 "deno" in TOOLS and not deno):
             raise SystemExit(2)
+        # --ffmpeg-location must name something yt-dlp can actually find a
+        # program in: the folder only when it holds the real names, the binary
+        # itself otherwise. Getting this wrong costs every merge and every MP3.
+        _loc_probe = SpotifyDownloader.__new__(SpotifyDownloader)
+        with tempfile.TemporaryDirectory() as _tmp:
+            _shimmed = Path(_tmp) / "shimmed"
+            _shimmed.mkdir()
+            (_shimmed / f"ffmpeg{EXE}").write_bytes(b"")
+            _loc_probe.ffmpeg_cmd = str(_shimmed / f"ffmpeg{EXE}")
+            assert SpotifyDownloader.ffmpeg_location(_loc_probe) == str(_shimmed)
+
+            _packaged = Path(_tmp) / "lib"
+            _packaged.mkdir()
+            (_packaged / "libffmpeg.so").write_bytes(b"")
+            _loc_probe.ffmpeg_cmd = str(_packaged / "libffmpeg.so")
+            # No file called ffmpeg here, so the folder would find nothing.
+            assert SpotifyDownloader.ffmpeg_location(_loc_probe) == \
+                str(_packaged / "libffmpeg.so")
+
         # A run of log lines must reach the page as one event, and anything
         # else in the middle must break the run rather than swallow it.
         _drain_probe = SpotifyDownloader.__new__(SpotifyDownloader)
