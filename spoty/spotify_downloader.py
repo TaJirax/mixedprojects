@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.11"
+APP_VERSION = "7.0.12"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -108,6 +108,39 @@ SPOTDL_DOWNLOAD_URLS = spotdl_urls()
 YTDLP_DOWNLOAD_URLS = ytdlp_urls()
 DENO_DOWNLOAD_URLS = deno_urls()
 
+
+def bgutil_urls():
+    """The proof-of-origin token generator, per platform.
+
+    YouTube's bot check is answered with a token minted by running BotGuard, an
+    obfuscated JavaScript VM, in something browser-shaped. Every client that
+    still works does this somehow: NewPipe runs it in a WebView, others pair a
+    JavaScript runtime with a DOM. This is the Rust build of that, which carries
+    its own engine — one binary, no Node, no Deno, nothing to keep running.
+
+    Android is absent deliberately. The project publishes no Android target, and
+    a phone already has the browser-shaped thing these builds go to such lengths
+    to imitate; using it is a different piece of work, not a download.
+    """
+    base = ("https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/"
+            "releases/latest/download/")
+    names = {
+        ("win", "x64"): "bgutil-pot-windows-x86_64.exe",
+        ("linux", "x64"): "bgutil-pot-linux-x86_64",
+        ("linux", "arm64"): "bgutil-pot-linux-aarch64",
+        ("mac", "x64"): "bgutil-pot-macos-x86_64",
+        ("mac", "arm64"): "bgutil-pot-macos-aarch64",
+    }
+    asset = names.get((OS_TAG, ARCH))
+    return (base + asset,) if asset else ()
+
+
+BGUTIL_DOWNLOAD_URLS = bgutil_urls()
+# The yt-dlp side is pure Python and tiny; it is what teaches yt-dlp to ask the
+# binary for a token at all.
+BGUTIL_PLUGIN_URL = ("https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/"
+                     "releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip")
+
 # FFmpeg is the one tool with no single project publishing every platform.
 # Each entry is (binaries this archive should contain, mirrors to try) — macOS
 # needs two archives because evermeet.cx packages ffmpeg and ffprobe apart.
@@ -142,8 +175,18 @@ TOOLS = {
     "deno": {
         "label": "Deno", "exe": f"deno{EXE}", "urls": DENO_DOWNLOAD_URLS,
         "api": "https://api.github.com/repos/denoland/deno/releases/latest",
-        "archive_member": f"deno{EXE}",
         "checksum_urls": tuple(url + ".sha256sum" for url in DENO_DOWNLOAD_URLS),
+        "archive_member": f"deno{EXE}",
+    },
+    "bgutil": {
+        # Fetched only when the ladder has run out, never at setup: it is ~45 MB
+        # and most downloads never need it.
+        "label": "PO token provider", "exe": f"bgutil-pot{EXE}",
+        "urls": BGUTIL_DOWNLOAD_URLS, "optional": True,
+        "api": ("https://api.github.com/repos/jim60105/"
+                "bgutil-ytdlp-pot-provider-rs/releases/latest"),
+        # The release asset is the bare executable — nothing to unpack, and the
+        # project publishes no checksum files to verify it against.
     },
 }
 # A platform with neither a release asset nor an importable package has no tool
@@ -1324,6 +1367,7 @@ class SpotifyDownloader:
 
         self.spotdl_cmd = None
         self.ffmpeg_cmd = None
+        self._bgutil_pythonpath = None
         self.ytdlp_cmd = None
         self.deno_cmd = None
         self.gallerydl_version = None
@@ -2342,6 +2386,76 @@ class SpotifyDownloader:
             raise RuntimeError(f"FFmpeg setup failed: {e}")
         finally:
             archive_path.unlink(missing_ok=True)
+
+    def bgutil_args(self):
+        """yt-dlp arguments that let it mint a proof-of-origin token, or [].
+
+        Two halves that are useless apart: a plugin that teaches yt-dlp to ask
+        for a token, and a binary that answers. Both are fetched the first time
+        something needs them rather than at setup, because the binary is around
+        45 MB and most downloads never ask.
+
+        This is a fallback and stays one. It is worth being honest that it is
+        not a cure: YouTube has been tightening this for a year, and a token
+        that satisfies the check today is not guaranteed to tomorrow. It is one
+        more rung, tried after the free ones, on the runs that would otherwise
+        end with nothing.
+        """
+        self._bgutil_pythonpath = None
+        if IS_ANDROID or not BGUTIL_DOWNLOAD_URLS:
+            return []
+        try:
+            binary = self.get_or_download_tool("bgutil")
+        except Exception as failure:
+            self._batch_log(f"The token provider could not be fetched: "
+                            f"{str(failure)[:140]}", "warning")
+            return []
+        if not binary:
+            return []
+        plugins = self._bgutil_plugin_dir()
+        if not plugins:
+            return []
+        # Not --plugin-dirs. That flag exists and is documented, and a token
+        # provider placed through it was still reported as "PO Token Providers:
+        # none" — the same plugin on PYTHONPATH registers as
+        # bgutil:cli (external), which is how it is handed over.
+        self._bgutil_pythonpath = str(plugins)
+        return ["--extractor-args", f"youtubepot-bgutilcli:cli_path={binary}"]
+
+    def _ytdlp_env(self):
+        """The environment a yt-dlp run needs, or None for the plain one."""
+        if not getattr(self, "_bgutil_pythonpath", None):
+            return None
+        env = os.environ.copy()
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (self._bgutil_pythonpath + os.pathsep + existing
+                             if existing else self._bgutil_pythonpath)
+        return env
+
+    def _bgutil_plugin_dir(self):
+        """Where the token plugin lives, fetching it once if it is not there."""
+        root = app_data_dir() / "plugins"
+        marker = root / "yt_dlp_plugins" / "extractor" / "getpot_bgutil_cli.py"
+        if marker.is_file():
+            return root
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            archive = root / "bgutil-plugin.zip"
+            self._download_with_fallbacks([BGUTIL_PLUGIN_URL], archive,
+                                          "the token plugin")
+            with zipfile.ZipFile(archive) as bundle:
+                # Only the plugin tree, and nothing that climbs out of it.
+                for member in bundle.namelist():
+                    target = (root / member).resolve()
+                    if not str(target).startswith(str(root.resolve())):
+                        raise RuntimeError(f"refusing unsafe archive path: {member}")
+                bundle.extractall(root)
+            archive.unlink(missing_ok=True)
+        except Exception as failure:
+            self._batch_log(f"The token plugin could not be installed: "
+                            f"{str(failure)[:140]}", "warning")
+            return None
+        return root if marker.is_file() else None
 
     def ffmpeg_location(self):
         """What --ffmpeg-location can actually be handed.
@@ -3467,7 +3581,7 @@ class SpotifyDownloader:
             self.ui("finished")
 
     def _ytdlp_cmd_for(self, kind, url, output, quality, audio_only, limit, candidate=None,
-                       clients=None, impersonate=False, fresh=False):
+                       clients=None, impersonate=False, fresh=False, po_token=False):
         cmd = [
             self.ytdlp_cmd, url,
             # Do not inherit a machine-wide yt-dlp.conf. The UI is the source of
@@ -3576,6 +3690,8 @@ class SpotifyDownloader:
             # play, and the ones that do not come back as a 403 the ladder
             # already knows how to climb out of.
             extractor_args.append("formats=missing_pot")
+            if po_token:
+                cmd += self.bgutil_args()
             if selected_clients:
                 extractor_args.insert(0, f"player_client={selected_clients}")
             if extractor_args:
@@ -3636,7 +3752,7 @@ class SpotifyDownloader:
         lead = (YT_CLIENT_LADDER[0]
                 if IS_ANDROID and kind in YOUTUBE_KINDS else None)
         plan = [{"cookies": c, "clients": lead if (lead and not c) else None,
-                 "impersonate": False, "fresh": False}
+                 "impersonate": False, "fresh": False, "po_token": False}
                 for c in cookies]
         spent = set()
         if lead and all(not step["cookies"] for step in plan):
@@ -3655,7 +3771,7 @@ class SpotifyDownloader:
                     # sign-in demand mid-download, and that is what the ladder fixes.
                     may_borrow_cookies=(kind in COOKIE_ON_DEMAND or kind in COOKIE_SOURCES),
                     clients=attempt["clients"], impersonate=attempt["impersonate"],
-                    fresh=attempt["fresh"])
+                    fresh=attempt["fresh"], po_token=attempt.get("po_token", False))
 
                 if verdict is None:
                     return
@@ -3747,6 +3863,19 @@ class SpotifyDownloader:
                 # format list on a video the signed-in attempts could not get.
                 return {**attempt, "cookies": None,
                         "clients": YT_CLIENT_LADDER[0], "fresh": True}
+
+            # Last, and only on a desktop: mint a proof-of-origin token and let
+            # the clients that need one back into play. It is last because it
+            # costs a download the first time and a subprocess every time after,
+            # and because everything above it is free.
+            if not IS_ANDROID and BGUTIL_DOWNLOAD_URLS and "po-token" not in spent:
+                spent.add("po-token")
+                self._batch_log(
+                    "Everything free has been tried. Fetching a proof-of-origin "
+                    "token provider and trying the clients that need one.", "warning")
+                self._flush_logs()
+                return {**attempt, "clients": "mweb,default",
+                        "po_token": True, "fresh": True}
 
         # The stored login outlives its cookies, because the site rotates them.
         # If this app has ever signed in here, re-read the session before
@@ -4035,7 +4164,8 @@ class SpotifyDownloader:
                 " folder — an exported file wins over every browser")
 
     def _run_ytdlp(self, kind, url, output, quality, audio_only, limit, candidate, started,
-                   may_borrow_cookies=False, clients=None, impersonate=False, fresh=False):
+                   may_borrow_cookies=False, clients=None, impersonate=False, fresh=False,
+                   po_token=False):
         """One yt-dlp run.
 
         Returns None when the job is over (success, stop, or a failure already
@@ -4046,8 +4176,8 @@ class SpotifyDownloader:
         error_lines = []
         try:
             cmd = self._ytdlp_cmd_for(kind, url, output, quality, audio_only, limit, candidate,
-                                      clients, impersonate, fresh)
-            self.process = pyshell.popen(cmd, bufsize=8192)
+                                      clients, impersonate, fresh, po_token)
+            self.process = pyshell.popen(cmd, bufsize=8192, env=self._ytdlp_env())
             for raw in self.process.stdout:
                 if not self.is_downloading:
                     break
@@ -5394,10 +5524,16 @@ if __name__ == "__main__":
 
         assert not MEDIA_PATTERNS["tiktok"].search("https://open.spotify.com/track/1")
         assert not MEDIA_PATTERNS["youtube"].search("https://nyoutube.com.evil.tld/x")
-        # Every tool must be reachable through the same generic lookup.
-        for _name in TOOLS:
-            assert bundled_tool(TOOLS[_name]["exe"]), _name
-            assert len(TOOLS[_name]["urls"]) >= 2, f"{_name} needs a fallback mirror"
+        # Every tool the app cannot run without must be in the package and
+        # reachable through the same generic lookup. An optional one is fetched
+        # only if something asks for it, so it is neither shipped nor mirrored —
+        # a missing fallback there costs a fallback, not the app.
+        for _name, _spec in TOOLS.items():
+            if _spec.get("optional"):
+                assert _spec["urls"], f"{_name} is optional but unreachable"
+                continue
+            assert bundled_tool(_spec["exe"]), _name
+            assert len(_spec["urls"]) >= 2, f"{_name} needs a fallback mirror"
         checks = ([spotdl, "--version"], [ffmpeg, "-version"], [ytdlp, "--version"],
                   [deno, "--version"])
         for command in checks:
