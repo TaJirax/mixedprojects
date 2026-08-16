@@ -102,10 +102,14 @@ html[data-theme="dark"] {
      a light page fall to near-black over this one, so dark carries more tint,
      a brighter veil under it, no black floor, and a lighter seat under the
      label — that is the whole difference between the two themes here. */
-  --tile-t0: 42%;
-  --tile-t1: 60%;
-  --tile-t2: 37%;
-  --tile-t3: 30%;
+  /* Three points more tint at every stop. The backdrop saturate() that used to
+     sit under these is gone — it cost twelve filtered layers for about one
+     percent of pixel difference — so its colour is carried here instead, where
+     it is free. */
+  --tile-t0: 45%;
+  --tile-t1: 63%;
+  --tile-t2: 40%;
+  --tile-t3: 33%;
   --tile-veil:  rgb(255 255 255 / .13);
   --tile-floor: rgb(255 255 255 / .03);
   --tile-spec:  rgb(255 255 255 / .40);
@@ -332,8 +336,6 @@ html[data-theme="light"][data-mode="general"] {
   border-radius: 999px;
   background: var(--scroll-track);
   box-shadow: inset 0 0 9px rgba(0, 0, 0, 0.08);
-  -webkit-backdrop-filter: blur(12px) saturate(150%);
-  backdrop-filter: blur(12px) saturate(150%);
 }
 *::-webkit-scrollbar-thumb {
   min-height: 42px;
@@ -341,8 +343,6 @@ html[data-theme="light"][data-mode="general"] {
   border-radius: 999px;
   background: var(--scroll-thumb);
   box-shadow: var(--scroll-shadow);
-  -webkit-backdrop-filter: blur(16px) saturate(175%);
-  backdrop-filter: blur(16px) saturate(175%);
 }
 *::-webkit-scrollbar-thumb:hover {
   background: var(--scroll-thumb-hover);
@@ -1467,8 +1467,6 @@ html.android .nav button .dot { display: none; }
         var(--tile-veil) 0%,
         rgb(255 255 255 / .03) 52%,
         var(--tile-floor) 100%);
-    -webkit-backdrop-filter: blur(18px) saturate(210%);
-    backdrop-filter: blur(18px) saturate(210%);
     /* Depth is light, not perspective: a lit top edge and a dark under-edge
        give the pane thickness, the tinted hairline holds its shape against
        the sheet, and two shadows — a tight contact one and a wide soft one —
@@ -2711,16 +2709,26 @@ function toast(message, kind = "info", ms = 5200) {
 }
 
 /* ------------------------------------------------------------- console -- */
-function logLine(message, level) {
+/* One batch, one layout. Written per line this read scroll geometry, appended,
+   then wrote scroll position — forcing a synchronous layout for every line in
+   a burst, which is exactly when a download is busiest. */
+function logLines(lines) {
+  if (!lines.length) return;
   const c = $("console");
   const near = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
-  const line = document.createElement("div");
-  line.className = level || "info";
-  line.textContent = new Date().toTimeString().slice(0, 8) + "  " + message;
-  c.appendChild(line);
+  const stamp = new Date().toTimeString().slice(0, 8) + "  ";
+  const batch = document.createDocumentFragment();
+  lines.forEach(([message, level]) => {
+    const line = document.createElement("div");
+    line.className = level || "info";
+    line.textContent = stamp + message;
+    batch.appendChild(line);
+  });
+  c.appendChild(batch);
   while (c.childElementCount > 800) c.removeChild(c.firstChild);
   if (near) c.scrollTop = c.scrollHeight;
 }
+function logLine(message, level) { logLines([[message, level]]); }
 
 /* ------------------------------------------------------------ segments -- */
 function segment(id, onPick) {
@@ -2826,7 +2834,7 @@ function handle(ev) {
   const [action, args] = ev;
   switch (action) {
     case "log":
-      args.forEach(([msg, level]) => logLine(msg, level));
+      logLines(args);
       break;
     case "status":
       $("status-word").textContent = args[0];

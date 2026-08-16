@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "6.9.7"
+APP_VERSION = "6.9.8"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -1286,7 +1286,14 @@ class SpotifyDownloader:
             except queue.Empty:
                 break
             if action == "batch_log":
-                events.append(["log", [list(pair) for pair in args]])
+                # log() queues one batch_log per line, so a chatty download used
+                # to arrive as hundreds of separate events, each costing the page
+                # its own console write. Runs of them fold into one.
+                lines = [list(pair) for pair in args]
+                if events and events[-1][0] == "log":
+                    events[-1][1].extend(lines)
+                else:
+                    events.append(["log", lines])
             elif action == "finished":
                 self.download_finished()
                 events.append(["finished", []])
@@ -4632,6 +4639,19 @@ if __name__ == "__main__":
         if not ffmpeg or not ytdlp or ("spotdl" in TOOLS and not spotdl) or (
                 "deno" in TOOLS and not deno):
             raise SystemExit(2)
+        # A run of log lines must reach the page as one event, and anything
+        # else in the middle must break the run rather than swallow it.
+        _drain_probe = SpotifyDownloader.__new__(SpotifyDownloader)
+        _drain_probe.ui_queue = queue.Queue()
+        for _n in range(5):
+            _drain_probe.ui_queue.put(("batch_log", [(f"line {_n}", "info")]))
+        _drain_probe.ui_queue.put(("progress", (50,)))
+        _drain_probe.ui_queue.put(("batch_log", [("after", "info")]))
+        _drained = SpotifyDownloader.drain(_drain_probe)
+        assert [event[0] for event in _drained] == ["log", "progress", "log"], _drained
+        assert len(_drained[0][1]) == 5, _drained[0]
+        assert _drained[0][1][0] == ["line 0", "info"], _drained[0]
+
         assert MEDIA_PATTERNS["youtube"].search("https://youtu.be/abc")
         assert MEDIA_PATTERNS["tiktok"].search("https://www.tiktok.com/@u/video/1")
         assert normalize_media_url("soundcloud", "https://soundcloud.com/a/song")
