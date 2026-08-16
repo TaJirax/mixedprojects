@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.2"
+APP_VERSION = "7.0.3"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -4870,9 +4870,10 @@ if __name__ == "__main__":
             # always been; the additions sit below them.
             assert YT_CLIENT_LADDER[:2] == ("android_vr", "web_embedded,tv,default")
 
-        # A phone can only ever read a jar this app wrote; a desktop must keep
-        # every browser it could read one out of.
-        assert any(c[0] == "browser" for c in cookie_candidates()) != IS_ANDROID
+        # A phone can only ever read a jar this app wrote. The desktop half of
+        # this cannot be asserted: whether a browser turns up is a fact about
+        # the machine, not about the code, and a CI runner has none installed.
+        assert not (IS_ANDROID and any(c[0] == "browser" for c in cookie_candidates()))
 
         _lead_spent = {"clients-0"}
         _lead_step = _app._next_signin_step(
