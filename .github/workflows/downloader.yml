@@ -57,6 +57,12 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
 
+      # The desktop's second YouTube engine is a .NET sidecar. The build
+      # scripts skip it when no SDK is present, so without this the packages
+      # would still build and quietly ship one engine short.
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+
       - name: Install Python dependencies
         working-directory: spoty
         run: |

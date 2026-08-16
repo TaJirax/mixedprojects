@@ -129,6 +129,28 @@ PYI_ARGS=(
     --add-binary "$VENDOR/ffmpeg:tools"
     --add-binary "$VENDOR/ffprobe:tools"
 )
+
+# The desktop's second YouTube engine, built from source rather than fetched:
+# it is our own wrapper around YoutubeExplode and the .NET SDK is all it needs.
+# A clone without the SDK still produces a working app, one engine shorter.
+YOUTUBE_EXPLODE="$VENDOR/blueknight-youtube"
+if [ ! -f "$YOUTUBE_EXPLODE" ]; then
+    if command -v dotnet >/dev/null 2>&1; then
+        echo "  building the YoutubeExplode engine"
+        case "$OS_TAG:$ARCH" in
+            mac:arm64)   RID=osx-arm64 ;;
+            mac:*)       RID=osx-x64 ;;
+            linux:arm64) RID=linux-arm64 ;;
+            *)           RID=linux-x64 ;;
+        esac
+        dotnet publish "$ROOT/dotnet/BlueKnightYoutube/BlueKnightYoutube.csproj"             -c Release -r "$RID" --self-contained true -o "$WORK/dotnet" >/dev/null
+        cp "$WORK/dotnet/blueknight-youtube" "$YOUTUBE_EXPLODE"
+        chmod +x "$YOUTUBE_EXPLODE"
+    else
+        echo "  no .NET SDK: building without the YoutubeExplode fallback engine" >&2
+    fi
+fi
+[ -f "$YOUTUBE_EXPLODE" ] && PYI_ARGS+=(--add-binary "$YOUTUBE_EXPLODE:tools")
 if [ "$OS_TAG" = mac ]; then
     # .icns is the only icon format a bundle accepts; skip rather than fail
     # the build when only the Windows .ico has been checked in.

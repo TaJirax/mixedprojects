@@ -88,3 +88,23 @@ PyInstaller bootloader
 The GUI executable contains the PyInstaller bootloader.
 Project and license: https://github.com/pyinstaller/pyinstaller
 
+
+--------------------------------------------------------------------------
+YoutubeExplode / YoutubeExplode.Converter
+--------------------------------------------------------------------------
+Copyright (c) Oleksii Holub (Tyrrrz)
+Licensed under the GNU Lesser General Public License v3.0.
+
+Used as the desktop's second YouTube engine, through its published NuGet
+package and public API. No source from the project is copied into this
+application; the sidecar in dotnet/BlueKnightYoutube is our own wrapper and
+links the library dynamically, which is what the LGPL asks of a work that uses
+it. The library can therefore be replaced with another build of the same
+version by rebuilding that sidecar.
+
+  https://github.com/Tyrrrz/YoutubeExplode
+
+The behaviour this engine relies on — visitor-data resolution, the ANDROID_VR
+innertube client, the TV-embedded fallback, signature deciphering and the
+stream request handling — is the library's own, deliberately, so that updating
+the package is what keeps the engine working when YouTube changes.

@@ -16,6 +16,9 @@ $PythonTcl = Join-Path $PythonRoot "tcl"
 
 $SpotdlVersion = "4.5.2"
 
+# Extra PyInstaller arguments that only exist when their file does.
+$ExtraArgs = @()
+
 # vendor/ is deliberately not in the repository: it is 200 MB of other
 # projects' release binaries. Fetching what is missing is what makes a fresh
 # clone — and a CI runner — able to build without a manual setup step.
@@ -30,6 +33,28 @@ function Get-Tool {
 
 Get-Tool "https://github.com/spotDL/spotify-downloader/releases/download/v$SpotdlVersion/spotdl-$SpotdlVersion-win32.exe" $Spotdl
 Get-Tool "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" $Ytdlp
+
+# The desktop's second YouTube engine. Built from source here rather than
+# downloaded, because it is our own wrapper around YoutubeExplode; the .NET SDK
+# is the only thing needed and CI installs it. A clone without the SDK still
+# builds a working app, one engine shorter, which is why this warns instead of
+# failing.
+$YoutubeExplode = Join-Path $Vendor "blueknight-youtube.exe"
+if (-not (Test-Path -LiteralPath $YoutubeExplode)) {
+    if (Get-Command dotnet -ErrorAction SilentlyContinue) {
+        Write-Host "  building the YoutubeExplode engine"
+        dotnet publish (Join-Path $Root "dotnet/BlueKnightYoutube/BlueKnightYoutube.csproj") `
+            -c Release -r win-x64 --self-contained true `
+            -o (Join-Path $Work "dotnet") | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "the YoutubeExplode engine failed to build" }
+        Copy-Item (Join-Path $Work "dotnet/blueknight-youtube.exe") $YoutubeExplode -Force
+    } else {
+        Write-Warning "no .NET SDK: building without the YoutubeExplode fallback engine"
+    }
+}
+if (Test-Path -LiteralPath $YoutubeExplode) {
+    $ExtraArgs += @("--add-binary", "$YoutubeExplode;tools")
+}
 
 if (-not (Test-Path -LiteralPath $Deno)) {
     $DenoZip = Join-Path $Vendor "deno.zip"
@@ -100,6 +125,7 @@ python -m PyInstaller --noconfirm --clean --windowed --onefile `
     --add-binary "$Deno;tools" `
     --add-binary "$Ffmpeg;tools" `
     --add-binary "$Ffprobe;tools" `
+    @ExtraArgs `
     (Join-Path $Root "spotify_downloader.py")
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 

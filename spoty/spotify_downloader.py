@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.13"
+APP_VERSION = "7.1.0"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -389,6 +389,15 @@ ENGINES = {
     "general": (("newpipe",) if IS_ANDROID else ())
                + ("streamlink", "html5", "gallery-dl", "direct"),
 }
+# What runs after yt-dlp, in order. yt-dlp itself is not listed: it is not a
+# fallback, it is the engine, and these exist for the runs it cannot finish.
+#
+#   Desktop:  yt-dlp -> YoutubeExplode -> NewPipe
+#   Android:  yt-dlp -> NewPipe
+#
+# YoutubeExplode is a .NET library and ships as a sidecar the desktop packages
+# carry; there is no Android build of it and none is wanted, because the phone
+# reaches the same clients through NewPipe already.
 if IS_ANDROID:
     # NewPipeExtractor is an Android/JVM library, exposed to this shared engine
     # by android_bridge. It is deliberately second to yt-dlp, whose extractor
@@ -398,6 +407,12 @@ if IS_ANDROID:
         "ytmusic": ("newpipe",),
         "soundcloud": ("newpipe",),
     })
+else:
+    ENGINES.update({
+        "youtube": ("youtube-explode",),
+        "ytmusic": ("youtube-explode",),
+    })
+    ENGINES["general"] = ("youtube-explode",) + ENGINES["general"]
 
 
 def cookie_domain_for(kind, url):
@@ -3442,6 +3457,91 @@ class SpotifyDownloader:
         )
         return best_video, (best_audio if best_video and best_video.get("video_only") else None)
 
+    def _download_with_youtube_explode(self, url, output, quality, audio_only):
+        """The desktop's second engine: a YoutubeExplode sidecar, start to end.
+
+        It owns the whole attempt. Nothing here borrows a URL yt-dlp extracted
+        or hands a stream to another engine's downloader — a half-yt-dlp,
+        half-something-else download is the kind of state that cannot be
+        reasoned about when it breaks. Either this engine produced the file or
+        it failed and the next one starts from the beginning.
+        """
+        sidecar = bundled_tool(f"blueknight-youtube{EXE}")
+        if not sidecar:
+            raise RuntimeError("The YoutubeExplode engine is not part of this build.")
+
+        started = time.time()
+        self.log_engine_attempt("YoutubeExplode", "resolving", url, quality)
+
+        cmd = [sidecar, "download", url,
+               "--output", str(output),
+               "--ffmpeg", str(self.ffmpeg_cmd or "ffmpeg"),
+               "--quality", str(quality or "best")]
+        if audio_only:
+            cmd.append("--audio-only")
+        proxy = self.configured_proxy()
+        if proxy:
+            cmd += ["--proxy", proxy]
+        # A session is passed only when one exists, and as a path — a command
+        # line is readable by every other process on the machine.
+        candidate = next((c for c in self.usable_cookies(COOKIE_DOMAINS.get("youtube"))
+                          if c and c[0] == "file"), None)
+        if candidate:
+            cmd += ["--cookies", candidate[1]]
+
+        self.process = pyshell.popen(cmd, bufsize=8192)
+        produced, failure, reason = None, None, "error"
+        try:
+            for raw in self.process.stdout:
+                if not self.is_downloading:
+                    break
+                line = raw.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                kind = event.get("type")
+                if kind == "manifest":
+                    self.log_engine_attempt(
+                        "YoutubeExplode", "manifest resolved", url, quality,
+                        f"{event.get('video_streams', 0)} video, "
+                        f"{event.get('audio_streams', 0)} audio", started)
+                elif kind == "target":
+                    self.ui("plan", 1, 1, str(output))
+                    self.ui("file", event.get("path", ""), 0)
+                elif kind == "progress":
+                    self.ui("bytes", float(event.get("percent") or 0), "", "", "", 0)
+                elif kind == "subtitle":
+                    self._batch_log(f"Subtitles: {event.get('language')}", "info")
+                elif kind == "warning":
+                    self._batch_log(str(event.get("message"))[:200], "warning")
+                elif kind == "done":
+                    produced = event.get("path")
+                elif kind == "cancelled":
+                    self.is_downloading = False
+                elif kind == "error":
+                    failure = str(event.get("message") or "unknown failure")
+                    reason = str(event.get("reason") or "error")
+        finally:
+            self.process.wait()
+            code = self.process.returncode
+            self.process = None
+
+        if not self.is_downloading:
+            return None
+        if produced:
+            self.log_engine_attempt("YoutubeExplode", "download successful", url,
+                                    quality, "", started)
+            return Path(produced)
+        # "unavailable" is the site's final answer, not this engine's problem,
+        # so it is passed up as-is rather than dressed as an extraction failure
+        # the next engine should retry.
+        raise RuntimeError(failure or f"the YoutubeExplode engine exited with code {code}"
+                           if reason != "unavailable"
+                           else failure or "YouTube says this video is unavailable")
+
     def _download_with_newpipe(self, url, output, quality, audio_only):
         """Resolve with Android's NewPipeExtractor adapter and fetch via FFmpeg."""
         if NEWPIPE_RESOLVER is None:
@@ -3550,6 +3650,18 @@ class SpotifyDownloader:
             if not self.is_downloading:
                 return False
             try:
+                if engine == "youtube-explode":
+                    self._batch_log(
+                        "yt-dlp could not finish — trying YoutubeExplode.", "info")
+                    self._flush_logs()
+                    path = self._download_with_youtube_explode(
+                        url, output, quality, audio_only)
+                    if path:
+                        self._batch_log(f"YoutubeExplode saved {path.name}.", "success")
+                        self._flush_logs()
+                        self.ui("success", time.time() - started)
+                        return True
+                    continue
                 if engine == "newpipe":
                     self._batch_log(
                         "yt-dlp exhausted its extractors - trying NewPipeExtractor.", "info")
@@ -5401,6 +5513,23 @@ if __name__ == "__main__":
                 else:
                     os.environ[_key] = _was
 
+        # The desktop's second engine must actually be in the package. It is
+        # optional at build time so a clone without the .NET SDK still works,
+        # which is exactly how it could go missing without anyone noticing.
+        # Only in a packaged build. Running from source there is nothing to
+        # bundle yet, and the check that matters is the one the frozen
+        # executable makes about its own contents.
+        if not IS_ANDROID and getattr(sys, "frozen", False):
+            _engine = bundled_tool(f"blueknight-youtube{EXE}")
+            assert _engine, "the YoutubeExplode engine is missing from this build"
+            _probe = subprocess.run([_engine, "info", "https://youtu.be/",
+                                     "--output", tempfile.gettempdir()],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    timeout=90)
+            # Any answer proves it starts and speaks JSON; which answer depends
+            # on the network, which a build must not.
+            assert b"{" in _probe.stdout, _probe.stdout[:200]
+
         # A second engine answers a site. It cannot answer a full disk, a
         # read-only folder, or someone pressing stop — and trying buries the
         # real reason under a second failure that says something else.
@@ -5747,11 +5876,18 @@ if __name__ == "__main__":
             assert ENGINES["ytmusic"] == ("newpipe",)
             assert ENGINES["general"][0] == "newpipe"
         else:
-            assert not ({"youtube", "ytmusic"} & set(ENGINES)), (
+            # The desktop's second engine is the .NET one, and NewPipe is not
+            # available here: it is a JVM library and this package carries no
+            # JVM. yt-dlp is first on both, and is not in this table at all.
+            assert ENGINES["youtube"] == ("youtube-explode",)
+            assert ENGINES["ytmusic"] == ("youtube-explode",)
+            assert ENGINES["general"][0] == "youtube-explode"
+            assert not any("newpipe" in engines for engines in ENGINES.values()), (
                 "NewPipeExtractor is Android-only")
         assert "gallery-dl" in ENGINES["x"] and "direct" in ENGINES["general"]
         assert ("streamlink", "html5") == tuple(
-            engine for engine in ENGINES["general"] if engine != "newpipe")[:2]
+            engine for engine in ENGINES["general"]
+            if engine not in ("newpipe", "youtube-explode"))[:2]
         # Dynamic plugin imports are easy for a freezer to miss. Exercise both
         # engines inside the packaged executable without touching the network.
         import gallery_dl

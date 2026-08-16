@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The desktop's second YouTube engine.
+
+    yt-dlp stays first everywhere; this exists for the runs yt-dlp cannot
+    finish — bot checks, proof-of-origin refusals, a player it cannot read.
+    It is a separate process on purpose: the engine that fails must not be able
+    to take the one after it down with it, and a crash here is one failed
+    attempt rather than a dead app.
+
+    YoutubeExplode is used through its own API rather than reimplemented. Its
+    visitor-data handling, its ANDROID_VR client, its TV-embedded fallback and
+    its signature deciphering are the parts that go stale when YouTube changes,
+    so they are the parts worth getting from upstream with an update rather
+    than owning here.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>blueknight-youtube</AssemblyName>
+    <RootNamespace>BlueKnightYoutube</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!-- One file, no runtime to install, nothing for the user to think about. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- Trimming is off deliberately: YoutubeExplode reads JSON reflectively
+         and a trimmed build loses members it needs at exactly the moment
+         YouTube changes shape, which is the moment this engine matters. -->
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="YoutubeExplode" Version="6.5.4" />
+    <PackageReference Include="YoutubeExplode.Converter" Version="6.5.4" />
+  </ItemGroup>
+
+</Project>
