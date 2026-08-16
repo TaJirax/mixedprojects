@@ -12,7 +12,7 @@
 # than ~50 MB to the APK.
 set -euo pipefail
 
-QUICKJS_VERSION="${QUICKJS_VERSION:-v0.10.1}"
+QUICKJS_VERSION="${QUICKJS_VERSION:-v0.16.1}"
 API="${API:-24}"
 ABI="${ABI:-arm64-v8a}"
 

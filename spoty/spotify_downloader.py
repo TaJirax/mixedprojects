@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.9"
+APP_VERSION = "7.0.10"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -1679,8 +1679,21 @@ class SpotifyDownloader:
             self.log("✓ FFmpeg: " + str(self.ffmpeg_cmd), "success")
             self.log("✓ spotDL: " + str(self.spotdl_cmd), "success")
             self.log("✓ yt-dlp: " + str(self.ytdlp_cmd), "success")
-            if self.deno_cmd:
-                self.log(f"✓ Deno: {self.deno_cmd}", "success")
+            # Whatever engine YouTube's challenge will actually be solved with,
+            # named. This used to report Deno and nothing else, so on Android —
+            # where Deno never exists and QuickJS does — the line simply
+            # vanished, and a runtime that was missing or unusable looked
+            # exactly like one that was fine. Without one, yt-dlp drops every
+            # format whose URL has to be decrypted, and the download fails
+            # complaining about formats rather than about the engine.
+            runtime_name, runtime_path = self.js_runtime()
+            if runtime_name:
+                self.log(f"✓ JS runtime: {runtime_name} ({runtime_path})", "success")
+            else:
+                self.log("✗ No JavaScript runtime. YouTube needs one to unscramble "
+                         "its media links; without it most formats are dropped and "
+                         "downloads fail with 'Requested format is not available'.",
+                         "error")
             self.log(f"✓ gallery-dl: {self.gallerydl_version}", "success")
             self.log(f"✓ Streamlink: {self.streamlink_version}", "success")
             self.log("💡 Use 'V2RayN HTTP' preset for proxy support", "info")
