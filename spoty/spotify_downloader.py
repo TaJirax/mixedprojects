@@ -3728,6 +3728,26 @@ class SpotifyDownloader:
                 self._flush_logs()
                 return {**attempt, "clients": clients, "fresh": True}
 
+            # Every client has failed while carrying the session, so try once
+            # without it. A signed-in request is not strictly the stronger one
+            # on YouTube: some of what it withholds it withholds *because* of
+            # the account — the server-side streaming experiment is selected per
+            # account, and an account in it gets no downloadable stream on any
+            # client, while the same video signed out is served normally. The
+            # session is the thing that has not been varied yet, so vary it.
+            if attempt.get("cookies") and "no-cookies" not in spent:
+                spent.add("no-cookies")
+                self._batch_log(
+                    "Every player client failed with the saved session. Trying once "
+                    "signed out — some limits belong to the account rather than to "
+                    "the video.", "warning")
+                self._flush_logs()
+                # Signed out, as the client that asks YouTube for the least.
+                # That pairing is the one measured to still return a full
+                # format list on a video the signed-in attempts could not get.
+                return {**attempt, "cookies": None,
+                        "clients": YT_CLIENT_LADDER[0], "fresh": True}
+
         # The stored login outlives its cookies, because the site rotates them.
         # If this app has ever signed in here, re-read the session before
         # deciding there is none — it costs seconds and needs no one's attention.
@@ -5200,6 +5220,22 @@ if __name__ == "__main__":
         # this cannot be asserted: whether a browser turns up is a fact about
         # the machine, not about the code, and a CI runner has none installed.
         assert not (IS_ANDROID and any(c[0] == "browser" for c in cookie_candidates()))
+
+        # When every client has failed carrying a session, the session itself
+        # is the thing that has not been varied. Signed out, as the client that
+        # asks for the least.
+        _all_spent = {f"clients-{_i}" for _i in range(len(YT_CLIENT_LADDER))}
+        _bare = _app._next_signin_step(
+            "youtube", "https://youtu.be/g9ilhvSurpQ",
+            {"cookies": ("file", "/x/yt.txt"), "clients": "tv", "impersonate": False,
+             "fresh": False},
+            _all_spent, challenge=True)
+        assert _bare["cookies"] is None, _bare
+        assert _bare["clients"] == YT_CLIENT_LADDER[0], _bare
+        # ...and only once.
+        assert _app._next_signin_step(
+            "youtube", "https://youtu.be/g9ilhvSurpQ", _bare, _all_spent,
+            challenge=True) != _bare or "no-cookies" in _all_spent
 
         _lead_spent = {"clients-0"}
         _lead_step = _app._next_signin_step(
