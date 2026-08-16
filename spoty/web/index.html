@@ -102,18 +102,18 @@ html[data-theme="dark"] {
      a light page fall to near-black over this one, so dark carries more tint,
      a brighter veil under it, no black floor, and a lighter seat under the
      label — that is the whole difference between the two themes here. */
-  /* Three points more tint at every stop. The backdrop saturate() that used to
-     sit under these is gone — it cost twelve filtered layers for about one
-     percent of pixel difference — so its colour is carried here instead, where
-     it is free. */
-  --tile-t0: 45%;
-  --tile-t1: 63%;
-  --tile-t2: 40%;
-  --tile-t3: 33%;
+  /* A point and a half over where the glass was mixed before the backdrop
+     saturate() came out — three took the colour past where it read as glass.
+     --tile-lead is the top edge, --tile-t1 the peak through the middle, and
+     --tile-t2 the floor: light, strong, medium, in that order down the face. */
+  --tile-lead: 34.5%;
+  --tile-t0: 43.5%;
+  --tile-t1: 61.5%;
+  --tile-t2: 38.5%;
   --tile-veil:  rgb(255 255 255 / .13);
   --tile-floor: rgb(255 255 255 / .03);
   --tile-spec:  rgb(255 255 255 / .40);
-  --tile-seat:  30%;
+  --tile-seat:  58%;
   /* Glass catches light on the underside too. A pure black bottom edge is how
      plastic is drawn; a faint bright one is how a pane is. */
   --tile-under: rgb(255 255 255 / .07);
@@ -159,10 +159,10 @@ html[data-theme="light"] {
   --mark-ink: color-mix(in srgb, var(--tint) 62%, #10202f);
   --mark-plate: rgb(255 255 255 / .07);
   /* Unchanged from what light already looked right at. */
+  --tile-lead: 24%;
   --tile-t0: 30%;
   --tile-t1: 44%;
   --tile-t2: 22%;
-  --tile-t3: 11%;
   --tile-veil:  rgb(255 255 255 / .12);
   --tile-floor: rgb(0 0 0 / .10);
   --tile-spec:  rgb(255 255 255 / .30);
@@ -1409,10 +1409,6 @@ html.android .nav button .dot { display: none; }
     grid-auto-rows: minmax(0, 1fr);
     height: 65dvh;
     gap: 8px;
-    /* One shared vanishing point, so the tiles tilt as a single surface on the
-       way in rather than each pivoting about its own centre. */
-    perspective: 1000px;
-    perspective-origin: 50% 34%;
   }
 
   /* A mosaic rather than a uniform grid — six columns, so a tile takes a
@@ -1456,28 +1452,30 @@ html.android .nav button .dot { display: none; }
        colour is kept out of the mix entirely — mixing into an opaque base is
        what made these read as painted plastic. */
     background:
-      radial-gradient(120% 96% at 26% 0%,
+      /* The bloom sits where the colour peaks rather than at the top corner,
+         so the two agree instead of fighting. */
+      radial-gradient(112% 88% at 42% 40%,
         color-mix(in srgb, var(--tint) var(--tile-t0), transparent) 0%,
-        transparent 74%),
+        transparent 76%),
       linear-gradient(158deg,
-        color-mix(in srgb, var(--tint) var(--tile-t1), transparent) 0%,
-        color-mix(in srgb, var(--tint) var(--tile-t2), transparent) 48%,
-        color-mix(in srgb, var(--tint) var(--tile-t3), transparent) 100%),
+        color-mix(in srgb, var(--tint) var(--tile-lead), transparent) 0%,
+        color-mix(in srgb, var(--tint) var(--tile-t1), transparent) 40%,
+        color-mix(in srgb, var(--tint) var(--tile-t2), transparent) 100%),
       linear-gradient(158deg,
         var(--tile-veil) 0%,
-        rgb(255 255 255 / .03) 52%,
+        rgb(255 255 255 / .03) 58%,
         var(--tile-floor) 100%);
     /* Depth is light, not perspective: a lit top edge and a dark under-edge
        give the pane thickness, the tinted hairline holds its shape against
        the sheet, and two shadows — a tight contact one and a wide soft one —
        are what stand it off the surface. */
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / .38),
-      inset 1px 0 0 rgb(255 255 255 / .12),
+      inset 0 1px 0 rgb(255 255 255 / .44),
+      inset 1px 0 0 rgb(255 255 255 / .14),
       inset 0 -1px 0 var(--tile-under),
-      inset 0 0 26px -6px color-mix(in srgb, var(--tint) 62%, transparent),
-      0 2px 4px -2px rgb(0 0 0 / .55),
-      0 14px 26px -14px rgb(0 0 0 / .9);
+      0 1px 2px rgb(0 0 0 / .5),
+      0 6px 12px -6px rgb(0 0 0 / .7),
+      0 18px 30px -16px rgb(0 0 0 / .95);
     color: var(--ink-2);
     text-align: center;
     cursor: pointer;
@@ -1499,7 +1497,7 @@ html.android .nav button .dot { display: none; }
     z-index: 0;
     pointer-events: none;
     background: linear-gradient(163deg,
-      var(--tile-spec) 0%, rgb(255 255 255 / .08) 40%, transparent 64%);
+      var(--tile-spec) 0%, rgb(255 255 255 / .10) 42%, transparent 66%);
     transform: rotate(-4deg);
   }
   /* A floor under the label, not a pool. At 72% x 40% this was a dark blob
@@ -1578,12 +1576,12 @@ html.android .nav button .dot { display: none; }
         rgb(255 255 255 / .03) 52%,
         var(--tile-floor) 100%);
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / .52),
-      inset 1px 0 0 rgb(255 255 255 / .16),
+      inset 0 1px 0 rgb(255 255 255 / .60),
+      inset 1px 0 0 rgb(255 255 255 / .18),
       inset 0 -1px 0 var(--tile-under),
-      inset 0 0 26px -6px color-mix(in srgb, var(--tint) 70%, transparent),
-      0 2px 4px -2px rgb(0 0 0 / .5),
-      0 14px 30px -12px color-mix(in srgb, var(--tint) 45%, transparent);
+      0 1px 2px rgb(0 0 0 / .45),
+      0 6px 12px -6px rgb(0 0 0 / .6),
+      0 18px 34px -14px color-mix(in srgb, var(--tint) 52%, transparent);
   }
   .tile[aria-current="true"] .section-icon {
     border-color: color-mix(in srgb, var(--tint) 62%, transparent);
@@ -1690,7 +1688,7 @@ html.android .nav button .dot { display: none; }
 @keyframes scrim-out { to { opacity: 0; } }
 /* The tiles come up off the surface as one tilted plane and settle flat. */
 @keyframes tile-in {
-  from { opacity: 0; transform: translateY(20px) translateZ(-70px) rotateX(-15deg); }
+  from { opacity: 0; transform: translateY(18px) scale(.965); }
   to   { opacity: 1; transform: none; }
 }
 /* The mark lands a beat after its tile, with just enough overshoot to read as
@@ -2541,8 +2539,13 @@ let sheetExit = null;
 
 function openSheet() {
   const current = document.querySelector(".page.on")?.dataset.page;
-  document.querySelectorAll("#sheet-grid .tile").forEach(t =>
-    t.setAttribute("aria-current", String(t.dataset.target === current)));
+  // Only the tiles whose answer changed. Rewriting all twelve invalidated all
+  // twelve, and the current-tile rule is the most expensive style on the page
+  // — so every open was recalculating eleven tiles to tell them nothing.
+  document.querySelectorAll("#sheet-grid .tile").forEach(t => {
+    const now = String(t.dataset.target === current);
+    if (t.getAttribute("aria-current") !== now) t.setAttribute("aria-current", now);
+  });
   clearTimeout(sheetExit);
   $("sheet").classList.remove("closing");
   $("sheet").hidden = false;
