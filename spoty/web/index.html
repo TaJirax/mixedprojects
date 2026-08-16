@@ -105,11 +105,14 @@ html[data-theme="dark"] {
   --tile-t0: 42%;
   --tile-t1: 60%;
   --tile-t2: 37%;
-  --tile-t3: 22%;
-  --tile-veil:  rgb(255 255 255 / .10);
-  --tile-floor: rgb(255 255 255 / .015);
-  --tile-spec:  rgb(255 255 255 / .34);
-  --tile-seat:  34%;
+  --tile-t3: 30%;
+  --tile-veil:  rgb(255 255 255 / .13);
+  --tile-floor: rgb(255 255 255 / .03);
+  --tile-spec:  rgb(255 255 255 / .40);
+  --tile-seat:  30%;
+  /* Glass catches light on the underside too. A pure black bottom edge is how
+     plastic is drawn; a faint bright one is how a pane is. */
+  --tile-under: rgb(255 255 255 / .07);
   --tile-on-t1: 78%;
   --tile-on-t2: 54%;
   --tile-on-t3: 34%;
@@ -160,6 +163,7 @@ html[data-theme="light"] {
   --tile-floor: rgb(0 0 0 / .10);
   --tile-spec:  rgb(255 255 255 / .30);
   --tile-seat:  44%;
+  --tile-under: rgb(0 0 0 / .22);
   --tile-on-t1: 56%;
   --tile-on-t2: 28%;
   --tile-on-t3: 13%;
@@ -1440,7 +1444,9 @@ html.android .nav button .dot { display: none; }
        belonging to the icon above it rather than as a caption on the tile. */
     justify-content: center;
     align-items: center;
-    gap: 7px;
+    /* Half a percent of the screen on top of the base, so the name sits off
+       its mark by the same amount whatever the phone is. */
+    gap: calc(7px + 0.5dvh);
     min-height: 0;
     padding: 9px 8px 10px;
     border: 1px solid color-mix(in srgb, var(--tint) 26%, var(--edge-2));
@@ -1461,16 +1467,17 @@ html.android .nav button .dot { display: none; }
         var(--tile-veil) 0%,
         rgb(255 255 255 / .03) 52%,
         var(--tile-floor) 100%);
-    -webkit-backdrop-filter: blur(13px) saturate(190%);
-    backdrop-filter: blur(13px) saturate(190%);
+    -webkit-backdrop-filter: blur(18px) saturate(210%);
+    backdrop-filter: blur(18px) saturate(210%);
     /* Depth is light, not perspective: a lit top edge and a dark under-edge
        give the pane thickness, the tinted hairline holds its shape against
        the sheet, and two shadows — a tight contact one and a wide soft one —
        are what stand it off the surface. */
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / .30),
-      inset 0 -1px 0 rgb(0 0 0 / .28),
-      inset 0 0 22px -8px color-mix(in srgb, var(--tint) 55%, transparent),
+      inset 0 1px 0 rgb(255 255 255 / .38),
+      inset 1px 0 0 rgb(255 255 255 / .12),
+      inset 0 -1px 0 var(--tile-under),
+      inset 0 0 26px -6px color-mix(in srgb, var(--tint) 62%, transparent),
       0 2px 4px -2px rgb(0 0 0 / .55),
       0 14px 26px -14px rgb(0 0 0 / .9);
     color: var(--ink-2);
@@ -1497,17 +1504,20 @@ html.android .nav button .dot { display: none; }
       var(--tile-spec) 0%, rgb(255 255 255 / .08) 40%, transparent 64%);
     transform: rotate(-4deg);
   }
-  /* A pool under the label, following it to the middle of the tile. A bottom
-     band would now be shading empty glass and leaving the text unhelped. */
+  /* A floor under the label, not a pool. At 72% x 40% this was a dark blob
+     sitting in the middle of the tile with lit glass all around it, which is
+     the opposite of what a scrim should do — spread across the whole lower
+     half it reads as the tile getting deeper toward the bottom. */
   .tile::after {
     content: "";
     position: absolute;
     inset: 0;
     z-index: 1;
     pointer-events: none;
-    background: radial-gradient(72% 40% at 50% 68%,
+    background: radial-gradient(150% 105% at 50% 108%,
       color-mix(in srgb, var(--pane-solid) var(--tile-seat), transparent) 0%,
-      transparent 78%);
+      color-mix(in srgb, var(--pane-solid) calc(var(--tile-seat) / 3), transparent) 52%,
+      transparent 88%);
   }
   /* The mark is the subject now, not texture — an icon you are meant to read
      rather than a watermark you are meant to ignore. It is the same chip the
@@ -1570,8 +1580,9 @@ html.android .nav button .dot { display: none; }
         rgb(255 255 255 / .03) 52%,
         var(--tile-floor) 100%);
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / .42),
-      inset 0 -1px 0 rgb(0 0 0 / .26),
+      inset 0 1px 0 rgb(255 255 255 / .52),
+      inset 1px 0 0 rgb(255 255 255 / .16),
+      inset 0 -1px 0 var(--tile-under),
       inset 0 0 26px -6px color-mix(in srgb, var(--tint) 70%, transparent),
       0 2px 4px -2px rgb(0 0 0 / .5),
       0 14px 30px -12px color-mix(in srgb, var(--tint) 45%, transparent);
