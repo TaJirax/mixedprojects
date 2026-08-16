@@ -42,8 +42,14 @@ def boot(activity):
     _activity = activity
     if _api is not None:
         return
+    # Before the engine reads anything, so it never sees last run's session.
+    _cleared = _start_signed_out()
     _app = engine.SpotifyDownloader()
     _api = engine.Api(_app)
+    if _cleared:
+        _app.log("Starting signed out — saved sign-ins are cleared each launch, so a "
+                 "session that stops working cannot keep the app stuck. Sign in again "
+                 "when a download asks for it.", "info")
     # The engine refreshes a stale login by re-reading the browser profile it
     # signed in through. On a phone that profile is the system CookieManager,
     # which only the shell can reach, so the way in is handed over here.
@@ -52,6 +58,39 @@ def boot(activity):
     # Those methods are intercepted in Kotlin before they ever get here, so the
     # attribute stays None and any missed path fails loudly rather than silently.
     _api._window = None
+
+
+def _start_signed_out():
+    """Throw away the sessions this app wrote, at every launch.
+
+    A stored login is not always the better position on YouTube. Some of what
+    it withholds it withholds because of the account — the server-side
+    streaming experiment is chosen per account, and one inside it is served no
+    downloadable stream on any client, on every video, until the session goes
+    away. A session that can only be cleared by knowing it is the problem is a
+    session that wedges the app, so the phone starts each launch signed out and
+    signs in again when something actually needs it.
+
+    Only the jars this app wrote are cleared. A cookies.txt exported from a
+    desktop browser and dropped in the app's own folder is the documented way
+    round a site that refuses to sign in here at all, so it lives outside the
+    cookie folder and survives this on purpose.
+    """
+    removed = 0
+    with contextlib.suppress(Exception):
+        for jar in cookie_dir().rglob("*.txt"):
+            with contextlib.suppress(OSError):
+                jar.unlink()
+                removed += 1
+    with contextlib.suppress(Exception):
+        registry = blueknight_paths.registry_path()
+        if registry.is_file():
+            registry.unlink()
+    # The WebView keeps its own copy, and it is the one a re-login reads back.
+    with contextlib.suppress(Exception):
+        if _activity is not None:
+            _activity.clearBrowserSession()
+    return removed
 
 
 def call(method, args_json):

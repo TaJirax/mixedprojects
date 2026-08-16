@@ -378,6 +378,22 @@ class MainActivity : AppCompatActivity() {
      * equivalent is right here, and it is why a rotated YouTube cookie does not
      * have to look like never having signed in.
      */
+    /**
+     * Forget the browser session as well as the jar.
+     *
+     * Deleting the saved jar alone would not sign anything out: the next login
+     * reads the system CookieManager, which still holds the account, so it
+     * would hand the same session straight back and the app would be exactly
+     * as stuck. Both halves go, and the login window opens on a real sign-in
+     * page rather than on someone already signed in.
+     */
+    fun clearBrowserSession() {
+        val manager = CookieManager.getInstance()
+        manager.removeAllCookies(null)
+        manager.flush()
+        android.webkit.WebStorage.getInstance().deleteAllData()
+    }
+
     fun harvestCookies(kind: String): String {
         val manager = CookieManager.getInstance()
         manager.flush()
