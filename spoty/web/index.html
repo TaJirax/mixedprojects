@@ -159,10 +159,10 @@ html[data-theme="light"] {
   --mark-ink: color-mix(in srgb, var(--tint) 62%, #10202f);
   --mark-plate: rgb(255 255 255 / .07);
   /* Unchanged from what light already looked right at. */
-  --tile-lead: 24%;
-  --tile-t0: 30%;
-  --tile-t1: 44%;
-  --tile-t2: 22%;
+  --tile-lead: 24.5%;
+  --tile-t0: 30.5%;
+  --tile-t1: 44.5%;
+  --tile-t2: 22.5%;
   --tile-veil:  rgb(255 255 255 / .12);
   --tile-floor: rgb(0 0 0 / .10);
   --tile-spec:  rgb(255 255 255 / .30);
@@ -1353,6 +1353,7 @@ html.android .nav button .dot { display: none; }
         color-mix(in srgb, var(--knight) 5%, var(--pane-solid)) 0%,
         var(--pane-solid) 44%);
     box-shadow: var(--shadow);
+    will-change: transform;
     animation: sheet-up .3s cubic-bezier(.2, .9, .26, 1);
     display: flex;
     overflow-y: auto;
@@ -1409,6 +1410,10 @@ html.android .nav button .dot { display: none; }
     grid-auto-rows: minmax(0, 1fr);
     height: 65dvh;
     gap: 8px;
+    /* One animated element for the whole mosaic. Staggering the tiles cost 35
+       extra composited layers in the frame the sheet appears, which is what
+       the open was catching on. */
+    animation: grid-in .34s cubic-bezier(.18, .92, .3, 1) 40ms backwards;
   }
 
   /* A mosaic rather than a uniform grid — six columns, so a tile takes a
@@ -1482,8 +1487,6 @@ html.android .nav button .dot { display: none; }
     /* The tile clips its own glass, which flattens preserve-3d — so the depth
        the mark moves in is the tile's own, declared here. */
     perspective: 420px;
-    animation: tile-in .42s cubic-bezier(.18, .92, .3, 1) backwards;
-    animation-delay: calc(var(--i, 0) * 24ms + 60ms);
     transition: transform .22s cubic-bezier(.2, .9, .3, 1),
                 border-color .22s ease, box-shadow .22s ease;
   }
@@ -1540,8 +1543,6 @@ html.android .nav button .dot { display: none; }
     color: var(--mark-ink);
     opacity: 1;
     pointer-events: none;
-    animation: mark-in .44s cubic-bezier(.2, 1.5, .4, 1) backwards;
-    animation-delay: calc(var(--i, 0) * 24ms + 150ms);
     transition: transform .22s cubic-bezier(.2, .9, .3, 1), box-shadow .22s ease;
   }
   .tile .section-icon svg {
@@ -1588,12 +1589,10 @@ html.android .nav button .dot { display: none; }
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / .38),
       0 4px 12px -5px color-mix(in srgb, var(--tint) 62%, transparent);
-    /* One looping animation in the sheet, on the one tile that is current.
-       Twelve would be noise, and a battery cost for it. */
-    animation: mark-in .44s cubic-bezier(.2, 1.5, .4, 1)
-                 calc(var(--i, 0) * 24ms + 150ms) backwards,
-               mark-float 3.6s ease-in-out
-                 calc(var(--i, 0) * 24ms + 600ms) infinite;
+    /* The idle float is gone. One animated icon promoted itself and, to keep
+       paint order, five overlapping ancestors with it — six composited layers
+       held for as long as the menu was open, to make one mark breathe. The
+       current tile is already the brightest thing on the sheet without it. */
   }
   /* Pressed, the tile tips away from you and the mark stays forward: the press
      reads as depth rather than as the whole card shrinking. */
@@ -1687,25 +1686,14 @@ html.android .nav button .dot { display: none; }
 @keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes scrim-out { to { opacity: 0; } }
 /* The tiles come up off the surface as one tilted plane and settle flat. */
-@keyframes tile-in {
-  from { opacity: 0; transform: translateY(18px) scale(.965); }
+@keyframes grid-in {
+  from { opacity: 0; transform: translateY(16px) scale(.975); }
   to   { opacity: 1; transform: none; }
-}
-/* The mark lands a beat after its tile, with just enough overshoot to read as
-   an object arriving rather than a fade. */
-@keyframes mark-in {
-  from { opacity: 0; transform: scale(.5) translateY(7px); }
-  to   { opacity: 1; transform: none; }
-}
-@keyframes mark-float {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-2.5px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sheet-body, .sheet-scrim, .backdrop, .tile, .tile .section-icon { animation: none; }
-  .sheet.closing .sheet-body, .sheet.closing .sheet-scrim,
-  .tile[aria-current="true"] .section-icon { animation: none; }
+  .sheet-body, .sheet-scrim, .backdrop, .sheet-grid, .tile .section-icon { animation: none; }
+  .sheet.closing .sheet-body, .sheet.closing .sheet-scrim { animation: none; }
   * { transition-duration: .01ms !important; }
 }
 .gate-bar::after {
@@ -2503,9 +2491,6 @@ function buildSheet() {
                          " utility");
   chat.onclick = () => { closeSheet(); api().open_telegram(); };
   grid.appendChild(chat);
-  // Tiles arrive in reading order; the delay is read from here, not hard-coded
-  // per position, so adding a source never re-times the ones after it.
-  [...grid.children].forEach((tile, i) => tile.style.setProperty("--i", i));
   const foot = document.querySelector(".side-foot");
   if (foot) $("sheet-foot").appendChild(foot);
 }
