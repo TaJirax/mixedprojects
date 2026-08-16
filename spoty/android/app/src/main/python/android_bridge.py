@@ -23,7 +23,7 @@ from pathlib import Path
 
 import blueknight_paths
 import spotify_downloader as engine
-from blueknight_paths import cookie_dir, record_jar
+from blueknight_paths import cookie_dir, host_matches, record_jar
 
 _app = None
 _api = None
@@ -92,12 +92,14 @@ def browser_ua():
     return engine.BROWSER_UA
 
 
-def _write_jar(kind, jar_json):
-    """Turn the shell's harvested cookies into the Netscape jar yt-dlp reads.
+def _build_jar(kind, jar_json):
+    """Render harvested cookies as jar lines. Touches nothing on disk.
 
-    Returns (jar path, cookies written, whether a session cookie was among
-    them). Shared by the sign-in flow and the silent mid-download refresh, so
-    the two can never disagree about what a saved session looks like.
+    Split out from the write because the sign-in window asks after every page
+    whether the session exists yet, and answering must not cost anything. Doing
+    that with the writing version would overwrite a perfectly good stored
+    session with a half-finished one on the way through a re-login, and losing
+    it if the person then backed out.
     """
     site = engine.cookie_site(kind)
     harvested = json.loads(jar_json or "[]")
@@ -123,16 +125,58 @@ def _write_jar(kind, jar_json):
                                     str(expiry), name, value]))
             written += 1
 
-    jar = cookie_dir(kind) / f"{site}_cookies.txt"
+    session_names = set(engine.SITE_SESSION_COOKIES.get(site, ()))
+    signed_in = any(name in session_names for _, name in seen)
+    return lines, written, signed_in
+
+
+def _write_jar(kind, jar_json):
+    """Save the harvested cookies as the Netscape jar yt-dlp reads.
+
+    Returns (jar path, cookies written, whether a session cookie was among
+    them). Shared by the sign-in flow and the silent mid-download refresh, so
+    the two can never disagree about what a saved session looks like.
+    """
+    lines, written, signed_in = _build_jar(kind, jar_json)
+    jar = cookie_dir(kind) / f"{engine.cookie_site(kind)}_cookies.txt"
     jar.parent.mkdir(parents=True, exist_ok=True)
     # Only replace a working jar once there is something to replace it with; a
     # refresh that reads nothing must not delete the session it was checking.
     if written:
         jar.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    session_names = set(engine.SITE_SESSION_COOKIES.get(site, ()))
-    signed_in = any(name in session_names for _, name in seen)
     return jar, written, signed_in
+
+
+def signin_ready(kind, url, jar_json):
+    """True once this page is the far side of a completed sign-in.
+
+    The shell asks after every page the login window finishes, so nobody has to
+    know when to press anything: the window closes itself the moment the
+    session exists.
+
+    Two things have to be true together. The session cookie must be present —
+    which is the same test the save uses, so "ready" and "saved" can never
+    disagree. And the page must be back on the source's own host: a YouTube
+    login starts on accounts.google.com and Google sets some of these names
+    part-way through, so the cookie alone would close the window while the
+    password box was still on screen. Landing back on the site is what says
+    the flow ran to the end.
+
+    Every source with a login goes through this one path — YouTube, Instagram,
+    TikTok, SoundCloud and X — because the test is about the session, not about
+    any one site's redirects.
+    """
+    pages = engine.SIGNIN_PAGES.get(kind)
+    if not pages:
+        return False
+    host = (str(url or "").split("//", 1)[-1].split("/", 1)[0]).split(":")[0].strip()
+    home = pages[2]
+    if home.startswith("www."):
+        home = home[4:]
+    if not host or not host_matches(host, home):
+        return False
+    _, written, signed_in = _build_jar(kind, jar_json)
+    return bool(written and signed_in)
 
 
 def refresh_session(kind):

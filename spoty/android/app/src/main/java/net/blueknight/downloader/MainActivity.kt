@@ -300,6 +300,22 @@ class MainActivity : AppCompatActivity() {
                     // asking to leave. Refuse: leaving is what breaks this.
                     return true
                 }
+
+                // A finished login lands on the site's own home page, and from
+                // there the window is just a browser someone has to know to
+                // close. Every page it settles on is offered to the engine,
+                // which answers whether the session now exists — and the first
+                // time it does, this closes itself and hands back the app.
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    val kind = loginKind ?: return
+                    val ready = try {
+                        bridge.callAttr("signin_ready", kind, url, harvestCookies(kind))
+                            .toBoolean()
+                    } catch (failure: Throwable) {
+                        false      // never let a probe strand the window
+                    }
+                    if (ready) finishLogin()
+                }
             }
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
