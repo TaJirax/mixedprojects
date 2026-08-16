@@ -51,8 +51,8 @@ android {
         applicationId = "net.blueknight.downloader"
         minSdk = 24          // Android 7.0: the oldest API the WebView bridge needs
         targetSdk = 34
-        versionCode = 70008
-        versionName = "7.0.8"
+        versionCode = 70009
+        versionName = "7.0.9"
 
         // A normal build is universal. CI also passes -PtargetAbi=<ABI> to
         // produce smaller architecture-specific APKs from the same sources.

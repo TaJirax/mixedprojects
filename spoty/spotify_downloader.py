@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.8"
+APP_VERSION = "7.0.9"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -207,6 +207,18 @@ YOUTUBE_MEDIA_DENIED = re.compile(
 # falling into with every rung still unused.
 YOUTUBE_NO_FORMATS = re.compile(
     r"requested format is not available|no video formats found", re.I)
+# The warnings that explain an empty format list. yt-dlp prints these and then
+# fails with a sentence that does not mention them.
+YTDLP_TELLING_WARNING = re.compile(
+    r"WARNING:.*(missing a url|sabr|po ?token|formats may be missing|"
+    r"skipped as they are missing|only images are available|"
+    r"nsig extraction failed|unable to extract nsig|player js)", re.I)
+# YouTube's server-side adaptive streaming. When an account or session is in
+# that experiment the streams arrive with no direct URL at all, and yt-dlp has
+# no support for fetching them — so every client returns an empty list and no
+# rung of any ladder can help. Worth saying outright rather than retrying.
+YOUTUBE_SABR = re.compile(
+    r"sabr|missing a url|skipped as they are missing a url", re.I)
 PO_TOKEN_PATTERN = re.compile(r"^mweb\.gvs\+[A-Za-z0-9._~=/+-]{20,4096}$")
 SIGNIN_DEMANDED = re.compile(
     r"not a bot|sign ?in to confirm|login required|account.*cookies|"
@@ -1399,6 +1411,32 @@ class SpotifyDownloader:
             var.set(value)
         if name.startswith("proxy_"):
             self.sync_proxy_env()
+
+    def _explain_sabr(self):
+        """Say what SABR is and stop, instead of climbing a ladder that cannot help.
+
+        YouTube is moving to server-side adaptive streaming, and where it is
+        switched on the player response carries no media URL at all — nothing to
+        download, for any client. yt-dlp has no support for fetching those
+        streams yet, so every rung returns the same empty list and the retries
+        only cost time.
+
+        It is selected per account or per session, which is why this can appear
+        the moment a sign-in succeeds and be absent without one.
+        """
+        self._batch_log(
+            "YouTube served this without any downloadable stream — its newer "
+            "server-side streaming, which yt-dlp cannot fetch yet. Every player "
+            "client returns the same empty list, so retrying will not help.",
+            "error")
+        self._batch_log(
+            "It is switched on per account and per session. A different signed-in "
+            "account, or no sign-in at all, is usually served the ordinary streams "
+            "— and this resolves upstream when yt-dlp adds support.", "info")
+        self._flush_logs()
+        self.ui("failure", "YouTube served no downloadable stream for this video "
+                           "(server-side streaming). Try another account, or without "
+                           "signing in.")
 
     def _warn_split_proxy_route(self):
         """Name the one cause of a YouTube 403 that no retry can fix.
@@ -4020,6 +4058,15 @@ class SpotifyDownloader:
                 elif self._re_error.search(line):
                     error_lines.append(line)
                     self._batch_log(line[:200], "error")
+                elif YTDLP_TELLING_WARNING.search(line):
+                    # yt-dlp says why it has no formats in a warning and then
+                    # fails with a message that does not: "Requested format is
+                    # not available" on its own sends you looking for a format
+                    # problem, when the line above it said the streams were
+                    # withheld. Keeping these is the difference between a
+                    # diagnosis and a guess.
+                    error_lines.append(line)
+                    self._batch_log(line[:200], "warning")
 
             self.process.wait()
             code = self.process.returncode
@@ -4044,6 +4091,9 @@ class SpotifyDownloader:
             # gallery-dl or to nothing at all. On YouTube there is a video; this
             # client just had nothing it could hand over.
             if kind in YOUTUBE_KINDS and YOUTUBE_NO_FORMATS.search(joined):
+                if YOUTUBE_SABR.search(joined):
+                    self._explain_sabr()
+                    return None
                 return "challenge"
             if kind == "general" and GENERAL_CHALLENGE.search(joined):
                 return "challenge"
@@ -5075,6 +5125,18 @@ if __name__ == "__main__":
                         "ERROR: [youtube] X: no video formats found"):
             assert YOUTUBE_NO_FORMATS.search(_phrase), _phrase
         assert not YOUTUBE_NO_FORMATS.search("There's no video in this post")
+        # yt-dlp explains an empty format list in a warning and then fails with
+        # a sentence that does not mention it. Losing the warning is losing the
+        # only account of what happened.
+        _sabr = ("WARNING: [youtube] X: Some tv client https formats have been skipped "
+                 "as they are missing a URL. YouTube may have enabled the SABR-only "
+                 "streaming experiment for your account")
+        assert YTDLP_TELLING_WARNING.search(_sabr) and YOUTUBE_SABR.search(_sabr)
+        # A thin list with no such warning is still the ladder's business.
+        assert not YOUTUBE_SABR.search("ERROR: [youtube] X: Requested format is not available.")
+        for _noise in ("WARNING: Falling back on generic information extractor",
+                       "[download]  12.0% of 5.00MiB at 1.00MiB/s"):
+            assert not YTDLP_TELLING_WARNING.search(_noise), _noise
 
         assert "--extract-audio" in _sc_cmd and "--embed-metadata" not in _sc_cmd
         assert "--cookies" in _sc_cookie_cmd
