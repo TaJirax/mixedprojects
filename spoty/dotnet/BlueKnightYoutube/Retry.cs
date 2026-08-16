@@ -42,9 +42,9 @@ internal static class Retry
         OperationCanceledException => false,
         // Gone, private, paid for, or region-locked: asking again changes none
         // of these.
+        VideoRequiresPurchaseException => false,
         VideoUnavailableException => false,
         VideoUnplayableException => false,
-        VideoRequiresPurchaseException => false,
         HttpRequestException => true,
         IOException => true,
         TimeoutException => true,
