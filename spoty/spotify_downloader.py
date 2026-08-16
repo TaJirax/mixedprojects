@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.1"
+APP_VERSION = "7.0.2"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -185,7 +185,18 @@ COOKIE_ON_DEMAND = {"youtube", "ytmusic", "tiktok", "soundcloud", "x", "general"
 # web_embedded and tv — so those are the ones worth retrying as. tv_simply,
 # web_safari and mweb all need a token, which is why they answered the earlier
 # attempts with "Requested format is not available" rather than a video.
-YT_CLIENT_LADDER = ("android_vr", "web_embedded,tv,default")
+# yt-dlp's own client table says android_vr, ios and android need neither a
+# proof-of-origin token nor a solved JavaScript player, and that none of the
+# three can carry cookies.
+#
+# The first two rungs are exactly what they were, so nothing that used to
+# succeed now takes longer to get there: a signed-in run still reaches the
+# cookie-carrying rung on its first escalation, rather than after two clients
+# that would ignore the session it is trying to spend. ios and android are
+# added underneath, where they cost nothing until everything above has failed.
+YT_CLIENT_LADDER = ("android_vr", "web_embedded,tv,default", "ios", "android")
+# The rungs that can carry a signed-in session, by yt-dlp's SUPPORTS_COOKIES.
+YT_COOKIE_CLIENTS = frozenset({"web_embedded,tv,default"})
 YOUTUBE_MEDIA_DENIED = re.compile(
     r"unable to download (?:video|audio) data.*(?:http error 403|forbidden)|"
     r"http error 403:\s*forbidden|fragment.*http error 403", re.I | re.S)
@@ -2122,6 +2133,14 @@ class SpotifyDownloader:
         "libffmpeg.so" contains "ffmpeg".
         """
         ffmpeg = Path(self.ffmpeg_cmd)
+        if IS_ANDROID:
+            # Resolving ffprobe is what puts its shim beside ffmpeg's, and it
+            # has to happen here rather than at start-up: a folder holding one
+            # of the pair is a folder yt-dlp cannot probe formats with, and
+            # nothing else guarantees the order. android_shim is idempotent, so
+            # asking again costs a stat.
+            with contextlib.suppress(Exception):
+                bundled_tool(f"ffprobe{EXE}")
         folder = ffmpeg.parent
         if (folder / f"ffmpeg{EXE}").is_file():
             return str(folder)
@@ -3263,12 +3282,17 @@ class SpotifyDownloader:
             cmd += ["--playlist-end", str(limit)]
         if candidate:
             cmd += ytdlp_cookie_args(candidate)
-            # Replay the session as the browser that earned it. YouTube is left
-            # out on purpose: its extractor impersonates a different client per
-            # player_client, and forcing one agent over all of them contradicts
-            # the client it is claiming to be — which is the same mistake as
-            # the sign-in window's, pointed the other way.
-            if kind not in YOUTUBE_KINDS:
+            # Replay the session as the browser that earned it — but only where
+            # that is actually known. On Android every jar comes from this app's
+            # own WebView, so the agent is certain. A desktop jar may have been
+            # lifted out of Firefox or Edge by --cookies-from-browser, and
+            # announcing Chrome over those cookies would manufacture exactly the
+            # mismatch this is here to avoid.
+            #
+            # YouTube is left out on both: its extractor impersonates a
+            # different client per player_client, and pinning one agent across
+            # all of them contradicts the client it claims to be.
+            if IS_ANDROID and kind not in YOUTUBE_KINDS:
                 cmd += ["--user-agent", BROWSER_UA]
 
         # Some extractors and generic pages also ship JavaScript challenges.
@@ -3354,12 +3378,18 @@ class SpotifyDownloader:
         # you're not a bot" and then 403 on the media itself. android_vr asks
         # for neither, so on Android it is the opening move rather than the
         # consolation — and the ladder above still has its remaining rungs.
+        # ...but only when there is no session to spend. The token-free clients
+        # cannot carry cookies at all, so opening with one where the user has
+        # deliberately signed in would quietly throw their login away and fail
+        # anything members-only or age-gated. A jar keeps the cookie-capable
+        # default, and the ladder is still there underneath it.
         lead = (YT_CLIENT_LADDER[0]
                 if IS_ANDROID and kind in YOUTUBE_KINDS else None)
-        plan = [{"cookies": c, "clients": lead, "impersonate": False, "fresh": False}
+        plan = [{"cookies": c, "clients": lead if (lead and not c) else None,
+                 "impersonate": False, "fresh": False}
                 for c in cookies]
         spent = set()
-        if lead:
+        if lead and all(not step["cookies"] for step in plan):
             spent.add("clients-0")      # opened with it; do not offer it again
 
         try:
@@ -3944,11 +3974,6 @@ class SpotifyDownloader:
             self.ffmpeg_cmd = str(self.ffmpeg_exe)
         else:
             self.ffmpeg_cmd = bundled_tool(f"ffmpeg{EXE}") or shutil.which("ffmpeg")
-
-        # Resolving ffprobe is what puts its shim next to ffmpeg's on Android.
-        # Without it the folder handed to yt-dlp holds one of the pair, and
-        # yt-dlp needs both to probe formats before it merges them.
-        self.ffprobe_cmd = bundled_tool(f"ffprobe{EXE}") or shutil.which("ffprobe")
 
         self.spotdl_cmd = ("Android Spotify engine" if IS_ANDROID
                            else self.find_tool("spotdl"))
@@ -4802,9 +4827,12 @@ if __name__ == "__main__":
                    for part in _pot_cmd)
         assert "--extract-audio" in _sc_cmd and "--embed-metadata" not in _sc_cmd
         assert "--cookies" in _sc_cookie_cmd
-        # A replayed session goes out as the browser that earned it, except on
-        # YouTube, where the extractor is already impersonating a client.
-        assert _sc_cookie_cmd[_sc_cookie_cmd.index("--user-agent") + 1] == BROWSER_UA
+        # A replayed session goes out as the browser that earned it, but only
+        # where that is known — which is Android, never the desktop, where the
+        # jar may have come out of Firefox or Edge.
+        assert ("--user-agent" in _sc_cookie_cmd) == IS_ANDROID, _sc_cookie_cmd
+        if IS_ANDROID:
+            assert _sc_cookie_cmd[_sc_cookie_cmd.index("--user-agent") + 1] == BROWSER_UA
         assert "--user-agent" not in _sc_cmd            # no jar, no claim to make
         _yt_cookie_cmd = _app._ytdlp_cmd_for(
             "youtube", "https://youtu.be/g9ilhvSurpQ", Path(tempfile.gettempdir()),
@@ -4815,6 +4843,37 @@ if __name__ == "__main__":
         assert ("Android" in BROWSER_UA) == IS_ANDROID, BROWSER_UA
         # Opening on android_vr must take that rung out of the ladder, or the
         # first escalation would retry what already failed.
+        # The rungs that need neither a token nor a solved player come first,
+        # and the one that can carry cookies comes last. Checked against
+        # yt-dlp's own client table when it is importable — the frozen desktop
+        # builds ship yt-dlp as an executable, so there is nothing to import
+        # there and the ladder is taken on trust rather than failing the run.
+        try:
+            from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS as _YT_CLIENTS
+        except Exception:
+            _YT_CLIENTS = None
+        if _YT_CLIENTS:
+            for _rung in YT_CLIENT_LADDER:
+                _needs_nothing = all(
+                    not _YT_CLIENTS[c].get("REQUIRE_PO_TOKEN")
+                    and not _YT_CLIENTS[c].get("REQUIRE_JS_PLAYER", True)
+                    for c in _rung.split(",") if c in _YT_CLIENTS)
+                _carries_session = any(
+                    _YT_CLIENTS[c].get("SUPPORTS_COOKIES")
+                    for c in _rung.split(",") if c in _YT_CLIENTS)
+                # Every rung must earn its place: it either asks the site for
+                # nothing, or it can spend a session. A rung that does neither
+                # is one that cannot succeed where the one above it failed.
+                assert _needs_nothing or _carries_session, _rung
+                assert _carries_session == (_rung in YT_COOKIE_CLIENTS), _rung
+            # The opening rung and the first escalation are what they have
+            # always been; the additions sit below them.
+            assert YT_CLIENT_LADDER[:2] == ("android_vr", "web_embedded,tv,default")
+
+        # A phone can only ever read a jar this app wrote; a desktop must keep
+        # every browser it could read one out of.
+        assert any(c[0] == "browser" for c in cookie_candidates()) != IS_ANDROID
+
         _lead_spent = {"clients-0"}
         _lead_step = _app._next_signin_step(
             "youtube", "https://youtu.be/g9ilhvSurpQ",

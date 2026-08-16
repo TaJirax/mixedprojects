@@ -157,9 +157,19 @@ def save_cookies(kind, jar_json):
     _app._login_kind = None
     _app.ui("signin", None)
     if not written:
-        _app.log(f"No cookies came back from {kind.title()}. Was the sign-in finished?",
-                 "warning")
-        _app.notify("No cookies were found. Finish signing in, then try again.", "err")
+        # Some sites refuse to sign in inside an embedded browser at all, and no
+        # amount of retrying changes that — so the way round it is named here
+        # rather than left for someone to find out. The app's own folder is
+        # reachable from any file manager, and a jar dropped there is picked up
+        # as a cookie source exactly like one this app wrote.
+        folder = blueknight_paths.app_dir()
+        site = engine.MEDIA_LABELS.get(kind, kind.title())
+        _app.log(f"No cookies came back from {site}. Either the sign-in was not finished, "
+                 f"or {site} refused to sign in inside an embedded browser.", "warning")
+        _app.log(f"You can also export {site} cookies from a desktop browser and put the "
+                 f"file in {folder} — any name ending in cookies.txt works.", "info")
+        _app.notify("No cookies were found. Finish signing in, or drop an exported "
+                    "cookies.txt in the app folder.", "err")
         return {"cookies": 0}
 
     entry = record_jar(kind, jar, "sign-in")

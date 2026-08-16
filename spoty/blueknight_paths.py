@@ -361,6 +361,13 @@ def cookie_candidates(domain=None):
     they are the only source nothing else can take away.
     """
     found = [("file", str(path)) for path in cookie_files(domain)]
+    # Android has no browser profile anyone may read, and sys.platform there is
+    # "linux" — so without this the desktop Linux paths get probed on every
+    # cookie decision, and anything that happened to match would be handed to
+    # --cookies-from-browser, which cannot work on a phone. The app's own jar is
+    # the only session that can exist there.
+    if IS_ANDROID:
+        return found
     for name, profile in _BROWSER_DIRS.get(sys.platform, _BROWSER_DIRS["linux"]):
         path = os.path.expanduser(profile)
         if os.path.isdir(path):
