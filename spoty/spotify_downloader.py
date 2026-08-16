@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.5"
+APP_VERSION = "7.0.6"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -1016,12 +1016,63 @@ def extract_binaries(archive_path, wanted):
             f"{archive_path.name} is missing {', '.join(missing)}")
 
 
+_PROXY_ENV_KEYS = ("http_proxy", "https_proxy", "all_proxy",
+                   "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
+
+
+def apply_process_proxy(proxy=None):
+    """Point everything in this process at the proxy, or clear it.
+
+    The app hands --proxy to yt-dlp, to streamlink and to its own fetcher, and
+    when that was written those were everything. They are not: gallery-dl
+    resolves a post over the network, ffmpeg can open a stream, and any library
+    that reaches out on its own does so unasked. With a whole-device VPN none
+    of that mattered, because there was no un-tunnelled connection left to leak
+    to. With a local proxy client there is, so those requests went out from one
+    address while the download went out from another — which is both a failure
+    on a network that blocks them and, where they succeed, a session used from
+    two places at once.
+
+    HTTP and SOCKS are not set the same way on purpose. Only an HTTP proxy goes
+    into http_proxy and https_proxy: those are read by things that cannot speak
+    SOCKS at all — ffmpeg among them — and handing one a socks5 URL there turns
+    a working direct request into a broken proxied one. A SOCKS proxy is
+    published as all_proxy, which the Python side understands, and the callers
+    that need a real HTTP endpoint keep building their own bridge for it.
+    """
+    for key in _PROXY_ENV_KEYS:
+        os.environ.pop(key, None)
+    if not proxy:
+        return
+    scheme = urlsplit(proxy).scheme.lower()
+    keys = ("all_proxy", "ALL_PROXY")
+    if not scheme.startswith("socks"):
+        keys += ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
+    for key in keys:
+        os.environ[key] = proxy
+
+
 def normalize_proxy_url(value, proxy_type="http"):
     """Validate a proxy URL and add the selected scheme when it is omitted."""
     value = value.strip()
     if not value:
         raise ValueError("Proxy URL is empty")
     if "://" not in value:
+        # socks5h, not socks5, when we are the ones choosing: the h is what
+        # sends the hostname to the proxy instead of resolving it here.
+        #
+        # It matters more than it sounds. YouTube hands out media on
+        # googlevideo hosts that DNS steers to a node near whoever asked, so
+        # resolving locally picks a node for this network and then fetches it
+        # down a tunnel that comes out somewhere else entirely — and the
+        # mismatch comes back 403 Forbidden. Local resolution also walks
+        # straight into whatever the local resolver does to these names, which
+        # on a network worth proxying is the reason the proxy is there.
+        #
+        # A whole-device tunnel never had this problem, because DNS went
+        # through it too. A local SOCKS proxy only carries what it is asked to.
+        if proxy_type == "socks5":
+            proxy_type = "socks5h"
         value = f"{proxy_type}://{value}"
 
     parsed = urlsplit(value)
@@ -1245,6 +1296,8 @@ class SpotifyDownloader:
         self.download_format = Var("mp3")
         self.quality = Var("320")
         self.use_proxy = Var(False)
+        # Said once per run, not once per failed attempt.
+        self._warned_split_route = False
         self.proxy_type = Var("http")  # http or socks5
         self.proxy_url = Var("http://127.0.0.1:10809")  # v2rayN HTTP default
         self.youtube_po_token = Var("")
@@ -1338,6 +1391,59 @@ class SpotifyDownloader:
         var = options.get(name)
         if var is not None:
             var.set(value)
+        if name.startswith("proxy_"):
+            self.sync_proxy_env()
+
+    def _warn_split_proxy_route(self):
+        """Name the one cause of a YouTube 403 that no retry can fix.
+
+        YouTube hands out its media on googlevideo hosts, and the address that
+        asked for the link is written into the link itself. Fetch it from a
+        different address and the answer is 403, every time, whatever client or
+        cookie the attempt used — which is why the ladder can climb all night
+        and never get anywhere.
+
+        A whole-device tunnel cannot produce this: one exit, so the address that
+        asked is the address that fetches. A proxy client can, and routinely
+        does, because its rules are written per domain — youtube.com through the
+        server, googlevideo.com direct or through a different one in a balancing
+        set. Two addresses, one link, refused.
+
+        Nothing here can fix that; it is decided inside the proxy client before
+        this app sees a packet. Saying so is worth more than another retry.
+        """
+        if self._warned_split_route or not self.configured_proxy():
+            return
+        self._warned_split_route = True
+        self._batch_log(
+            "YouTube refused the media itself, and a proxy is in use. YouTube writes "
+            "the address that requested a link into the link, so if googlevideo.com "
+            "leaves by a different route than youtube.com the answer is always 403 — "
+            "no client or sign-in changes it.", "warning")
+        self._batch_log(
+            "In your proxy client, send youtube.com and googlevideo.com through the "
+            "same outbound, and turn off any balancing or direct rule that could "
+            "split them. A full-device VPN never shows this because it has one exit.",
+            "info")
+        self._flush_logs()
+
+    def configured_proxy(self):
+        """The proxy as one normalised URL, or None. One answer, one place."""
+        if not (self.use_proxy.get() and self.proxy_url.get().strip()):
+            return None
+        try:
+            return normalize_proxy_url(self.proxy_url.get(), self.proxy_type.get())
+        except ValueError:
+            return None
+
+    def sync_proxy_env(self):
+        """Make the whole process agree with the proxy setting.
+
+        Called wherever the setting can change and before anything reaches the
+        network, so no part of a download can quietly take a different route
+        from the rest of it.
+        """
+        apply_process_proxy(self.configured_proxy())
 
     def notify(self, message, kind="info"):
         self.ui("toast", message, kind)
@@ -2916,6 +3022,13 @@ class SpotifyDownloader:
 
         gallery_dl.config.clear()
         gallery_dl.config.set((), "verbosity", 0)
+        # gallery-dl only finds the media here, but finding it is a network
+        # request like any other — and without this it was the one request in a
+        # download that ignored the proxy and went out over the plain
+        # connection.
+        proxy = self.configured_proxy()
+        if proxy:
+            gallery_dl.config.set((), "proxy", proxy)
         # X serves guests through the syndication endpoint; without this, photo
         # posts need a login that public posts should not require.
         gallery_dl.config.set(("extractor", "twitter"), "syndication", True)
@@ -3339,6 +3452,8 @@ class SpotifyDownloader:
         return cmd
 
     def download_with_ytdlp(self, kind, url, output, quality, audio_only, limit):
+        self.sync_proxy_env()
+        self._warned_split_route = False
         self._media_done = 0
         self._media_total = None
         self._stream_index = 0
@@ -3839,6 +3954,7 @@ class SpotifyDownloader:
             if candidate and COOKIE_FAILURE.search(joined):
                 return "cookies"
             if kind in YOUTUBE_KINDS and YOUTUBE_MEDIA_DENIED.search(joined):
+                self._warn_split_proxy_route()
                 return "challenge"
             if kind == "general" and GENERAL_CHALLENGE.search(joined):
                 return "challenge"
@@ -4741,6 +4857,34 @@ if __name__ == "__main__":
             # No file called ffmpeg here, so the folder would find nothing.
             assert SpotifyDownloader.ffmpeg_location(_loc_probe) == \
                 str(_packaged / "libffmpeg.so")
+
+        # A SOCKS proxy chosen from the picker must resolve names at the proxy,
+        # not here — resolving here is what sends a download to a media host
+        # picked for the wrong network and gets it refused.
+        assert normalize_proxy_url("127.0.0.1:10808", "socks5") == "socks5h://127.0.0.1:10808"
+        assert normalize_proxy_url("127.0.0.1:10809", "http") == "http://127.0.0.1:10809"
+        # Typing a scheme outright is still respected.
+        assert normalize_proxy_url("socks5://127.0.0.1:10808") == "socks5://127.0.0.1:10808"
+
+        # An HTTP proxy is published where things that cannot speak SOCKS will
+        # read it; a SOCKS one is not, because handing ffmpeg a socks5 URL in
+        # http_proxy breaks a request that would otherwise have worked.
+        _saved_env = {k: os.environ.get(k) for k in _PROXY_ENV_KEYS}
+        try:
+            apply_process_proxy("http://127.0.0.1:10809")
+            assert os.environ["http_proxy"] == "http://127.0.0.1:10809"
+            assert os.environ["all_proxy"] == "http://127.0.0.1:10809"
+            apply_process_proxy("socks5h://127.0.0.1:10808")
+            assert os.environ["all_proxy"] == "socks5h://127.0.0.1:10808"
+            assert "http_proxy" not in os.environ
+            apply_process_proxy(None)
+            assert not any(k in os.environ for k in _PROXY_ENV_KEYS)
+        finally:
+            for _key, _was in _saved_env.items():
+                if _was is None:
+                    os.environ.pop(_key, None)
+                else:
+                    os.environ[_key] = _was
 
         # A run of log lines must reach the page as one event, and anything
         # else in the middle must break the run rather than swallow it.

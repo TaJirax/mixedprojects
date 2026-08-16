@@ -20,6 +20,9 @@ import android.widget.FrameLayout
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import org.json.JSONArray
@@ -261,6 +264,7 @@ class MainActivity : AppCompatActivity() {
         val start = bridge.callAttr("signin_url", kind)?.toString() ?: return
         loginKind = kind
         CookieManager.getInstance().setAcceptCookie(true)
+        applyWebViewProxy(bridge.callAttr("webview_proxy")?.toString().orEmpty())
 
         val view = WebView(this).apply {
             settings.javaScriptEnabled = true
@@ -323,6 +327,37 @@ class MainActivity : AppCompatActivity() {
         loginView = view
         addContentView(view, FrameLayout.LayoutParams(-1, -1))
         view.visibility = View.VISIBLE
+    }
+
+    /**
+     * Point the sign-in window down the same path the downloads take.
+     *
+     * A per-app proxy is not a tunnel: --proxy reaches the downloader and
+     * nothing else, so without this the login goes out over the ordinary
+     * connection and the download goes out through the proxy. A session made
+     * at one address and used from another is what a site reads as a bot,
+     * which is why a device-wide VPN never showed the problem and a local
+     * proxy client does.
+     *
+     * The rules carry a direct fallback on purpose: a proxy that is down must
+     * cost accuracy, not the ability to sign in at all.
+     */
+    private fun applyWebViewProxy(spec: String) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) return
+        val controller = ProxyController.getInstance()
+        try {
+            if (spec.isEmpty() || spec.startsWith("!")) {
+                controller.clearProxyOverride({ it.run() }, {})
+                return
+            }
+            val config = ProxyConfig.Builder()
+                .addProxyRule(spec)
+                .addDirect()
+                .build()
+            controller.setProxyOverride(config, { it.run() }, {})
+        } catch (failure: Throwable) {
+            android.util.Log.w("BlueKnight", "WebView proxy override refused", failure)
+        }
     }
 
     private fun finishLogin() {

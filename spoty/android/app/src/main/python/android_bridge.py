@@ -20,6 +20,7 @@ import contextlib
 import json
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import blueknight_paths
 import spotify_downloader as engine
@@ -145,6 +146,43 @@ def _write_jar(kind, jar_json):
     if written:
         jar.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return jar, written, signed_in
+
+
+def webview_proxy():
+    """Where the sign-in window should send its traffic.
+
+    "" for none, "!" and a scheme when the proxy cannot be used, otherwise
+    "host:port". A plain string because the shell only has to act on it.
+
+    This exists because a per-app proxy is not a tunnel. --proxy is handed to
+    the downloader and to nothing else, so the sign-in window went out over the
+    ordinary connection while the download went out through the proxy — and a
+    session minted at one address and spent at another is one of the things
+    sites like YouTube look for. A device-wide VPN never showed this, because
+    it carried the login and the download alike.
+
+    Android's WebView proxy override speaks HTTP only. A SOCKS proxy is
+    reported back rather than silently ignored, because "the login is not going
+    where the download goes" is the whole problem and it should not be
+    invisible.
+    """
+    if _app is None or not _app.use_proxy.get():
+        return ""
+    raw = _app.proxy_url.get().strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(engine.normalize_proxy_url(raw, _app.proxy_type.get()))
+    except ValueError:
+        return ""
+    if parsed.scheme.startswith("socks"):
+        _app.log("The sign-in window cannot use a SOCKS proxy — Android only lets an "
+                 "app redirect its browser through an HTTP one. Downloads still use "
+                 "the proxy, so the session will be created on this connection and "
+                 "used from another, which is what sites read as a bot. Point the "
+                 "proxy at your client's HTTP port instead if it has one.", "warning")
+        return "!" + parsed.scheme
+    return f"{parsed.hostname}:{parsed.port}"
 
 
 def signin_ready(kind, url, jar_json):
@@ -300,4 +338,5 @@ _LOCAL = {
     "android_picked_image_folder": android_picked_image_folder,
     "android_import_failed": android_import_failed,
     "js_runtime_hint": js_runtime_hint,
+    "webview_proxy": webview_proxy,
 }
