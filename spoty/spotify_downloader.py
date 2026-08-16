@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.6"
+APP_VERSION = "7.0.7"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -1476,8 +1476,70 @@ class SpotifyDownloader:
         else:
             self.log("HTTP proxy ready for spotDL", "success")
 
+    # The two hosts a YouTube download actually needs. Reaching the first and
+    # not the second is the shape of a restricted network, and of a proxy whose
+    # rules cover the site but not the CDN it serves media from — which is the
+    # same split that gets a download refused with 403 after it has started.
+    MEDIA_HOST_CHECKS = (
+        ("youtube.com", "https://www.youtube.com/generate_204"),
+        ("googlevideo.com", "https://redirector.googlevideo.com/generate_204"),
+    )
+
+    def check_media_hosts(self, opener):
+        """Report whether the route reaches the site and its media hosts alike.
+
+        A proxy test that asks one unrelated server whether it can hear us
+        answers the easy half. Everything about YouTube that goes wrong on a
+        restricted connection goes wrong between these two names.
+        """
+        reached = {}
+        for label, url in self.MEDIA_HOST_CHECKS:
+            try:
+                request = urllib.request.Request(
+                    url, headers={"User-Agent": BROWSER_UA}, method="HEAD")
+                with opener.open(request, timeout=15):
+                    pass
+                reached[label] = True
+            except urllib.error.HTTPError:
+                # Any answer at all means the route got there; which answer it
+                # was is not this test's business.
+                reached[label] = True
+            except Exception as failure:
+                reached[label] = False
+                self.log(f"Cannot reach {label} on this route: {str(failure)[:120]}",
+                         "warning")
+        for label, ok in reached.items():
+            self.log(f"{'✓' if ok else '✗'} {label}", "success" if ok else "error")
+        if reached.get("youtube.com") and not reached.get("googlevideo.com"):
+            self.log("YouTube is reachable but its media hosts are not. A download will "
+                     "find the video and then fail to fetch it. Send googlevideo.com "
+                     "through the same route as youtube.com in your proxy client.",
+                     "error")
+        elif not any(reached.values()):
+            self.log("Neither host is reachable on this route. The proxy is answering, "
+                     "but it is not carrying this traffic.", "error")
+        return reached
+
+    def _test_direct(self):
+        """The same host check, on the connection with nothing in front of it."""
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=TRUSTED_SSL_CONTEXT))
+        reached = self.check_media_hosts(opener)
+        if all(reached.values()):
+            self.notify("This connection reaches YouTube and its media hosts.", "ok")
+        else:
+            self.notify("Some hosts are unreachable without a proxy. Set one in "
+                        "Connection settings.", "err")
+
     def test_proxy(self):
         """Make an HTTPS request through the configured proxy."""
+        # With no proxy filled in, test the connection there is rather than
+        # refusing to test anything. Someone on a restricted network needs to
+        # know which hosts they can reach before they need a proxy, not after.
+        if not self.proxy_url.get().strip():
+            self.log("No proxy set — checking the direct connection.", "info")
+            threading.Thread(target=self._test_direct, daemon=True).start()
+            return
         try:
             proxy = normalize_proxy_url(self.proxy_url.get(), self.proxy_type.get())
         except ValueError as exc:
@@ -1502,6 +1564,7 @@ class SpotifyDownloader:
                 with opener.open(request, timeout=15) as response:
                     result = response.read().decode("utf-8", "replace")
                 self.log(f"Proxy test succeeded: {result[:120]}", "success")
+                self.check_media_hosts(opener)
                 self.notify("Proxy connection works.", "ok")
             except Exception as exc:
                 detail = str(exc)[:200]
@@ -3386,11 +3449,17 @@ class SpotifyDownloader:
             # matches nothing on a photo, and merging into mp4 makes no sense.
             cmd += ["--format", "best"]
         else:
-            selector = MEDIA_FORMATS.get(quality, MEDIA_FORMATS["best"])
-            if clients:
-                # The token-free clients carry a thinner format list, so a strict
-                # height cap can match nothing. Take the cap, or whatever exists.
-                selector += "/best"
+            # Ask for the cap, then for whatever exists. A height-capped
+            # selector matches nothing whenever the format list comes back thin,
+            # and "Requested format is not available" is the whole download
+            # lost over a resolution preference.
+            #
+            # This used to be added only when a player client was named, on the
+            # grounds that those carry fewer formats. The reasoning was right
+            # and the condition was wrong: yt-dlp's own default clients drop
+            # every format gated behind a proof-of-origin token, so the list is
+            # just as thin there — and that is the path a signed-in run takes.
+            selector = MEDIA_FORMATS.get(quality, MEDIA_FORMATS["best"]) + "/best"
             cmd += ["--format", selector, "--merge-output-format", "mp4"]
         if limit:
             cmd += ["--playlist-end", str(limit)]
