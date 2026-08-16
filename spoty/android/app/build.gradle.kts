@@ -1,3 +1,4 @@
+import java.net.URI
 import java.util.Properties
 
 plugins {
@@ -51,8 +52,8 @@ val fetchYouTubeJs by tasks.registering {
         if (!bundle.exists()) {
             logger.lifecycle("fetching the YouTube.js library")
             bundle.parentFile.mkdirs()
-            java.net.URI("https://esm.sh/youtubei.js@18.0.0/denonext/youtubei.bundle.mjs")
-                .toURL().openStream().use { input ->
+            URI("https://esm.sh/youtubei.js@18.0.0/denonext/youtubei.bundle.mjs")
+                .toURL().openStream().use { input: java.io.InputStream ->
                     bundle.outputStream().use { output -> input.copyTo(output) }
                 }
         }
