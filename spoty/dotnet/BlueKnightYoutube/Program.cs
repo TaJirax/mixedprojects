@@ -247,17 +247,29 @@ internal static class Program
         return 0;
     }
 
-    /// <summary>Best video for the cap, plus the audio it needs.</summary>
+    /// <summary>
+    /// Best video for the cap, plus the audio that belongs with it.
+    ///
+    /// The audio is chosen against the video rather than on its own, which is
+    /// how YoutubeDownloader does it and why it matters: an audio stream in
+    /// the same container as the video muxes by copying, and one in a
+    /// different container drags the whole file into mkv or, worse, into a
+    /// re-encode. Same container first, then the default-language track, then
+    /// bitrate.
+    /// </summary>
     private static IReadOnlyList<IStreamInfo> SelectStreams(
         StreamManifest manifest, CommandLine options)
     {
-        var audio = manifest.GetAudioOnlyStreams()
-            .OrderByDescending(s => s.IsAudioLanguageDefault ?? false)
-            .ThenByDescending(s => s.Bitrate.BitsPerSecond)
-            .FirstOrDefault();
+        var audioStreams = manifest.GetAudioOnlyStreams().ToList();
 
         if (options.AudioOnly)
-            return audio is null ? Array.Empty<IStreamInfo>() : new IStreamInfo[] { audio };
+        {
+            var best = audioStreams
+                .OrderByDescending(s => s.IsAudioLanguageDefault ?? true)
+                .ThenByDescending(s => s.Bitrate.BitsPerSecond)
+                .FirstOrDefault();
+            return best is null ? Array.Empty<IStreamInfo>() : new IStreamInfo[] { best };
+        }
 
         var video = manifest.GetVideoOnlyStreams()
             .Where(s => options.MaxHeight <= 0 || s.VideoResolution.Height <= options.MaxHeight)
@@ -271,8 +283,15 @@ internal static class Program
             .OrderBy(s => s.VideoResolution.Height)
             .FirstOrDefault();
 
-        if (video is not null && audio is not null)
+        if (video is not null && audioStreams.Count > 0)
+        {
+            var audio = audioStreams
+                .OrderByDescending(s => s.Container == video.Container)
+                .ThenByDescending(s => s.IsAudioLanguageDefault ?? true)
+                .ThenByDescending(s => s.Bitrate.BitsPerSecond)
+                .First();
             return new IStreamInfo[] { video, audio };
+        }
 
         var muxed = manifest.GetMuxedStreams()
             .Where(s => options.MaxHeight <= 0 || s.VideoResolution.Height <= options.MaxHeight)

@@ -58,6 +58,9 @@ def boot(activity):
     # JSON-returning callback, and calls it only after yt-dlp has run out of
     # useful moves on Android.
     engine.NEWPIPE_RESOLVER = resolve_with_newpipe
+    # The same YouTube.js script the desktop runs under Deno, hosted here by a
+    # WebView instead. The engine sees one callback and cannot tell which.
+    engine.YOUTUBEJS_RESOLVER = resolve_with_youtube_js
     # The desktop Api reaches for a pywebview window to open dialogs with.
     # Those methods are intercepted in Kotlin before they ever get here, so the
     # attribute stays None and any missed path fails loudly rather than silently.
@@ -69,6 +72,14 @@ def resolve_with_newpipe(url, proxy_url=None):
     if _activity is None:
         raise RuntimeError("The Android extractor bridge is not ready.")
     payload = _activity.resolveWithNewPipe(str(url), str(proxy_url or ""))
+    return json.loads(str(payload))
+
+
+def resolve_with_youtube_js(url, proxy_url=None):
+    """Resolve stream candidates by running YouTube.js inside a WebView."""
+    if _activity is None:
+        raise RuntimeError("The Android extractor bridge is not ready.")
+    payload = _activity.resolveWithYouTubeJs(str(url), str(proxy_url or ""))
     return json.loads(str(payload))
 
 

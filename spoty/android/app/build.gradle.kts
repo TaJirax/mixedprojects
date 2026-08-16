@@ -35,8 +35,35 @@ val syncEngine by tasks.registering(Copy::class) {
 val syncWeb by tasks.registering(Copy::class) {
     from(appRoot.resolve("web")) { into("web") }
     from(appRoot.resolve("assets")) { into("assets") }
+    // The YouTube.js engine: the same two scripts the desktop runs under Deno,
+    // plus the library, so the phone carries its own copy and never fetches
+    // its own code. The library is not in the repository — it is downloaded at
+    // build time, exactly as the desktop does it.
+    from(appRoot.resolve("engines/youtubejs")) { into("engines/youtubejs") }
     into(layout.projectDirectory.dir("src/main/assets"))
 }
+
+// Fetched rather than committed, like every other third-party binary here.
+val fetchYouTubeJs by tasks.registering {
+    val bundle = appRoot.resolve("engines/youtubejs/youtubei.bundle.mjs")
+    outputs.file(bundle)
+    doLast {
+        if (!bundle.exists()) {
+            logger.lifecycle("fetching the YouTube.js library")
+            bundle.parentFile.mkdirs()
+            java.net.URI("https://esm.sh/youtubei.js@18.0.0/denonext/youtubei.bundle.mjs")
+                .toURL().openStream().use { input ->
+                    bundle.outputStream().use { output -> input.copyTo(output) }
+                }
+        }
+        // A truncated download would ship an engine that cannot start, and the
+        // failure would surface on a phone rather than here.
+        require(bundle.length() > 200_000) {
+            "the YouTube.js library downloaded incomplete (${bundle.length()} bytes)"
+        }
+    }
+}
+syncWeb { dependsOn(fetchYouTubeJs) }
 
 tasks.named("preBuild") { dependsOn(syncEngine, syncWeb) }
 tasks.configureEach {
@@ -51,8 +78,8 @@ android {
         applicationId = "net.blueknight.downloader"
         minSdk = 24          // Android 7.0: the oldest API the WebView bridge needs
         targetSdk = 34
-        versionCode = 70015
-        versionName = "7.2.0"
+        versionCode = 70016
+        versionName = "7.3.0"
 
         // A normal build is universal. CI also passes -PtargetAbi=<ABI> to
         // produce smaller architecture-specific APKs from the same sources.

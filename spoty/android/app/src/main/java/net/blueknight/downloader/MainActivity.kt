@@ -55,6 +55,10 @@ class MainActivity : AppCompatActivity() {
     fun resolveWithNewPipe(url: String, proxyUrl: String): String =
         NewPipeFallback.resolve(applicationContext, url, proxyUrl)
 
+    /** The third engine, after yt-dlp and NewPipe. Runs YouTube.js in a WebView. */
+    fun resolveWithYouTubeJs(url: String, proxyUrl: String): String =
+        YouTubeJsFallback.resolve(applicationContext, url, proxyUrl)
+
     private val pickDownloadFolder = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
