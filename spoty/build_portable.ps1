@@ -44,7 +44,7 @@ if (-not (Test-Path -LiteralPath $YoutubeExplode)) {
     if (Get-Command dotnet -ErrorAction SilentlyContinue) {
         Write-Host "  building the YoutubeExplode engine"
         dotnet publish (Join-Path $Root "dotnet/BlueKnightYoutube/BlueKnightYoutube.csproj") `
-            -c Release -r win-x64 --self-contained true `
+            -c Release -r win-x64 `
             -o (Join-Path $Work "dotnet")
         if ($LASTEXITCODE -ne 0) { throw "the YoutubeExplode engine failed to build" }
         Copy-Item (Join-Path $Work "dotnet/blueknight-youtube.exe") $YoutubeExplode -Force
