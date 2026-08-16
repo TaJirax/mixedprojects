@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.7"
+APP_VERSION = "7.0.8"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -201,6 +201,12 @@ YT_COOKIE_CLIENTS = frozenset({"web_embedded,tv,default", "tv"})
 YOUTUBE_MEDIA_DENIED = re.compile(
     r"unable to download (?:video|audio) data.*(?:http error 403|forbidden)|"
     r"http error 403:\s*forbidden|fragment.*http error 403", re.I | re.S)
+# On YouTube this does not mean "there is no video here". It means the client
+# that answered had no formats it was allowed to offer, which is a thing another
+# client can fix — so it belongs to the ladder, not to the give-up path it was
+# falling into with every rung still unused.
+YOUTUBE_NO_FORMATS = re.compile(
+    r"requested format is not available|no video formats found", re.I)
 PO_TOKEN_PATTERN = re.compile(r"^mweb\.gvs\+[A-Za-z0-9._~=/+-]{20,4096}$")
 SIGNIN_DEMANDED = re.compile(
     r"not a bot|sign ?in to confirm|login required|account.*cookies|"
@@ -3511,6 +3517,14 @@ class SpotifyDownloader:
                 if "mweb" not in selected_clients.split(","):
                     selected_clients = "mweb," + selected_clients
                 extractor_args.append(f"po_token={token}")
+            # Without this yt-dlp does not merely fail on a proof-of-origin
+            # format, it removes it from the list — so a client that needs a
+            # token it has not got reports no formats at all, and the download
+            # dies on "Requested format is not available" with a perfectly good
+            # video on the other side. Offered rather than hidden: some of them
+            # play, and the ones that do not come back as a 403 the ladder
+            # already knows how to climb out of.
+            extractor_args.append("formats=missing_pot")
             if selected_clients:
                 extractor_args.insert(0, f"player_client={selected_clients}")
             if extractor_args:
@@ -4024,6 +4038,12 @@ class SpotifyDownloader:
                 return "cookies"
             if kind in YOUTUBE_KINDS and YOUTUBE_MEDIA_DENIED.search(joined):
                 self._warn_split_proxy_route()
+                return "challenge"
+            # Must come before the no-video test below, which reads the same
+            # words as "this page has no video" and sends the run off to
+            # gallery-dl or to nothing at all. On YouTube there is a video; this
+            # client just had nothing it could hand over.
+            if kind in YOUTUBE_KINDS and YOUTUBE_NO_FORMATS.search(joined):
                 return "challenge"
             if kind == "general" and GENERAL_CHALLENGE.search(joined):
                 return "challenge"
@@ -5039,6 +5059,23 @@ if __name__ == "__main__":
             "best", False, None)
         assert any("po_token=mweb.gvs+" in part and "player_client=mweb,default" in part
                    for part in _pot_cmd)
+        # yt-dlp hides proof-of-origin formats rather than failing on them, so
+        # without this a token-less client reports no formats at all.
+        assert any("formats=missing_pot" in part for part in _ym_cmd), _ym_cmd
+        # A capped selector must always be able to fall back, or a thin format
+        # list costs the whole download over a resolution preference.
+        _capped = _app._ytdlp_cmd_for(
+            "youtube", "https://youtu.be/g9ilhvSurpQ", Path(tempfile.gettempdir()),
+            "1080", False, None)
+        assert _capped[_capped.index("--format") + 1].endswith("/best"), _capped
+        # And the failure that message describes belongs to the ladder. Reading
+        # it as "no video here" is what sent a perfectly recoverable run to the
+        # give-up path with every rung unused.
+        for _phrase in ("ERROR: [youtube] X: Requested format is not available.",
+                        "ERROR: [youtube] X: no video formats found"):
+            assert YOUTUBE_NO_FORMATS.search(_phrase), _phrase
+        assert not YOUTUBE_NO_FORMATS.search("There's no video in this post")
+
         assert "--extract-audio" in _sc_cmd and "--embed-metadata" not in _sc_cmd
         assert "--cookies" in _sc_cookie_cmd
         # A replayed session goes out as the browser that earned it, but only
