@@ -265,7 +265,13 @@ class MainActivity : AppCompatActivity() {
         val view = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
-            settings.userAgentString = bridge.callAttr("browser_ua").toString()
+            // The user agent is deliberately left alone. It used to be
+            // overwritten with a desktop Chrome string, which every login page
+            // could catch: the client hints this WebView sends alongside it
+            // still say Android, and a browser lying about what it is, is the
+            // exact thing a sign-in page refuses to trust. The engine reads
+            // this same default agent at startup and replays the session under
+            // it, so nothing downstream needs the override either.
             setBackgroundColor(0xFF05080D.toInt())
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)

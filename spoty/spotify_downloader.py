@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.0"
+APP_VERSION = "7.0.1"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -437,8 +437,20 @@ OFFICE_DOCUMENT_EXTENSIONS = {
     ".odt", ".ods", ".odp", ".rtf", ".txt", ".csv", ".html", ".htm",
 }
 EBOOK_CONVERT_EXTENSIONS = {".epub", ".mobi", ".azw", ".azw3", ".fb2"}
-BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+# One identity for the whole app: the browser the sign-in window presents, and
+# the browser the harvested session is replayed by. A session cookie used from
+# a different kind of device than the one that earned it is one of the clearest
+# automation signals there is, and answering "not a bot" is what it costs.
+#
+# On Android the shell hands over the WebView's own agent, because that WebView
+# is what the login page actually talks to. The fallbacks below are only for
+# when it cannot be read — and the Android one still says Android.
+BROWSER_UA = os.environ.get("BLUEKNIGHT_UA", "").strip() or (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+    if IS_ANDROID else
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 # Frozen Python builds do not consistently find a usable OpenSSL CA bundle.
 # Use certifi explicitly so CDNs whose chain is not present in that embedded
 # OpenSSL installation still verify normally.  This retains hostname and
@@ -3251,6 +3263,13 @@ class SpotifyDownloader:
             cmd += ["--playlist-end", str(limit)]
         if candidate:
             cmd += ytdlp_cookie_args(candidate)
+            # Replay the session as the browser that earned it. YouTube is left
+            # out on purpose: its extractor impersonates a different client per
+            # player_client, and forcing one agent over all of them contradicts
+            # the client it is claiming to be — which is the same mistake as
+            # the sign-in window's, pointed the other way.
+            if kind not in YOUTUBE_KINDS:
+                cmd += ["--user-agent", BROWSER_UA]
 
         # Some extractors and generic pages also ship JavaScript challenges.
         # Supplying Deno is harmless when unused and lets yt-dlp invoke it when
@@ -3329,9 +3348,19 @@ class SpotifyDownloader:
         # optional browser-impersonation pass. The ladder is climbed when a run says why it
         # failed, and every rung is used at most once — otherwise a jar that can
         # never satisfy the site gets retried forever.
-        plan = [{"cookies": c, "clients": None, "impersonate": False, "fresh": False}
+        # A phone starts on the rung the desktop escalates to. yt-dlp's default
+        # YouTube clients need a proof-of-origin token and a solved JavaScript
+        # challenge; without both, the run is answered with "sign in to confirm
+        # you're not a bot" and then 403 on the media itself. android_vr asks
+        # for neither, so on Android it is the opening move rather than the
+        # consolation — and the ladder above still has its remaining rungs.
+        lead = (YT_CLIENT_LADDER[0]
+                if IS_ANDROID and kind in YOUTUBE_KINDS else None)
+        plan = [{"cookies": c, "clients": lead, "impersonate": False, "fresh": False}
                 for c in cookies]
         spent = set()
+        if lead:
+            spent.add("clients-0")      # opened with it; do not offer it again
 
         try:
             while plan:
@@ -4773,6 +4802,26 @@ if __name__ == "__main__":
                    for part in _pot_cmd)
         assert "--extract-audio" in _sc_cmd and "--embed-metadata" not in _sc_cmd
         assert "--cookies" in _sc_cookie_cmd
+        # A replayed session goes out as the browser that earned it, except on
+        # YouTube, where the extractor is already impersonating a client.
+        assert _sc_cookie_cmd[_sc_cookie_cmd.index("--user-agent") + 1] == BROWSER_UA
+        assert "--user-agent" not in _sc_cmd            # no jar, no claim to make
+        _yt_cookie_cmd = _app._ytdlp_cmd_for(
+            "youtube", "https://youtu.be/g9ilhvSurpQ", Path(tempfile.gettempdir()),
+            "best", False, None, ("file", str(Path(tempfile.gettempdir()) / "yt-cookies.txt")))
+        assert "--cookies" in _yt_cookie_cmd and "--user-agent" not in _yt_cookie_cmd
+        # The identity is one string everywhere, and it never claims the wrong
+        # kind of device.
+        assert ("Android" in BROWSER_UA) == IS_ANDROID, BROWSER_UA
+        # Opening on android_vr must take that rung out of the ladder, or the
+        # first escalation would retry what already failed.
+        _lead_spent = {"clients-0"}
+        _lead_step = _app._next_signin_step(
+            "youtube", "https://youtu.be/g9ilhvSurpQ",
+            {"cookies": None, "clients": YT_CLIENT_LADDER[0], "impersonate": False,
+             "fresh": False},
+            _lead_spent, challenge=True)
+        assert _lead_step["clients"] == YT_CLIENT_LADDER[1], _lead_step
         assert _general_cmd[_general_cmd.index("--impersonate") + 1] == "chrome"
         assert "--sleep-requests" not in _general_cmd
         assert not any("youtube:" in part or "po_token=" in part or "player_client=" in part
