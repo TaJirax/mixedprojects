@@ -14,6 +14,8 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven("https://chaquo.com/maven")
+        // NewPipeExtractor publishes its stable releases through JitPack.
+        maven("https://jitpack.io")
     }
 }
 rootProject.name = "Blue Knight Downloader"

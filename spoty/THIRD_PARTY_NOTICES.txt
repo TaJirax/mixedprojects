@@ -55,6 +55,15 @@ Licensed under the Simplified BSD License.
 Project and source: https://github.com/streamlink/streamlink
 Used by this app to resolve and record supported live and HLS streams.
 
+NewPipeExtractor 0.26.1
+-----------------------
+Copyright (c) Team NewPipe and contributors
+Licensed under GNU GPL version 3 or later.
+Project and corresponding source:
+https://github.com/TeamNewPipe/NewPipeExtractor/tree/v0.26.1
+Bundled in the Android app as a fallback resolver for YouTube, YouTube Music,
+SoundCloud, Bandcamp, PeerTube, and media.ccc.de after yt-dlp fails.
+
 img2pdf
 -------
 Copyright (c) 2015-2026 Johannes Schauer Marin Rodrigues

@@ -48,16 +48,20 @@ is not a failure - it is a job for a different engine, so the X and **Video**
 pages fall through automatically:
 
 1. **yt-dlp** - video, everywhere it has an extractor.
-2. **Streamlink** - live and HLS streams on its supported services.
-3. **HTML5 resolver** - standard video/audio tags and social media metadata.
-4. **gallery-dl** - photos, GIFs, galleries and mixed posts.
-5. **direct download** - the link treated as the file itself, using neither
+2. **NewPipeExtractor (Android)** - a native fallback for YouTube, YouTube
+   Music, SoundCloud, Bandcamp, PeerTube and media.ccc.de after yt-dlp exhausts
+   its extractor/client retries.
+3. **Streamlink** - live and HLS streams on its supported services.
+4. **HTML5 resolver** - standard video/audio tags and social media metadata.
+5. **gallery-dl** - photos, GIFs, galleries and mixed posts.
+6. **direct download** - the link treated as the file itself, using neither
    yt-dlp nor ffmpeg.
 
-The hand-off is silent, and only happens when yt-dlp reports that there is no
-video at the link. A genuine dead post or DRM failure stops where it happened
-rather than being retried pointlessly by every engine in turn. The engines use
-the app's proxy and Stop button.
+The hand-off is silent. NewPipeExtractor is also tried for Android extraction,
+format, sign-in or media-delivery failures after yt-dlp's useful retries are
+spent; the generic engines are used when yt-dlp reports that there is no video
+at the link. A genuine DRM failure stops where it happened rather than being
+retried pointlessly. The engines use the app's proxy and Stop button.
 
 For a General-site bot check, CAPTCHA, or HTTP 401/403 response, yt-dlp gets a
 separate challenge ladder before engine hand-off: the bundled Deno runtime,

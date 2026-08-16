@@ -54,10 +54,22 @@ def boot(activity):
     # signed in through. On a phone that profile is the system CookieManager,
     # which only the shell can reach, so the way in is handed over here.
     engine.SESSION_REFRESHER = refresh_session
+    # NewPipeExtractor is a JVM library. The shared Python engine sees only a
+    # JSON-returning callback, and calls it only after yt-dlp has run out of
+    # useful moves on Android.
+    engine.NEWPIPE_RESOLVER = resolve_with_newpipe
     # The desktop Api reaches for a pywebview window to open dialogs with.
     # Those methods are intercepted in Kotlin before they ever get here, so the
     # attribute stays None and any missed path fails loudly rather than silently.
     _api._window = None
+
+
+def resolve_with_newpipe(url, proxy_url=None):
+    """Resolve direct stream candidates through the Android NewPipe adapter."""
+    if _activity is None:
+        raise RuntimeError("The Android extractor bridge is not ready.")
+    payload = _activity.resolveWithNewPipe(str(url), str(proxy_url or ""))
+    return json.loads(str(payload))
 
 
 def _start_signed_out():

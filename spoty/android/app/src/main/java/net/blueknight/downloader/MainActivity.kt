@@ -51,6 +51,10 @@ class MainActivity : AppCompatActivity() {
     /** Where a page call is answered from, and what the page expects back. */
     private val py by lazy { Python.getInstance() }
 
+    /** Called from the shared Python engine only after yt-dlp has exhausted its retries. */
+    fun resolveWithNewPipe(url: String, proxyUrl: String): String =
+        NewPipeFallback.resolve(applicationContext, url, proxyUrl)
+
     private val pickDownloadFolder = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->

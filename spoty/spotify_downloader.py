@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.12"
+APP_VERSION = "7.0.13"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -260,6 +260,17 @@ YTDLP_TELLING_WARNING = re.compile(
 # that experiment the streams arrive with no direct URL at all, and yt-dlp has
 # no support for fetching them — so every client returns an empty list and no
 # rung of any ladder can help. Worth saying outright rather than retrying.
+# A second engine answers a site that would not answer the first. It cannot
+# answer a full disk, a folder that refuses to be written to, or a person who
+# pressed stop — and trying is not merely useless, it buries the real reason
+# under a second failure that says something else. These end the run where it
+# stands, whatever engines are left.
+TERMINAL_FAILURE = re.compile(
+    r"no space left|not enough space|disk (?:is )?full|quota exceeded|"
+    r"permission denied|access is denied|read-only file system|"
+    r"operation not permitted|file name too long|invalid argument|"
+    r"cancell?ed|interrupted by user|keyboardinterrupt|"
+    r"\bdrm\b|widevine|encrypted content", re.I)
 YOUTUBE_SABR = re.compile(
     r"sabr|missing a url|skipped as they are missing a url", re.I)
 PO_TOKEN_PATTERN = re.compile(r"^mweb\.gvs\+[A-Za-z0-9._~=/+-]{20,4096}$")
@@ -375,8 +386,18 @@ def normalize_media_url(kind, value):
 ENGINES = {
     "x": ("gallery-dl", "html5", "direct"),
     "instagram": ("gallery-dl",),
-    "general": ("streamlink", "html5", "gallery-dl", "direct"),
+    "general": (("newpipe",) if IS_ANDROID else ())
+               + ("streamlink", "html5", "gallery-dl", "direct"),
 }
+if IS_ANDROID:
+    # NewPipeExtractor is an Android/JVM library, exposed to this shared engine
+    # by android_bridge. It is deliberately second to yt-dlp, whose extractor
+    # catalogue and playlist support are much broader.
+    ENGINES.update({
+        "youtube": ("newpipe",),
+        "ytmusic": ("newpipe",),
+        "soundcloud": ("newpipe",),
+    })
 
 
 def cookie_domain_for(kind, url):
@@ -406,6 +427,9 @@ PYTHON_COMPONENTS = {
 # (cookies written, whether a session cookie was among them). Left None on the
 # desktops, which re-read a real browser profile instead.
 SESSION_REFRESHER = None
+# Installed by android_bridge at boot. It returns NewPipeExtractor's direct
+# stream candidates as a plain dict and stays None on every desktop build.
+NEWPIPE_RESOLVER = None
 
 PDF_LIBRARY = "pypdf" if IS_ANDROID else "pikepdf"
 PYTHON_COMPONENTS[PDF_LIBRARY] = {
@@ -1455,6 +1479,42 @@ class SpotifyDownloader:
             var.set(value)
         if name.startswith("proxy_"):
             self.sync_proxy_env()
+
+    def may_fall_back(self, detail, kind=None):
+        """Whether another engine is worth trying after this failure.
+
+        Handing the next engine a stopped download, a full disk or a folder it
+        may not write to only produces a second failure wearing different words,
+        and the one that mattered is the first. A site that refused, a client
+        with no formats, a 403 from the CDN — those are what another extractor
+        exists for.
+        """
+        if not self.is_downloading:
+            return False                      # stop means stop, for everything
+        if kind is not None and not (NEWPIPE_RESOLVER is not None
+                                     and "newpipe" in ENGINES.get(kind, ())):
+            return False
+        return not TERMINAL_FAILURE.search(str(detail or ""))
+
+    def log_engine_attempt(self, engine, stage, url, quality, detail="", started=None):
+        """One line per engine attempt, in one shape, for every engine.
+
+        Enough to tell which engine did what to which video and how long it
+        took, and deliberately not enough to leak anything: no cookies, no
+        tokens, and the video id rather than a signed media URL, which carries
+        both a session and an address in its query string.
+        """
+        video = str(url or "")
+        for marker in ("watch?v=", "youtu.be/", "/shorts/"):
+            if marker in video:
+                video = video.split(marker, 1)[1].split("&")[0].split("?")[0][:24]
+                break
+        else:
+            video = (urlsplit(video).hostname or "?")
+        elapsed = f" {time.time() - started:.1f}s" if started else ""
+        note = f" — {str(detail)[:160]}" if detail else ""
+        self._batch_log(f"[{engine}] {stage}: {video} @ {quality}{elapsed}{note}",
+                        "warning" if detail else "info")
 
     def _explain_sabr(self):
         """Say what SABR is and stop, instead of climbing a ladder that cannot help.
@@ -3357,6 +3417,128 @@ class SpotifyDownloader:
             hint += "\n• Use Sign in on the X page if the post is followers-only"
         return (detail[:220] + hint) if detail else hint.lstrip("\n")
 
+    @staticmethod
+    def _pick_newpipe_streams(payload, quality, audio_only):
+        """Choose NewPipe candidates as (video, audio), without doing I/O."""
+        audio = [item for item in payload.get("audio", []) if item.get("url")]
+        best_audio = max(audio, key=lambda item: int(item.get("bitrate") or 0), default=None)
+        if audio_only:
+            return None, best_audio
+
+        videos = [item for item in payload.get("video", []) if item.get("url")]
+        cap = int(quality) if str(quality).isdigit() else None
+        under_cap = [item for item in videos
+                     if not cap or 0 < int(item.get("height") or 0) <= cap]
+        candidates = under_cap or videos
+        best_video = max(
+            candidates,
+            key=lambda item: (
+                int(item.get("height") or 0),
+                int(item.get("fps") or 0),
+                int(item.get("bitrate") or 0),
+                not bool(item.get("video_only")),
+            ),
+            default=None,
+        )
+        return best_video, (best_audio if best_video and best_video.get("video_only") else None)
+
+    def _download_with_newpipe(self, url, output, quality, audio_only):
+        """Resolve with Android's NewPipeExtractor adapter and fetch via FFmpeg."""
+        if NEWPIPE_RESOLVER is None:
+            raise RuntimeError("NewPipeExtractor is not available in this build.")
+
+        started = time.time()
+        self.log_engine_attempt("NewPipe", "resolving", url, quality)
+        payload = NEWPIPE_RESOLVER(url, self.configured_proxy())
+        if not isinstance(payload, dict):
+            raise RuntimeError("NewPipeExtractor returned an invalid response.")
+        self.log_engine_attempt(
+            "NewPipe", "manifest resolved", url, quality,
+            f"{len(payload.get('streams') or [])} streams", started)
+        video, audio = self._pick_newpipe_streams(payload, quality, audio_only)
+        hls = str(payload.get("hls") or "")
+        if audio_only and audio is None and hls:
+            audio = {"url": hls, "format": "m4a", "bitrate": 0}
+        elif not audio_only and video is None and hls:
+            video = {"url": hls, "format": "mp4", "height": 0,
+                     "fps": 0, "bitrate": 0, "video_only": False}
+        if (audio_only and audio is None) or (not audio_only and video is None):
+            errors = "; ".join(str(item) for item in payload.get("errors", []) if item)
+            raise RuntimeError(errors or "NewPipeExtractor found no usable direct streams.")
+
+        title = str(payload.get("title") or urlsplit(url).hostname or "media")
+        if audio_only:
+            suffix = self.download_format.get()
+            suffix = suffix if suffix in {"mp3", "flac"} else "mp3"
+        else:
+            video_format = str(video.get("format") or "").lower()
+            audio_format = str((audio or {}).get("format") or "").lower()
+            if video_format in {"mp4", "m4v"} and audio_format in {"", "aac", "m4a", "mp4"}:
+                suffix = "mp4"
+            elif not audio and video_format in {"mp4", "webm", "3gp"}:
+                suffix = video_format
+            else:
+                suffix = "mkv"
+
+        target = unique_path(output, safe_filename(title, suffix=f".{suffix}"))
+        partial = target.with_suffix(f".part{target.suffix}")
+        self.ui("plan", 1, 2 if audio else 1, str(output))
+        self.ui("file", target.name, 0)
+
+        proxy = self.configured_proxy()
+        input_prefix = ["-user_agent", BROWSER_UA]
+        if proxy and proxy.lower().startswith(("http://", "https://")):
+            input_prefix = ["-http_proxy", proxy] + input_prefix
+        command = [self.ffmpeg_cmd, "-y", "-nostats", "-progress", "pipe:1"]
+        command += input_prefix + ["-i", str((audio if audio_only else video)["url"])]
+        if audio and not audio_only:
+            command += input_prefix + ["-i", str(audio["url"])]
+            command += ["-map", "0:v:0", "-map", "1:a:0", "-c", "copy"]
+        elif audio_only:
+            codec = "libmp3lame" if suffix == "mp3" else "flac"
+            command += ["-vn", "-c:a", codec]
+        else:
+            command += ["-c", "copy"]
+        if suffix == "mp4":
+            command += ["-movflags", "+faststart"]
+        command.append(str(partial))
+
+        duration = max(0, int(payload.get("duration") or 0))
+        self._batch_log(
+            f"NewPipeExtractor found {payload.get('service') or 'a supported service'}; "
+            f"saving {title[:90]}.", "info")
+        self._flush_logs()
+        try:
+            self.process = pyshell.popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", bufsize=1)
+            speed = ""
+            for raw in self.process.stdout:
+                if not self.is_downloading:
+                    break
+                key, _, value = raw.strip().partition("=")
+                if key == "speed":
+                    speed = value
+                elif key in {"out_time_us", "out_time_ms"} and duration:
+                    # Both keys use a microsecond-scale integer in supported
+                    # FFmpeg versions despite the legacy out_time_ms name.
+                    with contextlib.suppress(ValueError):
+                        percent = min(99.0, float(value) / (duration * 10000.0))
+                        self.ui("bytes", percent, target.name, speed, "", 0)
+            if not self.is_downloading:
+                with contextlib.suppress(Exception):
+                    self.process.terminate()
+            self.process.wait()
+            if self.process.returncode != 0:
+                raise RuntimeError(
+                    f"FFmpeg could not save NewPipe's stream (code {self.process.returncode}).")
+            if not partial.is_file() or not partial.stat().st_size:
+                raise RuntimeError("NewPipe's stream ended without producing a file.")
+            os.replace(partial, target)
+            return target
+        finally:
+            partial.unlink(missing_ok=True)
+
     def _try_other_engines(self, kind, url, output, started, quality="best", audio_only=False):
         """Everything that is not yt-dlp, in order. True when one of them worked.
 
@@ -3368,6 +3550,17 @@ class SpotifyDownloader:
             if not self.is_downloading:
                 return False
             try:
+                if engine == "newpipe":
+                    self._batch_log(
+                        "yt-dlp exhausted its extractors - trying NewPipeExtractor.", "info")
+                    self._flush_logs()
+                    path = self._download_with_newpipe(url, output, quality, audio_only)
+                    if path:
+                        self._batch_log(f"NewPipeExtractor saved {path.name}.", "success")
+                        self._flush_logs()
+                        self.ui("success", time.time() - started)
+                        return True
+                    continue
                 if engine == "streamlink":
                     self._batch_log("yt-dlp found no downloadable video — checking for a "
                                     "live or HLS stream with Streamlink.", "info")
@@ -3791,6 +3984,9 @@ class SpotifyDownloader:
                         continue
                     self._flush_logs()
                     if verdict == "challenge" and kind in YOUTUBE_KINDS:
+                        if self._try_other_engines(
+                                kind, url, output, started, quality, audio_only):
+                            return
                         detail = (
                             "YouTube refused the media URL after fresh-link and "
                             "alternate-client retries.")
@@ -3800,6 +3996,9 @@ class SpotifyDownloader:
                             detail + "\n\nTry the app's proxy, a different connection, or "
                             "a signed-in YouTube session. A PO token may be required when "
                             "YouTube binds delivery URLs to proof-of-origin.")
+                        return
+                    if self._try_other_engines(
+                            kind, url, output, started, quality, audio_only):
                         return
                     self._report_signin_failure(kind, url)
                     return
@@ -3812,6 +4011,9 @@ class SpotifyDownloader:
                     self._flush_logs()
                     continue
                 self._flush_logs()
+                if self._try_other_engines(
+                        kind, url, output, started, quality, audio_only):
+                    return
                 self._report_ytdlp_failure(kind, f"Could not read cookies from {candidate_label(candidate)}.")
                 return
         finally:
@@ -4255,6 +4457,8 @@ class SpotifyDownloader:
             # client just had nothing it could hand over.
             if kind in YOUTUBE_KINDS and YOUTUBE_NO_FORMATS.search(joined):
                 if YOUTUBE_SABR.search(joined):
+                    if NEWPIPE_RESOLVER is not None and "newpipe" in ENGINES.get(kind, ()):
+                        return "challenge"
                     self._explain_sabr()
                     return None
                 return "challenge"
@@ -4271,11 +4475,20 @@ class SpotifyDownloader:
             raise RuntimeError(joined or f"yt-dlp exited with code {code}")
         except FileNotFoundError:
             self._flush_logs()
+            if self.may_fall_back("yt-dlp could not be launched", kind):
+                self._last_ytdlp_error = "yt-dlp could not be launched."
+                return "other-engine"
             self.log("yt-dlp could not be launched. Run Check for updates.", "error")
             self.ui("failure", "yt-dlp could not be launched.")
         except Exception as exc:
             detail = str(exc)[:300]
             self._flush_logs()
+            # Only a failure another engine could actually answer. A stopped
+            # download, a full disk or a folder that will not be written to is
+            # the end of the run, not a reason to start the next extractor.
+            if self.may_fall_back(detail, kind):
+                self._last_ytdlp_error = detail
+                return "other-engine"
             self.log(f"{kind.title()} download failed: {detail}", "error")
             hint = ""
             if SIGNIN_DEMANDED.search(detail):
@@ -5188,6 +5401,17 @@ if __name__ == "__main__":
                 else:
                     os.environ[_key] = _was
 
+        # A second engine answers a site. It cannot answer a full disk, a
+        # read-only folder, or someone pressing stop — and trying buries the
+        # real reason under a second failure that says something else.
+        for _detail in ("Sign in to confirm you're not a bot", "HTTP Error 403: Forbidden",
+                        "Requested format is not available", "unable to extract player response"):
+            assert not TERMINAL_FAILURE.search(_detail), _detail
+        for _detail in ("[Errno 28] No space left on device", "Permission denied",
+                        "Read-only file system", "Download cancelled by user",
+                        "widevine DRM"):
+            assert TERMINAL_FAILURE.search(_detail), _detail
+
         # A run of log lines must reach the page as one event, and anything
         # else in the middle must break the run rather than swallow it.
         _drain_probe = SpotifyDownloader.__new__(SpotifyDownloader)
@@ -5450,6 +5674,29 @@ if __name__ == "__main__":
         assert _bulk_images.links[-1].endswith("100.jpg")
         _streams = {"360p": object(), "720p": object(), "1080p60": object()}
         assert SpotifyDownloader._pick_streamlink_stream(_streams, "720")[0] == "720p"
+        _newpipe_payload = {
+            "audio": [
+                {"url": "audio-low", "bitrate": 64_000},
+                {"url": "audio-best", "bitrate": 160_000},
+            ],
+            "video": [
+                {"url": "muxed-480", "height": 480, "fps": 30,
+                 "bitrate": 1_000_000, "video_only": False},
+                {"url": "video-720", "height": 720, "fps": 30,
+                 "bitrate": 2_000_000, "video_only": True},
+                {"url": "video-1080", "height": 1080, "fps": 60,
+                 "bitrate": 4_000_000, "video_only": True},
+            ],
+        }
+        _np_video, _np_audio = SpotifyDownloader._pick_newpipe_streams(
+            _newpipe_payload, "720", False)
+        assert _np_video["url"] == "video-720" and _np_audio["url"] == "audio-best"
+        _np_video, _np_audio = SpotifyDownloader._pick_newpipe_streams(
+            _newpipe_payload, "480", False)
+        assert _np_video["url"] == "muxed-480" and _np_audio is None
+        _np_video, _np_audio = SpotifyDownloader._pick_newpipe_streams(
+            _newpipe_payload, "best", True)
+        assert _np_video is None and _np_audio["url"] == "audio-best"
         assert sorted(["page10.jpg", "page2.jpg", "page1.jpg"], key=natural_sort_key) == [
             "page1.jpg", "page2.jpg", "page10.jpg"]
         assert versions_equal("2026.07.22", "2026.7.22")
@@ -5495,10 +5742,16 @@ if __name__ == "__main__":
             "ERROR: unable to download video data: HTTP Error 403: Forbidden")
         # Only sources with a second engine may hand off at all.
         assert set(ENGINES) <= set(MEDIA_LABELS), set(ENGINES) - set(MEDIA_LABELS)
-        assert not ({"youtube", "ytmusic"} & set(ENGINES)), (
-            "YouTube and YouTube Music have their own client ladder, not general fallbacks")
+        if IS_ANDROID:
+            assert ENGINES["youtube"] == ("newpipe",)
+            assert ENGINES["ytmusic"] == ("newpipe",)
+            assert ENGINES["general"][0] == "newpipe"
+        else:
+            assert not ({"youtube", "ytmusic"} & set(ENGINES)), (
+                "NewPipeExtractor is Android-only")
         assert "gallery-dl" in ENGINES["x"] and "direct" in ENGINES["general"]
-        assert ENGINES["general"][:2] == ("streamlink", "html5")
+        assert ("streamlink", "html5") == tuple(
+            engine for engine in ENGINES["general"] if engine != "newpipe")[:2]
         # Dynamic plugin imports are easy for a freezer to miss. Exercise both
         # engines inside the packaged executable without touching the network.
         import gallery_dl

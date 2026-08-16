@@ -51,8 +51,8 @@ android {
         applicationId = "net.blueknight.downloader"
         minSdk = 24          // Android 7.0: the oldest API the WebView bridge needs
         targetSdk = 34
-        versionCode = 70012
-        versionName = "7.0.12"
+        versionCode = 70013
+        versionName = "7.0.13"
 
         // A normal build is universal. CI also passes -PtargetAbi=<ABI> to
         // produce smaller architecture-specific APKs from the same sources.
@@ -98,6 +98,9 @@ android {
     }
 
     compileOptions {
+        // NewPipeExtractor uses java.nio APIs added after this app's API 24
+        // minimum. Core-library desugaring supplies them on older phones.
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -152,6 +155,13 @@ chaquopy {
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
+
+    // Native Android fallback for the services NewPipe supports. yt-dlp stays
+    // first because it covers far more sites; this is invoked only after its
+    // retry/client ladder has genuinely run out.
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.1")
+
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.activity:activity-ktx:1.8.2")
