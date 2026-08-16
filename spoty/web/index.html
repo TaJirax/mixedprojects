@@ -93,7 +93,26 @@ html[data-theme="dark"] {
      is late, so this resolves against whichever tile it lands on. On a dark
      tile the mark is lifted toward white; the light theme pulls the other way
      below, or every mark reads as pastel on pastel. */
-  --mark-ink: color-mix(in srgb, var(--tint) 84%, #fff);
+  /* Pale, not saturated. The tile already carries the source's colour at full
+     strength, so a mark in that same colour has nothing to separate against —
+     it goes light for the same reason the light theme's goes dark. */
+  --mark-ink: color-mix(in srgb, var(--tint) 34%, #fff);
+  --mark-plate: rgb(255 255 255 / .13);
+  /* The picker's glass, mixed per theme. The same alphas that stay bright over
+     a light page fall to near-black over this one, so dark carries more tint,
+     a brighter veil under it, no black floor, and a lighter seat under the
+     label — that is the whole difference between the two themes here. */
+  --tile-t0: 42%;
+  --tile-t1: 60%;
+  --tile-t2: 37%;
+  --tile-t3: 22%;
+  --tile-veil:  rgb(255 255 255 / .10);
+  --tile-floor: rgb(255 255 255 / .015);
+  --tile-spec:  rgb(255 255 255 / .34);
+  --tile-seat:  34%;
+  --tile-on-t1: 78%;
+  --tile-on-t2: 54%;
+  --tile-on-t3: 34%;
   --scroll-track: rgba(255, 255, 255, 0.035);
   --scroll-track-edge: rgba(255, 255, 255, 0.075);
   --scroll-thumb: linear-gradient(135deg, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0.10));
@@ -131,6 +150,19 @@ html[data-theme="light"] {
   --pane-solid: #f4f6fa;
   --control-solid: #f7f9fc;
   --mark-ink: color-mix(in srgb, var(--tint) 62%, #10202f);
+  --mark-plate: rgb(255 255 255 / .07);
+  /* Unchanged from what light already looked right at. */
+  --tile-t0: 30%;
+  --tile-t1: 44%;
+  --tile-t2: 22%;
+  --tile-t3: 11%;
+  --tile-veil:  rgb(255 255 255 / .12);
+  --tile-floor: rgb(0 0 0 / .10);
+  --tile-spec:  rgb(255 255 255 / .30);
+  --tile-seat:  44%;
+  --tile-on-t1: 56%;
+  --tile-on-t2: 28%;
+  --tile-on-t3: 13%;
   /* No blur at all in light: clear glass reads expensive, frost reads cheap. */
   --blur: saturate(115%);
   --shadow: 0 18px 44px rgba(30, 45, 70, 0.20);
@@ -1419,15 +1451,16 @@ html.android .nav button .dot { display: none; }
        what made these read as painted plastic. */
     background:
       radial-gradient(120% 96% at 26% 0%,
-        color-mix(in srgb, var(--tint) 30%, transparent) 0%, transparent 74%),
+        color-mix(in srgb, var(--tint) var(--tile-t0), transparent) 0%,
+        transparent 74%),
       linear-gradient(158deg,
-        color-mix(in srgb, var(--tint) 44%, transparent) 0%,
-        color-mix(in srgb, var(--tint) 22%, transparent) 48%,
-        color-mix(in srgb, var(--tint) 11%, transparent) 100%),
+        color-mix(in srgb, var(--tint) var(--tile-t1), transparent) 0%,
+        color-mix(in srgb, var(--tint) var(--tile-t2), transparent) 48%,
+        color-mix(in srgb, var(--tint) var(--tile-t3), transparent) 100%),
       linear-gradient(158deg,
-        rgb(255 255 255 / .12) 0%,
+        var(--tile-veil) 0%,
         rgb(255 255 255 / .03) 52%,
-        rgb(0 0 0 / .10) 100%);
+        var(--tile-floor) 100%);
     -webkit-backdrop-filter: blur(13px) saturate(190%);
     backdrop-filter: blur(13px) saturate(190%);
     /* Depth is light, not perspective: a lit top edge and a dark under-edge
@@ -1461,7 +1494,7 @@ html.android .nav button .dot { display: none; }
     z-index: 0;
     pointer-events: none;
     background: linear-gradient(163deg,
-      rgb(255 255 255 / .30) 0%, rgb(255 255 255 / .08) 40%, transparent 64%);
+      var(--tile-spec) 0%, rgb(255 255 255 / .08) 40%, transparent 64%);
     transform: rotate(-4deg);
   }
   /* A pool under the label, following it to the middle of the tile. A bottom
@@ -1473,7 +1506,7 @@ html.android .nav button .dot { display: none; }
     z-index: 1;
     pointer-events: none;
     background: radial-gradient(72% 40% at 50% 68%,
-      color-mix(in srgb, var(--pane-solid) 44%, transparent) 0%,
+      color-mix(in srgb, var(--pane-solid) var(--tile-seat), transparent) 0%,
       transparent 78%);
   }
   /* The mark is the subject now, not texture — an icon you are meant to read
@@ -1492,7 +1525,7 @@ html.android .nav button .dot { display: none; }
       linear-gradient(150deg,
         color-mix(in srgb, var(--tint) 30%, transparent),
         color-mix(in srgb, var(--tint) 8%, transparent)),
-      rgb(255 255 255 / .07);
+      var(--mark-plate);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / .26),
       0 4px 10px -6px rgb(0 0 0 / .75);
@@ -1529,13 +1562,13 @@ html.android .nav button .dot { display: none; }
     border-color: color-mix(in srgb, var(--tint) 72%, transparent);
     background:
       linear-gradient(158deg,
-        color-mix(in srgb, var(--tint) 56%, transparent) 0%,
-        color-mix(in srgb, var(--tint) 28%, transparent) 46%,
-        color-mix(in srgb, var(--tint) 13%, transparent) 100%),
+        color-mix(in srgb, var(--tint) var(--tile-on-t1), transparent) 0%,
+        color-mix(in srgb, var(--tint) var(--tile-on-t2), transparent) 46%,
+        color-mix(in srgb, var(--tint) var(--tile-on-t3), transparent) 100%),
       linear-gradient(158deg,
-        rgb(255 255 255 / .14) 0%,
+        var(--tile-veil) 0%,
         rgb(255 255 255 / .03) 52%,
-        rgb(0 0 0 / .12) 100%);
+        var(--tile-floor) 100%);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / .42),
       inset 0 -1px 0 rgb(0 0 0 / .26),
