@@ -265,6 +265,15 @@ class MainActivity : AppCompatActivity() {
         val view = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            // A login is a form post across several hosts, and it needs the
+            // same storage a browser would give it.
+            settings.databaseEnabled = true
+            // Sign-in pages open steps with target="_blank". With multiple
+            // windows unsupported the WebView follows them in place; with them
+            // supported and no WebChromeClient to service onCreateWindow, the
+            // tap does nothing at all and the page looks frozen.
+            settings.setSupportMultipleWindows(false)
+            settings.javaScriptCanOpenWindowsAutomatically = false
             // The user agent is deliberately left alone. It used to be
             // overwritten with a desktop Chrome string, which every login page
             // could catch: the client hints this WebView sends alongside it
@@ -273,6 +282,25 @@ class MainActivity : AppCompatActivity() {
             // this same default agent at startup and replays the session under
             // it, so nothing downstream needs the override either.
             setBackgroundColor(0xFF05080D.toInt())
+
+            // Without a WebViewClient a WebView does not navigate — it hands
+            // the URL to the system, which opens the YouTube app or a browser
+            // and leaves this window sitting blank on top of the app with no
+            // page in it and no obvious way back. That is the whole of the
+            // "it opens YouTube and then freezes" report: the sign-in never
+            // happened here, so no cookie could ever be harvested from it.
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView, request: android.webkit.WebResourceRequest
+                ): Boolean {
+                    val url = request.url
+                    // Anything the web can serve stays in this window.
+                    if (url.scheme == "http" || url.scheme == "https") return false
+                    // intent://, market://, youtube:// and friends are a site
+                    // asking to leave. Refuse: leaving is what breaks this.
+                    return true
+                }
+            }
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
         view.loadUrl(start)
@@ -437,8 +465,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
+        val login = loginView
         when {
-            loginView != null -> finishLogin()
+            // A sign-in is several pages — account, then password, then any
+            // second factor. Back used to end the whole thing from any of them,
+            // so one mistyped password cost the entire login. It walks the
+            // login's own history first, and only finishes at its start.
+            login != null && login.canGoBack() -> login.goBack()
+            login != null -> finishLogin()
             web.canGoBack() -> web.goBack()
             else -> super.onBackPressed()
         }

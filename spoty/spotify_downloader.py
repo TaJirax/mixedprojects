@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.0.3"
+APP_VERSION = "7.0.4"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -185,18 +185,19 @@ COOKIE_ON_DEMAND = {"youtube", "ytmusic", "tiktok", "soundcloud", "x", "general"
 # web_embedded and tv — so those are the ones worth retrying as. tv_simply,
 # web_safari and mweb all need a token, which is why they answered the earlier
 # attempts with "Requested format is not available" rather than a video.
-# yt-dlp's own client table says android_vr, ios and android need neither a
-# proof-of-origin token nor a solved JavaScript player, and that none of the
-# three can carry cookies.
-#
-# The first two rungs are exactly what they were, so nothing that used to
-# succeed now takes longer to get there: a signed-in run still reaches the
-# cookie-carrying rung on its first escalation, rather than after two clients
-# that would ignore the session it is trying to spend. ios and android are
-# added underneath, where they cost nothing until everything above has failed.
-YT_CLIENT_LADDER = ("android_vr", "web_embedded,tv,default", "ios", "android")
+# Three clients ask YouTube for no proof-of-origin token: android_vr, tv and
+# web_embedded. That list is from yt-dlp's PO Token Guide, and it is not the
+# same as the REQUIRE_PO_TOKEN flag in its client table — that flag is about
+# the player response, while the token that gates the media itself is the GVS
+# one. android and ios pass the flag and still need a GVS or player token to
+# fetch a stream, which arrives as exactly the 403 this ladder exists to climb
+# out of. They are not rungs; they are the hole.
+YT_NO_TOKEN_CLIENTS = frozenset({"android_vr", "tv", "web_embedded"})
+# Each rung is either token-free or able to spend a session, and the ones that
+# can spend one come after the ones that need nothing.
+YT_CLIENT_LADDER = ("android_vr", "web_embedded,tv,default", "tv")
 # The rungs that can carry a signed-in session, by yt-dlp's SUPPORTS_COOKIES.
-YT_COOKIE_CLIENTS = frozenset({"web_embedded,tv,default"})
+YT_COOKIE_CLIENTS = frozenset({"web_embedded,tv,default", "tv"})
 YOUTUBE_MEDIA_DENIED = re.compile(
     r"unable to download (?:video|audio) data.*(?:http error 403|forbidden)|"
     r"http error 403:\s*forbidden|fragment.*http error 403", re.I | re.S)
@@ -4852,23 +4853,23 @@ if __name__ == "__main__":
             from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS as _YT_CLIENTS
         except Exception:
             _YT_CLIENTS = None
+        # No rung may name a client that needs a GVS token to fetch media —
+        # that is the 403 the ladder is climbing out of, so a rung that asks
+        # for one cannot be an escape from it. "default" is yt-dlp's own list
+        # and is deliberately allowed through as a last resort.
+        for _rung in YT_CLIENT_LADDER:
+            for _client in _rung.split(","):
+                assert _client in YT_NO_TOKEN_CLIENTS or _client == "default", _rung
+        assert YT_CLIENT_LADDER[0] == "android_vr"
         if _YT_CLIENTS:
+            # Whatever the table says about tokens, a rung must at least exist
+            # and the cookie set must match what yt-dlp reports.
             for _rung in YT_CLIENT_LADDER:
-                _needs_nothing = all(
-                    not _YT_CLIENTS[c].get("REQUIRE_PO_TOKEN")
-                    and not _YT_CLIENTS[c].get("REQUIRE_JS_PLAYER", True)
-                    for c in _rung.split(",") if c in _YT_CLIENTS)
-                _carries_session = any(
-                    _YT_CLIENTS[c].get("SUPPORTS_COOKIES")
-                    for c in _rung.split(",") if c in _YT_CLIENTS)
-                # Every rung must earn its place: it either asks the site for
-                # nothing, or it can spend a session. A rung that does neither
-                # is one that cannot succeed where the one above it failed.
-                assert _needs_nothing or _carries_session, _rung
-                assert _carries_session == (_rung in YT_COOKIE_CLIENTS), _rung
-            # The opening rung and the first escalation are what they have
-            # always been; the additions sit below them.
-            assert YT_CLIENT_LADDER[:2] == ("android_vr", "web_embedded,tv,default")
+                _carries = any(_YT_CLIENTS[c].get("SUPPORTS_COOKIES")
+                               for c in _rung.split(",") if c in _YT_CLIENTS)
+                assert _carries == (_rung in YT_COOKIE_CLIENTS), _rung
+                for _client in _rung.split(","):
+                    assert _client in _YT_CLIENTS or _client == "default", _client
 
         # A phone can only ever read a jar this app wrote. The desktop half of
         # this cannot be asserted: whether a browser turns up is a fact about
