@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.6.0"
+APP_VERSION = "7.7.0"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -416,12 +416,17 @@ if IS_ANDROID:
         "ytmusic": ("newpipe", "youtube-js"),
         "soundcloud": ("newpipe",),
     })
+    ENGINES["general"] = ENGINES["general"]
 else:
     ENGINES.update({
         "youtube": ("youtube-explode", "newpipe", "youtube-js"),
         "ytmusic": ("youtube-explode", "newpipe", "youtube-js"),
+        # NewPipe is not a YouTube library. It covers SoundCloud, Bandcamp,
+        # PeerTube, media.ccc.de and more, so the sources it knows get a second
+        # engine too rather than only YouTube having one.
+        "soundcloud": ("newpipe",),
     })
-    ENGINES["general"] = ("youtube-explode",) + ENGINES["general"]
+    ENGINES["general"] = ("youtube-explode", "newpipe") + ENGINES["general"]
 
 
 def cookie_domain_for(kind, url):
@@ -3926,7 +3931,20 @@ class SpotifyDownloader:
                     self.ui("success", time.time() - started)
                     return True
             except Exception as exc:
-                self._batch_log(f"{engine} could not handle this link: {str(exc)[:110]}",
+                detail = str(exc)
+                # A wall is a wall for all of them. DRM does not become
+                # downloadable because a different extractor asks, a full disk
+                # does not empty, and a stopped download stays stopped — so the
+                # loop ends here rather than hitting the same thing once per
+                # engine and burying the reason under three more failures.
+                if not self.may_fall_back(detail):
+                    self._batch_log(
+                        f"{engine} stopped on something no other engine can answer: "
+                        f"{detail[:110]}", "error")
+                    self._flush_logs()
+                    self._last_engine_stop = detail
+                    return False
+                self._batch_log(f"{engine} could not handle this link: {detail[:110]}",
                                 "warning")
                 self._flush_logs()
         return False
@@ -5890,6 +5908,14 @@ if __name__ == "__main__":
         # And the failure that message describes belongs to the ladder. Reading
         # it as "no video here" is what sent a perfectly recoverable run to the
         # give-up path with every rung unused.
+        # A wall is a wall for every engine. Anything the next one cannot
+        # answer either must end the loop rather than be met four times.
+        _wall = SpotifyDownloader.__new__(SpotifyDownloader)
+        _wall.is_downloading = True
+        for _terminal in ("widevine DRM", "No space left on device", "Permission denied"):
+            assert not SpotifyDownloader.may_fall_back(_wall, _terminal), _terminal
+        assert SpotifyDownloader.may_fall_back(_wall, "Unable to extract player response")
+
         # A refused client and a refused address need different answers, and
         # the ladder's rungs are client lists rather than clients.
         _probe = SpotifyDownloader.__new__(SpotifyDownloader)
@@ -6150,7 +6176,8 @@ if __name__ == "__main__":
             # JVM. yt-dlp is first on both, and is not in this table at all.
             assert ENGINES["youtube"] == ("youtube-explode", "newpipe", "youtube-js")
             assert ENGINES["ytmusic"] == ("youtube-explode", "newpipe", "youtube-js")
-            assert ENGINES["general"][0] == "youtube-explode"
+            assert ENGINES["general"][:2] == ("youtube-explode", "newpipe")
+            assert ENGINES["soundcloud"] == ("newpipe",)
 
         assert "gallery-dl" in ENGINES["x"] and "direct" in ENGINES["general"]
         assert ("streamlink", "html5") == tuple(

@@ -48,7 +48,11 @@ public final class Main {
 
         try {
             NewPipe.init(new SimpleDownloader(proxy), new Localization("en", "US"));
-            final StreamInfo info = StreamInfo.getInfo(ServiceList.YouTube, url);
+            // Whichever service actually owns this link. NewPipeExtractor
+            // covers SoundCloud, Bandcamp, PeerTube, media.ccc.de and more, and
+            // pinning it to YouTube threw all of that away — this engine can
+            // stand behind yt-dlp for those sites too, not only for one.
+            final StreamInfo info = StreamInfo.getInfo(NewPipe.getServiceByUrl(url), url);
             System.out.println(describe(info).toString());
             System.exit(0);
         } catch (Throwable problem) {
@@ -96,7 +100,7 @@ public final class Main {
         return new JSONObject()
                 .put("title", info.getName())
                 .put("duration", info.getDuration())
-                .put("service", "YouTube")
+                .put("service", info.getService().getServiceInfo().getName())
                 .put("hls", info.getHlsUrl() == null ? "" : info.getHlsUrl())
                 .put("dash", info.getDashMpdUrl() == null ? "" : info.getDashMpdUrl())
                 .put("audio", audio)
