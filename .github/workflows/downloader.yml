@@ -109,20 +109,20 @@ jobs:
         working-directory: spoty
         shell: pwsh
         run: |
-          $process = Start-Process ./release/SpotifyDownloader.exe `
+          $process = Start-Process ./release/BlueKnightDownloader.exe `
             -ArgumentList '--self-test' -WindowStyle Hidden -Wait -PassThru
           exit $process.ExitCode
 
       - name: Smoke test the Linux package
         if: startsWith(matrix.os, 'ubuntu')
         working-directory: spoty
-        run: ./release/SpotifyDownloader --self-test
+        run: ./release/BlueKnightDownloader --self-test
 
       - name: Smoke test the macOS package
         if: startsWith(matrix.os, 'macos')
         working-directory: spoty
         run: |
-          ./release/SpotifyDownloader.app/Contents/MacOS/SpotifyDownloader --self-test
+          ./release/BlueKnightDownloader.app/Contents/MacOS/BlueKnightDownloader --self-test
 
       - uses: actions/upload-artifact@v4
         with:

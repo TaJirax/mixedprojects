@@ -112,7 +112,7 @@ echo "Bundling $FFMPEG_BANNER"
 # only. --collect-all is what puts the extractors (and requests) inside it.
 PYI_ARGS=(
     --noconfirm --clean --windowed --onefile
-    --name SpotifyDownloader
+    --name BlueKnightDownloader
     --distpath "$OUTPUT" --workpath "$WORK" --specpath "$WORK"
     --collect-all webview
     --collect-all gallery_dl
@@ -202,12 +202,12 @@ if [ "$OS_TAG" = mac ]; then
     # Ship the .app, not the bare Unix executable beside it: double-clicking
     # the latter opens a terminal, and Gatekeeper treats it differently.
     PACKAGE="BlueKnightDownloader-macos-${ARCH}.zip"
-    ditto -c -k --sequesterRsrc --keepParent SpotifyDownloader.app "$PACKAGE"
+    ditto -c -k --sequesterRsrc --keepParent BlueKnightDownloader.app "$PACKAGE"
     zip -q "$PACKAGE" README.md THIRD_PARTY_NOTICES.txt GPL-3.0.txt
-    echo "Application bundle created at $OUTPUT/SpotifyDownloader.app"
+    echo "Application bundle created at $OUTPUT/BlueKnightDownloader.app"
 else
     PACKAGE="BlueKnightDownloader-linux-${ARCH}.tar.gz"
-    tar -czf "$PACKAGE" SpotifyDownloader README.md THIRD_PARTY_NOTICES.txt GPL-3.0.txt
-    echo "Standalone executable created at $OUTPUT/SpotifyDownloader"
+    tar -czf "$PACKAGE" BlueKnightDownloader README.md THIRD_PARTY_NOTICES.txt GPL-3.0.txt
+    echo "Standalone executable created at $OUTPUT/BlueKnightDownloader"
 fi
 echo "Release package created at $OUTPUT/$PACKAGE"

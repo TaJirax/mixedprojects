@@ -140,7 +140,7 @@ Write-Host "Bundling $($FfmpegInfo[0])"
 # scan finds none of them and the frozen app would be able to do yt-dlp only.
 # --collect-all is what puts the extractors (and requests) inside the exe.
 python -m PyInstaller --noconfirm --clean --windowed --onefile `
-    --name SpotifyDownloader `
+    --name BlueKnightDownloader `
     --icon (Join-Path $Root "assets\icon.ico") `
     --distpath $Output `
     --workpath $Work `
@@ -176,7 +176,7 @@ Copy-Item (Join-Path $Root "README.md") $Dist -Force
 Copy-Item (Join-Path $Root "THIRD_PARTY_NOTICES.txt") $Dist -Force
 Copy-Item (Join-Path $Root "GPL-3.0.txt") $Dist -Force
 
-$Executable = Join-Path $Dist "SpotifyDownloader.exe"
+$Executable = Join-Path $Dist "BlueKnightDownloader.exe"
 $Package = Join-Path $Dist "BlueKnightDownloader-windows-x64.zip"
 $PackageItems = @(
     $Executable,
