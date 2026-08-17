@@ -5,6 +5,9 @@ import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.services.youtube.PoTokenProvider
+import org.schabi.newpipe.extractor.services.youtube.PoTokenResult
+import org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor
 import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
@@ -31,12 +34,51 @@ import java.util.zip.InflaterInputStream
  * rest of Blue Knight, and keeps the shared desktop Python free of Android/JVM
  * imports. The result is plain JSON so Chaquopy crosses one stable boundary.
  */
+/**
+ * NewPipe's proof-of-origin hook, answered from the WebView.
+ *
+ * Only the web clients are served. Android and iOS tokens come from DroidGuard
+ * and iOSGuard, which are a different challenge in a different environment —
+ * returning a web token for them would be worse than returning nothing,
+ * because the extractor would stop asking and send something invalid.
+ */
+private class WebViewPoTokens(
+    private val context: Context,
+    private val proxyUrl: String,
+) : PoTokenProvider {
+
+    private val minted: PoTokenResult? by lazy {
+        try {
+            val payload = JSONObject(YouTubeJsFallback.mintToken(context, proxyUrl))
+            val visitor = payload.optString("visitorData")
+            val token = payload.optString("poToken")
+            if (visitor.isEmpty() || token.isEmpty()) null
+            else PoTokenResult(visitor, token, token)
+        } catch (failure: Throwable) {
+            null      // no token is a worse attempt, not a failed download
+        }
+    }
+
+    override fun getWebClientPoToken(videoId: String): PoTokenResult? = minted
+    override fun getWebEmbedClientPoToken(videoId: String): PoTokenResult? = minted
+    override fun getAndroidClientPoToken(videoId: String): PoTokenResult? = null
+    override fun getIosClientPoToken(videoId: String): PoTokenResult? = null
+}
+
 object NewPipeFallback {
 
     /** Resolve one public stream page into direct media candidates. */
     @Synchronized
     fun resolve(context: Context, url: String, proxyUrl: String): String {
         NewPipe.init(UrlConnectionDownloader(context, proxyUrl))
+        // Embedding the extractor is not the same as running NewPipe. The app
+        // answers YouTube's browser-integrity challenge in a WebView and hands
+        // the result to the extractor through this hook; without it the
+        // extractor asks for a player response with nothing to prove it is a
+        // real client, which is what comes back 403. The token we already mint
+        // for yt-dlp is the same kind of token, so it is reused rather than
+        // minted twice.
+        YoutubeStreamExtractor.setPoTokenProvider(WebViewPoTokens(context, proxyUrl))
         val info = StreamInfo.getInfo(url)
 
         return JSONObject().apply {

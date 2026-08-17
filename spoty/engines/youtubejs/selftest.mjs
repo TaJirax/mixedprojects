@@ -2,7 +2,11 @@
    this engine report it the way the rest of the app expects? */
 import { resolve } from "./engine.mjs";
 
-const ClientType = { ANDROID: 1, TV: 2, WEB_EMBEDDED: 3, MWEB: 4, WEB: 5 };
+// The clients the engine actually asks for, in its order. A stale mock here
+// silently tests a different walk than the one that ships.
+const ClientType = {
+  ANDROID_VR: 1, TV: 2, WEB_EMBEDDED: 3, TV_EMBEDDED: 4, MWEB: 5, WEB: 6,
+};
 const fmt = (o) => ({ mime_type: 'video/mp4; codecs="avc1.640028"', ...o });
 
 // First client offers nothing, second offers real streams: the engine must
@@ -36,7 +40,7 @@ const Innertube = {
 
 const out = await resolve(Innertube, ClientType, "abc");
 const checks = [
-  ["walked past the empty client", out.client === "TV"],
+  ["led with ANDROID_VR, then moved on", out.client === "TV"],
   ["reported the useful one",      out.ok === true],
   ["dropped the url-less format",  out.streams.length === 2],
   ["kept resolution",              out.streams[0].height === 1080],

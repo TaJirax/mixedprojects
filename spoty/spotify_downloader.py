@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.5.0"
+APP_VERSION = "7.6.0"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -236,6 +236,15 @@ COOKIE_ON_DEMAND = {"youtube", "ytmusic", "tiktok", "soundcloud", "x", "general"
 # fetch a stream, which arrives as exactly the 403 this ladder exists to climb
 # out of. They are not rungs; they are the hole.
 YT_NO_TOKEN_CLIENTS = frozenset({"android_vr", "tv", "web_embedded"})
+# What a failure was actually about, so the answer can match the question.
+# Switching extractor is the right move for some of these and a waste of the
+# next few minutes for others.
+FAILURE_EXTRACTOR = "extractor"        # this engine could not read the page
+FAILURE_NO_FORMATS = "no-formats"      # read it, nothing offered
+FAILURE_SABR = "sabr"                  # offered, but nothing fetchable
+FAILURE_CDN_403 = "cdn-403"            # a media URL refused after the fact
+FAILURE_BOT_CHECK = "bot-check"        # this client was refused as automated
+FAILURE_IP_BLOCKED = "ip-blocked"      # every client was, which is different
 # Each rung is either token-free or able to spend a session, and the ones that
 # can spend one come after the ones that need nothing.
 YT_CLIENT_LADDER = ("android_vr", "web_embedded,tv,default", "tv")
@@ -1411,6 +1420,9 @@ class SpotifyDownloader:
         self.use_proxy = Var(False)
         # Said once per run, not once per failed attempt.
         self._warned_split_route = False
+        # Which YouTube clients were turned away as automated this run. Empty
+        # is the honest starting point: nothing has been refused yet.
+        self._refused_clients = set()
         self.proxy_type = Var("http")  # http or socks5
         self.proxy_url = Var("http://127.0.0.1:10809")  # v2rayN HTTP default
         self.youtube_po_token = Var("")
@@ -1569,6 +1581,43 @@ class SpotifyDownloader:
         self.ui("failure", "YouTube served no downloadable stream for this video "
                            "(server-side streaming). Try another account, or without "
                            "signing in.")
+
+    def classify_youtube_refusal(self, spent_clients):
+        """Tell a refused client apart from a refused address.
+
+        A client that needs a proof-of-origin token being turned away says
+        something about that client. The clients that need nothing being turned
+        away says something about the connection they arrived on — and no
+        extractor changes where a request comes from, so the three engines
+        behind this one will each spend a minute discovering the same thing.
+
+        Uses what the ladder has already collected rather than making another
+        request: if every token-free client was refused, the address is the
+        common factor.
+        """
+        # A rung is a client list, not a client: "web_embedded,tv,default" is
+        # three of them and one string. Compared whole it matches nothing, and
+        # the address never gets recognised.
+        refused = set()
+        for rung in spent_clients:
+            refused.update(name.strip() for name in str(rung).split(","))
+        if refused >= YT_NO_TOKEN_CLIENTS:
+            return FAILURE_IP_BLOCKED
+        return FAILURE_BOT_CHECK
+
+    def report_ip_blocked(self):
+        """Say that it is the address, and stop pretending an engine can help."""
+        self._batch_log(
+            "Every client that needs nothing from YouTube was still refused as "
+            "automated — including the ones that ask for no token at all. That is "
+            "this connection being distrusted rather than an extractor failing, "
+            "and no other engine changes where a request comes from.", "error")
+        self._batch_log(
+            "What does change it: a signed-in session, a different network or VPN, "
+            "or waiting — these blocks are usually temporary. Dropping an exported "
+            "cookies.txt beside the app works when signing in here will not.",
+            "info")
+        self._flush_logs()
 
     def _warn_split_proxy_route(self):
         """Name the one cause of a YouTube 403 that no retry can fix.
@@ -4169,6 +4218,13 @@ class SpotifyDownloader:
                     extractor_args.append(f"visitor_data={visitor}")
                     extractor_args.append(f"po_token=web.gvs+{token}")
                     extractor_args.append(f"po_token=mweb.gvs+{token}")
+                # A browser fingerprint, on the one rung that claims to be a
+                # browser. yt-dlp's impersonation changes how the TLS handshake
+                # looks, which is worth something when the client we are
+                # claiming is mweb and worth nothing — or worse, a
+                # contradiction — when it is android_vr or tv.
+                if not IS_ANDROID:
+                    cmd += ["--impersonate", "chrome"]
                 provider = self.bgutil_args()
                 if provider:
                     cmd += provider
@@ -4190,6 +4246,7 @@ class SpotifyDownloader:
     def download_with_ytdlp(self, kind, url, output, quality, audio_only, limit):
         self.sync_proxy_env()
         self._warned_split_route = False
+        self._refused_clients = set()
         self._media_done = 0
         self._media_total = None
         self._stream_index = 0
@@ -4276,6 +4333,17 @@ class SpotifyDownloader:
                         plan.insert(0, nxt)
                         continue
                     self._flush_logs()
+                    if kind in YOUTUBE_KINDS and self.classify_youtube_refusal(
+                            self._refused_clients) == FAILURE_IP_BLOCKED:
+                        # Every engine after this one would send the same
+                        # request from the same address and be told the same
+                        # thing, several minutes more slowly.
+                        self.report_ip_blocked()
+                        self.ui("failure",
+                                "This connection is being refused by YouTube as "
+                                "automated, on every client. Sign in, change network, "
+                                "or try again later — another extractor cannot help.")
+                        return
                     if verdict == "challenge" and kind in YOUTUBE_KINDS:
                         if self._try_other_engines(
                                 kind, url, output, started, quality, audio_only):
@@ -4741,6 +4809,10 @@ class SpotifyDownloader:
             # Say nothing yet when the caller still has a move to make.
             if candidate and COOKIE_FAILURE.search(joined):
                 return "cookies"
+            if kind in YOUTUBE_KINDS and SIGNIN_DEMANDED.search(joined):
+                # Which client this was matters: the ladder uses it later to
+                # tell a refused client from a refused address.
+                self._refused_clients.add(clients or "default")
             if kind in YOUTUBE_KINDS and YOUTUBE_MEDIA_DENIED.search(joined):
                 self._warn_split_proxy_route()
                 return "challenge"
@@ -5818,6 +5890,16 @@ if __name__ == "__main__":
         # And the failure that message describes belongs to the ladder. Reading
         # it as "no video here" is what sent a perfectly recoverable run to the
         # give-up path with every rung unused.
+        # A refused client and a refused address need different answers, and
+        # the ladder's rungs are client lists rather than clients.
+        _probe = SpotifyDownloader.__new__(SpotifyDownloader)
+        assert SpotifyDownloader.classify_youtube_refusal(
+            _probe, {"android_vr"}) == FAILURE_BOT_CHECK
+        assert SpotifyDownloader.classify_youtube_refusal(
+            _probe, {"android_vr", "web_embedded,tv,default"}) == FAILURE_IP_BLOCKED
+        assert SpotifyDownloader.classify_youtube_refusal(
+            _probe, set()) == FAILURE_BOT_CHECK
+
         for _phrase in ("ERROR: [youtube] X: Requested format is not available.",
                         "ERROR: [youtube] X: no video formats found"):
             assert YOUTUBE_NO_FORMATS.search(_phrase), _phrase
