@@ -122,3 +122,16 @@ runs it under the Deno already shipped for yt-dlp's challenge solver, and
 Android runs the same script inside a WebView.
 
   https://github.com/LuanRT/YouTube.js
+
+--------------------------------------------------------------------------
+NewPipeExtractor
+--------------------------------------------------------------------------
+Copyright (c) Team NewPipe
+Licensed under the GNU General Public License v3.0.
+
+Used as a YouTube engine — second on Android, third on the desktop. It is
+called through its published API from a helper that runs as its own process,
+and none of its source is copied into this application. The Android build
+reaches the same library through the app's own JVM.
+
+  https://github.com/TeamNewPipe/NewPipeExtractor

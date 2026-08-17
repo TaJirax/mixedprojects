@@ -63,6 +63,12 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: "8.0.x" }
 
+      # The NewPipe engine is a JVM library, so the desktop carries a helper
+      # and a runtime trimmed with jlink. Without a JDK the build skips it and
+      # would ship one engine short without saying so.
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+
       - name: Install Python dependencies
         working-directory: spoty
         run: |

@@ -39,8 +39,14 @@ internal static class Program
         try
         {
             var options = CommandLine.Parse(args);
-            var http = BuildHttpClient(options);
-            var youtube = new YoutubeClient(http);
+            // With nothing to configure, use the library's own client exactly
+            // as YoutubeDownloader does. Its defaults are part of what makes a
+            // request look like the one YouTube expects, and replacing them
+            // with a hand-built handler for no reason is how an engine that
+            // works upstream stops working here.
+            var youtube = options.Proxy is null && options.Cookies.Count == 0
+                ? new YoutubeClient()
+                : new YoutubeClient(BuildHttpClient(options));
 
             return options.Command switch
             {

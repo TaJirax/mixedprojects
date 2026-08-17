@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.3.0"
+APP_VERSION = "7.4.0"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -409,8 +409,8 @@ if IS_ANDROID:
     })
 else:
     ENGINES.update({
-        "youtube": ("youtube-explode", "youtube-js"),
-        "ytmusic": ("youtube-explode", "youtube-js"),
+        "youtube": ("youtube-explode", "newpipe", "youtube-js"),
+        "ytmusic": ("youtube-explode", "newpipe", "youtube-js"),
     })
     ENGINES["general"] = ("youtube-explode",) + ENGINES["general"]
 
@@ -3616,19 +3616,46 @@ class SpotifyDownloader:
         return self._fetch_resolved_streams(payload, url, output, quality, audio_only)
 
     def _download_with_newpipe(self, url, output, quality, audio_only):
-        """Resolve with Android's NewPipeExtractor adapter and fetch via FFmpeg."""
-        if NEWPIPE_RESOLVER is None:
-            raise RuntimeError("NewPipeExtractor is not available in this build.")
+        """Resolve with NewPipeExtractor and fetch with the app's downloader.
 
+        Android reaches the extractor through the shell, because that shell is
+        already a JVM. The desktop runs the same library in a small helper of
+        its own, with a runtime beside it, and both answer in the same JSON —
+        so everything from here down is shared rather than written twice.
+        """
         started = time.time()
         self.log_engine_attempt("NewPipe", "resolving", url, quality)
-        payload = NEWPIPE_RESOLVER(url, self.configured_proxy())
+        if NEWPIPE_RESOLVER is not None:
+            payload = NEWPIPE_RESOLVER(url, self.configured_proxy())
+        else:
+            payload = self._resolve_with_newpipe_jvm(url)
         if not isinstance(payload, dict):
             raise RuntimeError("NewPipeExtractor returned an invalid response.")
         self.log_engine_attempt(
             "NewPipe", "manifest resolved", url, quality,
             f"{len(payload.get('streams') or [])} streams", started)
         return self._fetch_resolved_streams(payload, url, output, quality, audio_only)
+
+    def _resolve_with_newpipe_jvm(self, url):
+        """Run the desktop NewPipe helper and read its one line of JSON."""
+        jar = bundled_tool("blueknight-newpipe.jar")
+        if not jar:
+            raise RuntimeError("The NewPipe engine is not part of this build.")
+        java = (bundled_tool(f"java{EXE}") or bundled_tool(f"jre/bin/java{EXE}")
+                or shutil.which("java"))
+        if not java:
+            raise RuntimeError("The NewPipe engine has no Java runtime to run in.")
+
+        cmd = [java, "-jar", str(jar), str(url)]
+        proxy = self.configured_proxy()
+        if proxy:
+            cmd.append(proxy)
+        result = pyshell.run(cmd, timeout=120)
+        for line in reversed((result.stdout or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                return json.loads(line)
+        raise RuntimeError("The NewPipe engine returned nothing readable.")
 
     def _fetch_resolved_streams(self, payload, url, output, quality, audio_only):
         """Fetch streams that some engine has already resolved.
@@ -5979,11 +6006,10 @@ if __name__ == "__main__":
             # The desktop's second engine is the .NET one, and NewPipe is not
             # available here: it is a JVM library and this package carries no
             # JVM. yt-dlp is first on both, and is not in this table at all.
-            assert ENGINES["youtube"] == ("youtube-explode", "youtube-js")
-            assert ENGINES["ytmusic"] == ("youtube-explode", "youtube-js")
+            assert ENGINES["youtube"] == ("youtube-explode", "newpipe", "youtube-js")
+            assert ENGINES["ytmusic"] == ("youtube-explode", "newpipe", "youtube-js")
             assert ENGINES["general"][0] == "youtube-explode"
-            assert not any("newpipe" in engines for engines in ENGINES.values()), (
-                "NewPipeExtractor is Android-only")
+
         assert "gallery-dl" in ENGINES["x"] and "direct" in ENGINES["general"]
         assert ("streamlink", "html5") == tuple(
             engine for engine in ENGINES["general"]

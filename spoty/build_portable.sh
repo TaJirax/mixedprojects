@@ -167,6 +167,22 @@ if [ ! -f "$YTJS_BUNDLE" ]; then
     curl --fail --location --retry 3 -o "$YTJS_BUNDLE"         "https://esm.sh/youtubei.js@$YTJS_VERSION/denonext/youtubei.bundle.mjs"
 fi
 PYI_ARGS+=(--add-data "$ROOT/engines/youtubejs:tools")
+
+# The NewPipe engine and a runtime to run it in. Skipped without a JDK, like
+# the .NET engine is without its SDK: a clone still builds, one engine shorter.
+NEWPIPE_JAR="$VENDOR/blueknight-newpipe.jar"
+if [ ! -f "$NEWPIPE_JAR" ] && command -v java >/dev/null 2>&1; then
+    echo "  building the NewPipe engine"
+    ( cd "$ROOT/jvm/newpipe" && ./gradlew --no-daemon -q shadowJar )         && cp "$ROOT/jvm/newpipe/build/libs/blueknight-newpipe.jar" "$NEWPIPE_JAR"
+fi
+if [ -f "$NEWPIPE_JAR" ]; then
+    PYI_ARGS+=(--add-data "$NEWPIPE_JAR:tools")
+    if [ ! -d "$VENDOR/jre" ] && command -v jlink >/dev/null 2>&1; then
+        echo "  building a Java runtime for it"
+        jlink --add-modules java.base,java.net.http,java.naming,jdk.crypto.ec               --strip-debug --no-header-files --no-man-pages --compress=2               --output "$VENDOR/jre"
+    fi
+    [ -d "$VENDOR/jre" ] && PYI_ARGS+=(--add-data "$VENDOR/jre:tools/jre")
+fi
 if [ "$OS_TAG" = mac ]; then
     # .icns is the only icon format a bundle accepts; skip rather than fail
     # the build when only the Windows .ico has been checked in.

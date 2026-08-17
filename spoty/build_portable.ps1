@@ -73,6 +73,29 @@ if (-not (Test-Path -LiteralPath $YtjsBundle)) {
 }
 $ExtraArgs += @("--add-data", "$YtjsDir;tools")
 
+# The NewPipe engine and a runtime for it. Skipped without a JDK, like the
+# .NET engine is without its SDK: a clone still builds, one engine shorter.
+$NewPipeJar = Join-Path $Vendor "blueknight-newpipe.jar"
+if (-not (Test-Path -LiteralPath $NewPipeJar) -and (Get-Command java -ErrorAction SilentlyContinue)) {
+    Write-Host "  building the NewPipe engine"
+    Push-Location (Join-Path $Root "jvm/newpipe")
+    & ./gradlew.bat --no-daemon -q shadowJar
+    Pop-Location
+    $Built = Join-Path $Root "jvm/newpipe/build/libs/blueknight-newpipe.jar"
+    if (Test-Path -LiteralPath $Built) { Copy-Item $Built $NewPipeJar -Force }
+}
+if (Test-Path -LiteralPath $NewPipeJar) {
+    $ExtraArgs += @("--add-data", "$NewPipeJar;tools")
+    $Jre = Join-Path $Vendor "jre"
+    if (-not (Test-Path -LiteralPath $Jre) -and (Get-Command jlink -ErrorAction SilentlyContinue)) {
+        Write-Host "  building a Java runtime for it"
+        jlink --add-modules java.base,java.net.http,java.naming,jdk.crypto.ec `
+              --strip-debug --no-header-files --no-man-pages --compress=2 `
+              --output $Jre
+    }
+    if (Test-Path -LiteralPath $Jre) { $ExtraArgs += @("--add-data", "$Jre;tools/jre") }
+}
+
 if (-not (Test-Path -LiteralPath $Deno)) {
     $DenoZip = Join-Path $Vendor "deno.zip"
     Get-Tool "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" $DenoZip
