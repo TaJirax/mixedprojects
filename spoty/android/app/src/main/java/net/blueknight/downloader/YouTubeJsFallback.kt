@@ -38,13 +38,22 @@ object YouTubeJsFallback {
      * this waits for the answer, which is the same shape the clipboard and
      * cookie bridges already use.
      */
+    fun mintToken(context: Context, proxyUrl: String): String =
+        run(context, proxyUrl, tokenPage())
+
     fun resolve(context: Context, url: String, proxyUrl: String): String {
+        val videoId = videoIdOf(url)
+            ?: return error("that is not a YouTube video link")
+        return run(context, proxyUrl, page(videoId))
+    }
+
+    private fun run(context: Context, proxyUrl: String, document: String): String {
         val answer = arrayOf<String?>(null)
         val done = CountDownLatch(1)
 
         Handler(Looper.getMainLooper()).post {
             try {
-                start(context, url, proxyUrl) { result ->
+                start(context, document) { result ->
                     if (answer[0] == null) {
                         answer[0] = result
                         done.countDown()
@@ -63,15 +72,17 @@ object YouTubeJsFallback {
     }
 
     private fun start(
-        context: Context, url: String, proxyUrl: String, onResult: (String) -> Unit
+        context: Context, document: String, onResult: (String) -> Unit
     ) {
-        val videoId = videoIdOf(url)
-            ?: return onResult(error("that is not a YouTube video link"))
-
         val library = context.assets.open("engines/youtubejs/youtubei.bundle.mjs")
             .bufferedReader().use { it.readText() }
         val engine = context.assets.open("engines/youtubejs/engine.mjs")
             .bufferedReader().use { it.readText() }
+        fun asset(name: String) = context.assets
+            .open("engines/youtubejs/$name").bufferedReader().use { it.readText() }
+        val potoken = asset("potoken.mjs")
+        val webpo = asset("bgutils-webpo.mjs")
+        val botguard = asset("bgutils-botguard.mjs")
 
         @Suppress("SetJavaScriptEnabled")
         val view = WebView(context).apply {
@@ -111,9 +122,12 @@ object YouTubeJsFallback {
                 // separate module scripts do not share a scope, and the engine
                 // has to be able to import the library by name.
                 val served: Pair<String, String>? = when (request.url.toString()) {
-                    origin + PAGE -> "text/html" to page(videoId)
+                    origin + PAGE -> "text/html" to document
                     origin + LIB -> "text/javascript" to library
                     origin + ENGINE -> "text/javascript" to engine
+                    origin + POTOKEN -> "text/javascript" to potoken
+                    origin + WEBPO -> "text/javascript" to webpo
+                    origin + BOTGUARD -> "text/javascript" to botguard
                     else -> null
                 }
                 return served?.let { (mime, body) ->
@@ -134,6 +148,33 @@ object YouTubeJsFallback {
     private const val PAGE = "blueknight-engine"
     private const val LIB = "blueknight-lib.mjs"
     private const val ENGINE = "blueknight-engine.mjs"
+    private const val POTOKEN = "blueknight-potoken.mjs"
+    private const val WEBPO = "blueknight-webpo.mjs"
+    private const val BOTGUARD = "blueknight-botguard.mjs"
+
+    /**
+     * The page that mints a token.
+     *
+     * BotGuard is passed here and not on the desktop, because this host has
+     * the browser it needs; when its challenge fails the minter falls back to
+     * the cold-start path on its own.
+     */
+    private fun tokenPage(): String = """
+        <!doctype html><meta charset="utf-8"><body><script type="module">
+        import { Innertube } from "./$LIB";
+        import * as webpo from "./$WEBPO";
+        import * as botguard from "./$BOTGUARD";
+        import { mint } from "./$POTOKEN";
+        try {
+          BlueKnightYouTubeJs.deliver(
+            JSON.stringify(await mint(Innertube, webpo, botguard)));
+        } catch (e) {
+          BlueKnightYouTubeJs.deliver(JSON.stringify({
+            error: String((e && e.message) || e).slice(0, 200),
+          }));
+        }
+        </script></body>
+    """.trimIndent()
 
     /**
      * The document the engine runs in.

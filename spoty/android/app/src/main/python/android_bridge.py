@@ -61,6 +61,9 @@ def boot(activity):
     # The same YouTube.js script the desktop runs under Deno, hosted here by a
     # WebView instead. The engine sees one callback and cannot tell which.
     engine.YOUTUBEJS_RESOLVER = resolve_with_youtube_js
+    # The token goes to yt-dlp, not to a fallback: it is the primary engine
+    # that gets refused as a bot, and this is what that refusal asks for.
+    engine.POTOKEN_MINTER = mint_po_token
     # The desktop Api reaches for a pywebview window to open dialogs with.
     # Those methods are intercepted in Kotlin before they ever get here, so the
     # attribute stays None and any missed path fails loudly rather than silently.
@@ -81,6 +84,13 @@ def resolve_with_youtube_js(url, proxy_url=None):
         raise RuntimeError("The Android extractor bridge is not ready.")
     payload = _activity.resolveWithYouTubeJs(str(url), str(proxy_url or ""))
     return json.loads(str(payload))
+
+
+def mint_po_token(proxy_url=None):
+    """Mint a proof-of-origin token in the WebView, for yt-dlp to use."""
+    if _activity is None:
+        raise RuntimeError("The Android extractor bridge is not ready.")
+    return json.loads(str(_activity.mintPoToken(str(proxy_url or ""))))
 
 
 def _start_signed_out():

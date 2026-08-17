@@ -59,6 +59,10 @@ class MainActivity : AppCompatActivity() {
     fun resolveWithYouTubeJs(url: String, proxyUrl: String): String =
         YouTubeJsFallback.resolve(applicationContext, url, proxyUrl)
 
+    /** A proof-of-origin token for yt-dlp, minted in a WebView. */
+    fun mintPoToken(proxyUrl: String): String =
+        YouTubeJsFallback.mintToken(applicationContext, proxyUrl)
+
     private val pickDownloadFolder = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->

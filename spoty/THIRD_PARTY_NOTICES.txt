@@ -135,3 +135,17 @@ and none of its source is copied into this application. The Android build
 reaches the same library through the app's own JVM.
 
   https://github.com/TeamNewPipe/NewPipeExtractor
+
+--------------------------------------------------------------------------
+BgUtils (bgutils-js)
+--------------------------------------------------------------------------
+Copyright (c) LuanRT
+Licensed under the MIT License.
+
+Used to mint YouTube proof-of-origin tokens. Two small published ES modules
+are vendored unmodified — the BotGuard client and the WebPO minter — because
+they are a few kilobytes and a build should not need the network for them.
+They are handed to yt-dlp, the primary engine, rather than used by a fallback:
+the refusal a token answers happens on the first attempt, not the third.
+
+  https://github.com/LuanRT/BgUtils

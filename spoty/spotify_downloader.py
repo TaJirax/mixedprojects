@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.4.2"
+APP_VERSION = "7.5.0"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -448,6 +448,9 @@ NEWPIPE_RESOLVER = None
 # Installed by the Android shell, which runs the YouTube.js engine in a WebView
 # instead of under Deno. Desktop leaves this None and spawns Deno itself.
 YOUTUBEJS_RESOLVER = None
+# Installed by the Android shell, which mints tokens in a WebView. Desktop
+# leaves this None and runs the same script under Deno.
+POTOKEN_MINTER = None
 
 
 def youtube_video_id(url):
@@ -3552,6 +3555,47 @@ class SpotifyDownloader:
                            if reason != "unavailable"
                            else failure or "YouTube says this video is unavailable")
 
+    def mint_po_token(self):
+        """A proof-of-origin token for yt-dlp, or None. Cached for the run.
+
+        This is the only piece of the fallback machinery that helps the engine
+        that actually matters. yt-dlp is refused as a bot before any fallback
+        gets a turn, and a token is what that refusal asks for — so minting one
+        and handing it over fixes the first attempt rather than the third.
+
+        Cheap enough to try and useless to insist on: a failure here leaves the
+        ladder exactly as it was.
+        """
+        if getattr(self, "_po_token", "unset") != "unset":
+            return self._po_token
+        self._po_token = None
+        try:
+            if POTOKEN_MINTER is not None:
+                minted = POTOKEN_MINTER(self.configured_proxy())
+            else:
+                runtime_name, runtime = self.js_runtime()
+                script = bundled_tool("potoken_main.mjs")
+                if runtime_name != "deno" or not runtime or not script:
+                    return None
+                cmd = [runtime, "run", "--allow-net", "--allow-env", "--no-remote",
+                       "--no-check", "--quiet", str(script)]
+                proxy = self.configured_proxy()
+                if proxy:
+                    cmd.append(proxy)
+                result = pyshell.run(cmd, timeout=90)
+                minted = next((json.loads(line) for line in
+                               reversed((result.stdout or "").splitlines())
+                               if line.strip().startswith("{")), None)
+            if minted and minted.get("poToken") and minted.get("visitorData"):
+                self._po_token = (minted["visitorData"], minted["poToken"])
+                self._batch_log(
+                    f"Minted a proof-of-origin token ({minted.get('method', 'ok')}).",
+                    "info")
+        except Exception as failure:
+            self._batch_log(f"No proof-of-origin token this run: "
+                            f"{str(failure)[:120]}", "info")
+        return self._po_token
+
     def _resolve_with_youtube_js(self, url):
         """Ask the YouTube.js engine what this video can be fetched as.
 
@@ -4117,6 +4161,14 @@ class SpotifyDownloader:
             # already knows how to climb out of.
             extractor_args.append("formats=missing_pot")
             if po_token:
+                minted = self.mint_po_token()
+                if minted:
+                    visitor, token = minted
+                    # gvs is the context that gates the media URL itself, which
+                    # is the one that comes back 403 without it.
+                    extractor_args.append(f"visitor_data={visitor}")
+                    extractor_args.append(f"po_token=web.gvs+{token}")
+                    extractor_args.append(f"po_token=mweb.gvs+{token}")
                 provider = self.bgutil_args()
                 if provider:
                     cmd += provider
