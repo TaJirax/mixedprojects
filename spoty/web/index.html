@@ -1696,6 +1696,52 @@ html.android .nav button .dot { display: none; }
   .sheet.closing .sheet-body, .sheet.closing .sheet-scrim { animation: none; }
   * { transition-duration: .01ms !important; }
 }
+/* The download's own card: a thumbnail where one exists, the title, and what
+   is happening to it. Sits in the run bar on both layouts, so there is one of
+   it rather than a phone one and a desktop one. */
+.preview {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin: 10px 0 2px;
+  padding: 8px;
+  border: 1px solid var(--edge-2);
+  border-radius: var(--r-md);
+  background: var(--glass);
+}
+.preview[hidden] { display: none; }
+.preview-art {
+  flex: none;
+  width: 64px;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--edge-2);
+  /* Its own colour until the image lands, so the card does not flash white. */
+  background: linear-gradient(140deg,
+      color-mix(in srgb, var(--spotify) 26%, var(--pane-solid)),
+      var(--pane-solid)) center / cover no-repeat;
+}
+.preview-text { min-width: 0; }
+.preview-title {
+  font-family: var(--font-display);
+  font-size: 12.5px; font-weight: 600; line-height: 1.3;
+  color: var(--ink);
+  /* Two lines then an ellipsis: titles are long and this is not the place. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.preview-sub {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+@media (max-width: 760px) {
+  .preview { margin: 8px 0 2px; padding: 7px; gap: 9px; }
+  .preview-art { width: 56px; }
+  .preview-title { font-size: 12px; }
+}
+
 .gate-bar::after {
   content: ""; display: block; height: 100%; width: 34%;
   background: var(--signal);
@@ -2300,6 +2346,16 @@ html.android .nav button .dot { display: none; }
         <div class="status-meta" id="status-meta">nothing downloading</div>
       </div>
 
+      <!-- What is being fetched, while it is being fetched. Hidden until there
+           is something to show, so an idle app is not a row of placeholders. -->
+      <div class="preview" id="preview" hidden>
+        <div class="preview-art" id="preview-art" aria-hidden="true"></div>
+        <div class="preview-text">
+          <div class="preview-title" id="preview-title"></div>
+          <div class="preview-sub" id="preview-sub"></div>
+        </div>
+      </div>
+
       <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
       <!-- Where the file is going: the question every download prompts. -->
       <div class="run-path" id="run-path"></div>
@@ -2503,6 +2559,9 @@ function syncPhoneProgress() {
   const activity = runbar.querySelector(".console-head");
   const parts = [
     document.querySelector(".status-block"),
+    // The card travels with the progress it describes. Left behind, it ends up
+    // beside the activity log while the bar it belongs to is at the top.
+    document.getElementById("preview"),
     runbar.querySelector(".bar") || progress.querySelector(".bar"),
     $("run-path"),
     document.querySelector(".run-stats"),
@@ -2624,12 +2683,74 @@ window.blueknightBack = function () {
 
 /* A link shared into the app from anywhere else lands in the open source's
    field, ready to download — the shell calls this. */
-window.blueknightShared = function (url) {
+/* Which source a link belongs to. The same domains the engine matches on, in
+   the order that resolves the overlaps: music.youtube.com is YouTube Music
+   rather than YouTube, and both are checked before the catch-all. */
+const LINK_SOURCES = [
+  ["ytmusic",    /^https?:\/\/music\.youtube\.com\//i],
+  ["download",   /^https?:\/\/(?:[\w-]+\.)*(?:open\.)?spotify\.com\//i],
+  ["youtube",    /^https?:\/\/(?:[\w-]+\.)*(?:youtube\.com|youtu\.be)\//i],
+  ["tiktok",     /^https?:\/\/(?:[\w-]+\.)*tiktok\.com\//i],
+  ["instagram",  /^https?:\/\/(?:[\w-]+\.)*instagram\.com\//i],
+  ["soundcloud", /^https?:\/\/(?:[\w-]+\.)*soundcloud\.com\//i],
+  ["x",          /^https?:\/\/(?:[\w-]+\.)*(?:x\.com|twitter\.com)\//i],
+];
+
+/* The card: what is coming down, while it comes down.
+
+   The artwork is only ever YouTube's, and only because it costs nothing —
+   the thumbnail address is derivable from the video id, so there is no extra
+   request to work out what to show. Every other source keeps the tinted panel,
+   which is honest: the app does not know the picture and will not fetch one to
+   find out. */
+function showPreview(title, sub, url) {
+  const card = $("preview");
+  if (!card) return;
+  if (!title) { card.hidden = true; return; }
+  $("preview-title").textContent = title;
+  $("preview-sub").textContent = sub || "";
+  const art = $("preview-art");
+  const id = /(?:v=|youtu\.be\/|\/shorts\/|\/embed\/)([A-Za-z0-9_-]{11})/.exec(url || "");
+  art.style.backgroundImage =
+    id ? `url("https://i.ytimg.com/vi/${id[1]}/mqdefault.jpg")` : "";
+  card.hidden = false;
+}
+
+function hidePreview() {
+  const card = $("preview");
+  if (card) { card.hidden = true; $("preview-art").style.backgroundImage = ""; }
+}
+
+function sourceForLink(url) {
+  const text = String(url || "").trim();
+  for (const [page, pattern] of LINK_SOURCES) {
+    if (pattern.test(text)) return page;
+  }
+  return /^https?:\/\//i.test(text) ? "general" : null;
+}
+
+/* Put a link where it belongs, whichever page is open.
+
+   Pasting a TikTok link into the Spotify box was a thing a person could do and
+   then be told the link was wrong, when the app knew perfectly well what it
+   was. The page follows the link instead. */
+function routeLink(url, { focus = false } = {}) {
+  const page = sourceForLink(url);
+  if (!page) return false;
+  if (document.querySelector(".page.on")?.dataset.page !== page) {
+    closeSheet();
+    show(page);
+  }
   const field = document.querySelector(".page.on .paste-row input");
-  if (!field) return;
+  if (!field) return false;
   field.value = url;
   field.dispatchEvent(new Event("input", { bubbles: true }));
-  field.focus();
+  if (focus) field.focus();
+  return true;
+}
+
+window.blueknightShared = function (url) {
+  routeLink(url, { focus: true });
 };
 
 function show(id) {
@@ -2797,6 +2918,7 @@ function resetRun() {
   setProgress(0);
   $("status-word").textContent = "Ready";
   $("status-meta").textContent = "nothing downloading";
+  hidePreview();
   $("stat-count").textContent = "—";
   $("run-path").textContent = "";
 }
@@ -2885,7 +3007,12 @@ function handle(ev) {
       state.itemDone = Math.max(0, count - 1);
       state.itemTotal = total || state.itemTotal;
       state.stream = 0;
-      if (name) $("status-meta").textContent = name;
+      if (name) {
+        $("status-meta").textContent = name;
+        showPreview(name, state.itemTotal > 1
+          ? `${count} of ${state.itemTotal} · ${LABELS[state.source] || ""}`
+          : (LABELS[state.source] || ""), state.lastUrl);
+      }
       $("stat-count").textContent = state.itemTotal
         ? count + " / " + state.itemTotal : String(count);
       setProgress(jobPercent(0));
@@ -3049,8 +3176,29 @@ function wire() {
   document.querySelectorAll("[data-paste]").forEach(b => {
     b.onclick = async () => {
       const text = await api().clipboard();
-      if (text) { $(b.dataset.paste).value = text; } else { toast("Clipboard has no link.", "err"); }
+      if (!text) { toast("Clipboard has no link.", "err"); return; }
+      // A link knows which page it belongs to, so pasting a TikTok link into
+      // the Spotify box moves to TikTok rather than reporting a bad link.
+      const moved = sourceForLink(text);
+      if (moved && moved !== document.querySelector(".page.on")?.dataset.page) {
+        routeLink(text);
+        toast(`That is a ${(PAGES.find(([p]) => p === moved) || [, moved])[1]} link.`, "ok");
+      } else {
+        $(b.dataset.paste).value = text;
+      }
     };
+  });
+
+  // Typing or dropping a link in also follows it, once the link looks whole.
+  document.querySelectorAll(".paste-row input").forEach(field => {
+    field.addEventListener("paste", event => {
+      const text = (event.clipboardData || window.clipboardData)?.getData("text");
+      const moved = sourceForLink(text);
+      if (!moved || moved === document.querySelector(".page.on")?.dataset.page) return;
+      event.preventDefault();
+      routeLink(text.trim());
+      toast(`That is a ${(PAGES.find(([p]) => p === moved) || [, moved])[1]} link.`, "ok");
+    });
   });
 
   const startMedia = (kind, urlId, limitId, quality, audio) => {
@@ -3060,6 +3208,10 @@ function wire() {
     setProgress(0);
     state.itemTotal = 0; state.itemDone = 0; state.stream = 0;
     state.title = "";
+    // Kept so the card can show the thumbnail before the engine has said what
+    // the title is — the link is the only thing known at this point.
+    state.lastUrl = url;
+    showPreview("Fetching details…", LABELS[state.source] || "", url);
     $("status-word").textContent = "Downloading";
     $("status-meta").textContent = "reading the link…";
     const limit = limitId ? parseInt($(limitId).value.trim(), 10) : NaN;
