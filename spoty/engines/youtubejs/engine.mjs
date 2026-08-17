@@ -44,6 +44,12 @@ export async function resolve(Innertube, ClientType, videoId, options = {}) {
 
   for (const name of CLIENTS) {
     if (!(name in ClientType)) continue;
+    // Space them out. Asking six times in a second is what a client that is
+    // not a person looks like, and the answer to being told so is not to ask
+    // faster. Skipped before the first, which has nothing to wait behind.
+    if (attempts.length > 0) {
+      await new Promise((done) => setTimeout(done, 1500));
+    }
     try {
       const youtube = await Innertube.create({
         retrieve_player: true,

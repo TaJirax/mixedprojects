@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.7.0"
+APP_VERSION = "7.7.1"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -235,6 +235,9 @@ COOKIE_ON_DEMAND = {"youtube", "ytmusic", "tiktok", "soundcloud", "x", "general"
 # one. android and ios pass the flag and still need a GVS or player token to
 # fetch a stream, which arrives as exactly the 403 this ladder exists to climb
 # out of. They are not rungs; they are the hole.
+# Between one engine and the next. Long enough to not read as a burst, short
+# enough that nobody watching a failed download counts it.
+ENGINE_SPACING_SECONDS = 3.0
 YT_NO_TOKEN_CLIENTS = frozenset({"android_vr", "tv", "web_embedded"})
 # What a failure was actually about, so the answer can match the question.
 # Switching extractor is the right move for some of these and a waste of the
@@ -3854,9 +3857,18 @@ class SpotifyDownloader:
         extractor for, is not a failure to report — it is a job for a different
         engine.
         """
-        for engine in ENGINES.get(kind, ()):
+        for index, engine in enumerate(ENGINES.get(kind, ())):
             if not self.is_downloading:
                 return False
+            # Each engine is a fresh burst of requests at a site that has just
+            # refused one. Pacing them costs a few seconds on a run that was
+            # going to be slow anyway, and stops the cascade from being the
+            # reason the next attempt is refused.
+            if index:
+                for _ in range(int(ENGINE_SPACING_SECONDS * 4)):
+                    if not self.is_downloading:
+                        return False
+                    time.sleep(0.25)
             try:
                 if engine == "youtube-explode":
                     self._batch_log(
