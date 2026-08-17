@@ -16,6 +16,39 @@ import java.io.File
  */
 class DownloaderApp : Application() {
 
+    /**
+     * The first place that can actually hold a download.
+     *
+     * External storage first, because a file manager can see it and it survives
+     * an update. Private storage after, which is always ours and always
+     * writable but hidden. The cache last, which the system may reclaim — a
+     * download that might be deleted still beats one that cannot start.
+     */
+    private fun usableHome(): File {
+        val candidates = listOfNotNull(
+            runCatching { getExternalFilesDir(null) }.getOrNull(),
+            filesDir,
+            cacheDir,
+        )
+        for (candidate in candidates) {
+            if (canHoldDownloads(candidate)) return candidate
+            android.util.Log.w("BlueKnight", "unusable download folder: $candidate")
+        }
+        // Nothing proved itself. filesDir is the one the system guarantees, so
+        // it is what the failure is reported against rather than a null.
+        return filesDir
+    }
+
+    /** Create it, write a byte, read the byte back, remove it. */
+    private fun canHoldDownloads(folder: File): Boolean = runCatching {
+        if (!folder.isDirectory && !folder.mkdirs()) return false
+        val probe = File(folder, ".blueknight-write-probe")
+        probe.writeBytes(byteArrayOf(1))
+        val ok = probe.readBytes().size == 1
+        probe.delete()
+        ok
+    }.getOrDefault(false)
+
     override fun onCreate() {
         super.onCreate()
         if (!Python.isStarted()) Python.start(AndroidPlatform(this))
@@ -27,7 +60,13 @@ class DownloaderApp : Application() {
         // Downloads land on shared external storage so a file manager can see
         // them, and survive the app being updated. This path needs no runtime
         // permission on any API level, unlike the public Downloads folder.
-        val home = getExternalFilesDir(null) ?: filesDir
+        //
+        // Chosen by proving it rather than assuming it. getExternalFilesDir can
+        // hand back a path on a volume that is not mounted, is full, or that a
+        // particular vendor's storage layer will not create under — and every
+        // one of those looks the same later: a download that fails on its first
+        // write with an error about a file rather than about storage.
+        val home = usableHome()
         environ.callAttr("__setitem__", "BLUEKNIGHT_HOME", home.absolutePath)
         environ.callAttr("__setitem__", "BLUEKNIGHT_DATA", File(filesDir, "data").absolutePath)
 

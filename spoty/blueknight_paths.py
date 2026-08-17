@@ -147,9 +147,27 @@ def download_root(base=None):
 
 
 def download_dir(source, base=None):
-    """Per-source folder, created on demand. source: a key of SOURCES."""
+    """Per-source folder, created on demand. source: a key of SOURCES.
+
+    A folder that cannot be made is the end of the download, so it says which
+    folder and why rather than surfacing an errno the person reading it cannot
+    act on. The shell has already proved the root writable before the engine
+    starts; this catches the rest — a volume that filled up or was unmounted
+    between then and now.
+    """
     folder = download_root(base) / SOURCES[source]
-    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as failure:
+        raise RuntimeError(
+            f"The download folder could not be created: {folder}. "
+            f"{failure.strerror or failure}. Check there is free space, and "
+            f"that the folder is on storage that is still attached."
+        ) from failure
+    if not os.access(folder, os.W_OK):
+        raise RuntimeError(
+            f"The download folder exists but cannot be written to: {folder}. "
+            f"Pick a different folder in the app, or free some space.")
     return folder
 
 
@@ -446,6 +464,18 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmp:
         got = {name: download_dir(name, tmp) for name in SOURCES}
         assert all(p.is_dir() for p in got.values()), got
+
+        # A folder that cannot be made ends the download, so it has to say
+        # which one and why rather than leaking an errno nobody can act on.
+        blocked = os.path.join(tmp, "a-file-not-a-folder")
+        open(blocked, "w").close()
+        try:
+            download_dir("youtube", blocked)
+        except RuntimeError as failure:
+            assert "could not be created" in str(failure), failure
+            assert "a-file-not-a-folder" in str(failure), failure
+        else:
+            raise AssertionError("a blocked download folder reported success")
         assert len({str(p) for p in got.values()}) == len(SOURCES), got
         assert got["instagram"].parent == Path(tmp), got["instagram"]
     assert download_root().name == ROOT_NAME

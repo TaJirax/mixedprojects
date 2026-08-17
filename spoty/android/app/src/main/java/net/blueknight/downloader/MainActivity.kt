@@ -149,8 +149,23 @@ class MainActivity : AppCompatActivity() {
         }
         setContentView(web, FrameLayout.LayoutParams(-1, -1))
 
+        // Notifications carry the download's progress, and on API 33+ that has
+        // to be asked for.
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+        // The storage grant the manifest declares for API 28 and below was
+        // never actually requested, so on exactly the devices it exists for it
+        // did nothing. The app's own external folder does not need it, but
+        // where a vendor's storage layer refuses that folder this is what makes
+        // the difference between falling back to hidden private storage and
+        // writing somewhere a file manager can see. Asked for once, and refusal
+        // costs nothing because the fallback already handles it.
+        if (Build.VERSION.SDK_INT <= 28 &&
+            checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 2)
         }
 
         web.loadUrl("file:///android_asset/web/index.html")
