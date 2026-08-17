@@ -51,6 +51,7 @@ jobs:
           - { os: ubuntu-24.04,     target: linux-x64 }
           - { os: macos-14,         target: macos-arm64 }  # Apple Silicon
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -81,6 +82,13 @@ jobs:
       # pip would otherwise see Ubuntu's protected system copy of itself.
       - name: Install WebKitGTK
         if: startsWith(matrix.os, 'ubuntu')
+        # A package step that hangs should fail, not hold a runner for hours.
+        # apt will wait on a prompt or a stalled mirror indefinitely otherwise,
+        # and the first symptom is a build that never finishes rather than one
+        # that says why.
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
