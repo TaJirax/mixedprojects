@@ -1736,7 +1736,8 @@ html.android .nav button .dot { display: none; }
     <div class="mbar-eq" aria-hidden="true">
       <div class="eq"><i></i><i></i><i></i><i></i><i></i><i></i></div>
     </div>
-    <button class="mbar-btn" id="mbar-more" aria-label="Settings and tools">
+    <button class="mbar-btn" id="mbar-more" aria-haspopup="dialog"
+            aria-label="Choose a source">
       <span></span><span></span><span></span>
     </button>
   </header>
@@ -2583,16 +2584,43 @@ function setupPhone() {
     decoratePages();
     $("mbar-icon").style.setProperty("--section-tint", sectionTint("download"));
     $("mbar-icon").innerHTML = sectionSvg("download");
+    // Open on the picker. A downloader's first question is which source, and
+    // answering it with a tap beats landing on one of eleven pages and having
+    // to find the way to the other ten. Back closes it onto Spotify, which is
+    // where the app used to start.
+    openSheet();
   } else if (foot) {
     $("sheet-foot").appendChild(foot);
   }
   $("mbar-source").onclick = openSheet;
   $("sheet-scrim").onclick = closeSheet;
   $("sheet-close").onclick = closeSheet;
-  $("mbar-more").onclick = () => { closeSheet(); show("settings"); };
+  // Both open the picker. Settings and Connection are tiles inside it, so
+  // nothing became unreachable — the button that used to go straight to one
+  // page now goes to all of them.
+  $("mbar-more").onclick = openSheet;
 }
 if (PHONE.addEventListener) PHONE.addEventListener("change", setupPhone);
 else PHONE.addListener(setupPhone);
+
+/* What Back means inside the app, answered by the page because the page is
+   what knows. Returns true when it did something, so the shell can tell the
+   difference between "handled" and "there is nothing left, close the app".
+
+   The order is what a person would expect to undo: the sheet if it is open,
+   then a source that is not the one the app starts on, then nothing. */
+window.blueknightBack = function () {
+  if (!$("sheet").hidden) {
+    closeSheet();
+    return true;
+  }
+  const current = document.querySelector(".page.on")?.dataset.page;
+  if (current && current !== PAGES[0][0]) {
+    show(PAGES[0][0]);
+    return true;
+  }
+  return false;
+};
 
 /* A link shared into the app from anywhere else lands in the open source's
    field, ready to download — the shell calls this. */

@@ -17,6 +17,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
@@ -168,6 +169,7 @@ class MainActivity : AppCompatActivity() {
                 arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 2)
         }
 
+        installBackHandling()
         web.loadUrl("file:///android_asset/web/index.html")
         handleShare(intent)
     }
@@ -558,18 +560,44 @@ class MainActivity : AppCompatActivity() {
         return cleaned.ifBlank { "import-${System.currentTimeMillis()}" }
     }
 
-    override fun onBackPressed() {
-        val login = loginView
-        when {
-            // A sign-in is several pages — account, then password, then any
-            // second factor. Back used to end the whole thing from any of them,
-            // so one mistyped password cost the entire login. It walks the
-            // login's own history first, and only finishes at its start.
-            login != null && login.canGoBack() -> login.goBack()
-            login != null -> finishLogin()
-            web.canGoBack() -> web.goBack()
-            else -> super.onBackPressed()
-        }
+    /**
+     * Back, however this phone asks for it.
+     *
+     * Registered with the dispatcher rather than overriding onBackPressed,
+     * because that is the one route every navigation style arrives by — the
+     * three-button bar, the two-button pill and the edge gesture all end up
+     * here, and on Android 13 and later so does the predictive-back animation,
+     * which never calls the old override at all.
+     *
+     * The page decides what Back means inside itself: it knows whether the
+     * picker is open and which source is showing, and the shell does not need
+     * to. When the page says it handled nothing, the callback stands aside and
+     * lets the system do what it would have done, which is leave the app.
+     */
+    private fun installBackHandling() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val login = loginView
+                // A sign-in is several pages — account, then password, then any
+                // second factor. Back walks the login's own history first, so
+                // one mistyped password does not cost the whole login, and only
+                // finishes at its start.
+                if (login != null) {
+                    if (login.canGoBack()) login.goBack() else finishLogin()
+                    return
+                }
+                web.evaluateJavascript(
+                    "(window.blueknightBack && window.blueknightBack()) === true"
+                ) { answer ->
+                    if (answer == "true") return@evaluateJavascript
+                    // Nothing left to undo in the page. Step out of the way for
+                    // one dispatch so the system closes the app as usual.
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
+            }
+        })
     }
 
     private fun quote(value: String) =
