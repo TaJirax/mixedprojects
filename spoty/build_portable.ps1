@@ -78,11 +78,13 @@ $ExtraArgs += @("--add-data", "$YtjsDir;tools")
 $NewPipeJar = Join-Path $Vendor "blueknight-newpipe.jar"
 if (-not (Test-Path -LiteralPath $NewPipeJar) -and (Get-Command java -ErrorAction SilentlyContinue)) {
     Write-Host "  building the NewPipe engine"
-    Push-Location (Join-Path $Root "jvm/newpipe")
-    & ./gradlew.bat --no-daemon -q shadowJar
-    Pop-Location
-    $Built = Join-Path $Root "jvm/newpipe/build/libs/blueknight-newpipe.jar"
-    if (Test-Path -LiteralPath $Built) { Copy-Item $Built $NewPipeJar -Force }
+    # The Android project's wrapper, rather than a second copy of Gradle for a
+    # one-module helper.
+    & (Join-Path $Root "android/gradlew.bat") -p (Join-Path $Root "jvm/newpipe") `
+        --no-daemon -q shadowJar
+    if ($LASTEXITCODE -ne 0) { throw "the NewPipe engine failed to build" }
+    Copy-Item (Join-Path $Root "jvm/newpipe/build/libs/blueknight-newpipe.jar") `
+        $NewPipeJar -Force
 }
 if (Test-Path -LiteralPath $NewPipeJar) {
     $ExtraArgs += @("--add-data", "$NewPipeJar;tools")
