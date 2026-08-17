@@ -49,7 +49,7 @@ else:
 
 
 APP_NAME = "Blue Knight Downloader"
-APP_VERSION = "7.4.0"
+APP_VERSION = "7.4.1"
 CREATOR = "Blue Knight"
 TELEGRAM_URL = "https://t.me/BlueKnight_Net"
 
@@ -4117,7 +4117,15 @@ class SpotifyDownloader:
             # already knows how to climb out of.
             extractor_args.append("formats=missing_pot")
             if po_token:
-                cmd += self.bgutil_args()
+                provider = self.bgutil_args()
+                if provider:
+                    cmd += provider
+                    # yt-dlp only asks the provider for a token when the client
+                    # says it needs one, and the clients that get bot-checked
+                    # without declaring it are exactly the ones this rung is
+                    # for. With a provider present there is no reason to be
+                    # asked first.
+                    extractor_args.append("fetch_pot=always")
             if selected_clients:
                 extractor_args.insert(0, f"player_client={selected_clients}")
             if extractor_args:
