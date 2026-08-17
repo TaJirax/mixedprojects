@@ -18,7 +18,18 @@
  * the caller parses stdout.
  */
 
-const CLIENTS = ["ANDROID", "TV", "WEB_EMBEDDED", "MWEB", "WEB"];
+// Cheapest first, where cheap means what the client has to prove.
+//
+// ANDROID_VR, TV and WEB_EMBEDDED are the three yt-dlp's PO Token Guide lists
+// as needing no proof-of-origin token, and ANDROID_VR is the one that returned
+// a full format list on a video every other client here refused. It leads.
+//
+// ANDROID and IOS are deliberately absent: they pass the flag that says no
+// token is needed and then still want one to fetch a stream, which arrives as
+// the 403 this list exists to avoid.
+const CLIENTS = [
+  "ANDROID_VR", "TV", "WEB_EMBEDDED", "TV_EMBEDDED", "MWEB", "WEB",
+];
 
 /**
  * Ask each client in turn and keep the first that actually offers streams.
